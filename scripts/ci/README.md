@@ -7,7 +7,7 @@ Each script finds the repo root on its own, so it runs from any directory.
 | Script | What it does | Called by |
 | --- | --- | --- |
 | `check-rust` | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo build`, and `cargo test` on the workspace, with `--locked` | `ci.yml` (#3) |
-| `check-editor` | Checks that the Code - OSS pin and patches still apply (`scripts/editor/prepare`, then `scripts/editor/export-patches --check`) and that the root `.nvmrc` equals upstream's. Then `npm ci`, lint, type-check (`tsc --noEmit`), build, and test the fixture, `ci/fixtures/electron-smoke/` | `ci.yml` (#3) |
+| `check-editor` | Checks that the Code - OSS pin and patches still apply (`scripts/editor/prepare`, then `scripts/editor/export-patches --check`) and that the root `.nvmrc` equals upstream's. It then type-checks the patched tree with upstream's `npm run typecheck-client`, after `npm ci --ignore-scripts` when `node_modules` is missing. Finally it runs `npm ci`, lint, type-check (`tsc --noEmit`), build, and test on the fixture, `ci/fixtures/electron-smoke/`. | `ci.yml` (#3) |
 | `build-app` | Installs, builds, and downloads the Electron binary: what `app-launch` needs, without lint or tests. `WISP_APP=editor` builds the Code - OSS development build in `editor/vscode/` instead of the fixture. | `screenshots.yml` (#4) |
 | `app-launch` | Prints Playwright `_electron.launch` options for the built app as one line of JSON. `WISP_APP=editor` selects the Code - OSS development build. | `screenshots.yml` (#4) |
 | `package-app` | Not yet written: #5 adds it (see [package-app](#package-app-added-by-5)) | `release.yml` (#5) |
@@ -77,7 +77,7 @@ The fixture has no packaging, so there is no `.app` for `release.yml` yet. #5 ad
 ## Notes for workflows
 
 - `check-editor` never downloads the Electron binary. Electron 44 fetches it on first use rather than at install, and `build-app` fetches it explicitly.
-- Worth caching: `~/.rustup/toolchains`, keyed on `rust-toolchain.toml`, because the runner's preinstalled stable never matches the pin; `~/.cargo/registry`, `~/.cargo/git`, and `target/`; `~/.npm`, keyed on `ci/fixtures/electron-smoke/package-lock.json`; and `~/Library/Caches/electron` for the Electron download.
+- Worth caching: `~/.rustup/toolchains`, keyed on `rust-toolchain.toml`, because the runner's preinstalled stable never matches the pin; `~/.cargo/registry`, `~/.cargo/git`, and `target/`; `~/.npm`, keyed on `ci/fixtures/electron-smoke/package-lock.json` and `editor/upstream.json`; and `~/Library/Caches/electron` for the Electron download.
 - Building the editor (`WISP_APP=editor`) is dominated by `npm ci`: 2 min 20 s cold and 2 min with a warm `~/.npm` on an M3 Pro. Most of that is native module builds and install scripts, so caching the installed `node_modules` directories saves more than caching `~/.npm`. #8's Progress comment has the full numbers for #9.
 - `npm run download-builtin-extensions` calls the GitHub REST API. Pass `GITHUB_TOKEN` so that it does not share the anonymous rate limit.
 - Upstream's lockfiles exist only after `scripts/editor/prepare` has run, so a cache step that runs before it, such as `actions/setup-node` with `cache: npm`, cannot key on them. Key editor caches on the committed `editor/upstream.json` and `editor/patches/**`, or run `prepare` before the cache step.
