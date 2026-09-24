@@ -429,18 +429,22 @@ async fn send_response<W: AsyncWrite + Unpin>(
     }
 }
 
+// An event too large for a frame fails the connection rather than being skipped, so a subscriber
+// never goes on with a gap it can't see. Project fields have size limits, which keep M1's events
+// far below the frame limit.
 async fn send_event<W: AsyncWrite + Unpin>(
     sink: &mut FramedWrite<W, FrameCodec>,
     event: EventsEventParams,
 ) -> Result<(), FrameError> {
     let seq = event.seq;
-    match sink.feed(Notification::new::<EventsEvent>(event)).await {
-        Err(FrameError::TooLarge { .. }) => {
-            warn!(seq, "skipped an event larger than the frame limit");
-            Ok(())
-        }
-        sent => sent,
+    let sent = sink.feed(Notification::new::<EventsEvent>(event)).await;
+    if let Err(FrameError::TooLarge { max_frame_bytes }) = &sent {
+        error!(
+            seq,
+            max_frame_bytes, "an event is larger than the frame limit; closing the connection"
+        );
     }
+    sent
 }
 
 #[cfg(test)]
@@ -454,13 +458,13 @@ mod tests {
     use serde_json::{Value, json};
     use tokio::io::{AsyncWriteExt, DuplexStream, ReadHalf, WriteHalf};
     use tokio::time::timeout;
-    use tokio_util::codec::FramedRead;
+    use tokio_util::codec::{FramedRead, FramedWrite};
     use tokio_util::sync::CancellationToken;
-    use wisp_protocol::framing::FrameCodec;
+    use wisp_protocol::framing::{FrameCodec, FrameError};
     use wisp_protocol::jsonrpc::Message;
-    use wisp_protocol::{Project, ProjectId, WispEvent};
+    use wisp_protocol::{EventsEventParams, Project, ProjectId, SubscriptionId, WispEvent};
 
-    use super::serve;
+    use super::{send_event, serve};
     use crate::server::Daemon;
 
     const PATIENCE: Duration = Duration::from_secs(10);
@@ -570,5 +574,30 @@ mod tests {
             delivered < 1_000,
             "{delivered} events, then the connection should close"
         );
+    }
+
+    #[tokio::test]
+    async fn an_event_too_large_for_a_frame_is_an_error_not_a_gap() {
+        let mut sink = FramedWrite::new(tokio::io::sink(), FrameCodec::with_max_frame_bytes(1024));
+        let event = |name: &str| EventsEventParams {
+            subscription: SubscriptionId::generate(),
+            seq: 1,
+            time: Timestamp::now(),
+            project: None,
+            event: WispEvent::ProjectCreated {
+                project: Project {
+                    id: ProjectId::generate(),
+                    name: name.to_owned(),
+                    repo_path: "/src".to_owned(),
+                    created_at: Timestamp::now(),
+                    updated_at: Timestamp::now(),
+                },
+            },
+        };
+        assert!(send_event(&mut sink, event("wisp")).await.is_ok());
+        assert!(matches!(
+            send_event(&mut sink, event(&"n".repeat(2000))).await,
+            Err(FrameError::TooLarge { .. })
+        ));
     }
 }

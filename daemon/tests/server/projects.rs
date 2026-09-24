@@ -111,7 +111,15 @@ async fn invalid_create_params_are_refused_before_the_store() {
     assert_eq!(error.code, INVALID_PARAMS);
     assert!(error.message.contains("UUIDv7"), "{}", error.message);
 
-    for (name, repo_path) in [("wisp", "relative/path"), (" ", "/src")] {
+    let long_path = format!("/{}", "p".repeat(1024));
+    for (name, repo_path) in [
+        ("wisp", "relative/path"),
+        (" ", "/src"),
+        ("wisp", "/x\0y"),
+        ("wi\0sp", "/src"),
+        (&"n".repeat(257), "/src"),
+        ("wisp", &long_path),
+    ] {
         let params = ProjectCreateParams {
             name: name.to_owned(),
             repo_path: repo_path.to_owned(),
@@ -125,6 +133,16 @@ async fn invalid_create_params_are_refused_before_the_store() {
         .await
         .unwrap();
     assert!(listed.projects.is_empty());
+
+    let at_the_limits = ProjectCreateParams {
+        name: "n".repeat(256),
+        repo_path: long_path[..1024].to_owned(),
+        ..create_params("x")
+    };
+    client
+        .call::<ProjectCreate>(at_the_limits)
+        .await
+        .expect("a name of 256 bytes and a path of 1024 are accepted");
 }
 
 #[tokio::test]
