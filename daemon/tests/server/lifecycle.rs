@@ -3,7 +3,7 @@
 use std::fmt::Write as _;
 use std::fs::{self, Permissions};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt, symlink};
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -54,9 +54,10 @@ async fn a_second_instance_is_refused_and_the_first_keeps_serving() {
 async fn a_stale_socket_is_replaced() {
     let dir = temp_dir();
     let socket = socket_path(dir.path());
-    // Left behind by a listener that is gone. (Connecting isn't a reliable check here: a child
-    // spawned by a parallel test can inherit the listener before it is marked close-on-exec.)
-    drop(UnixListener::bind(&socket).unwrap());
+    // A socket file nothing serves. It is a datagram socket because a stream listener here could
+    // be inherited by another test's child before close-on-exec is set, and then accept the
+    // connects meant for wispd (#86). wispd removes any kind of socket.
+    drop(UnixDatagram::bind(&socket).unwrap());
     assert!(
         fs::symlink_metadata(&socket)
             .unwrap()

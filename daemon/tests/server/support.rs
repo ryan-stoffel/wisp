@@ -58,18 +58,21 @@ impl Wispd {
         Self::start_with(data_dir, &[], &[]).await
     }
 
+    /// Ready means this wispd answered a handshake, not just that a connect worked: a listener
+    /// that another test's child inherited can accept connects at the same path and answer
+    /// nothing (#86).
     pub async fn start_with(data_dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Self {
         let mut child = spawn(data_dir, args, env);
         let socket = socket_path(data_dir);
         let deadline = Instant::now() + PATIENCE;
         loop {
-            if std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+            if answers_handshake(&socket).await {
                 return Self { child, socket };
             }
             if let Some(status) = child.try_wait().expect("check on wispd") {
                 panic!("wispd exited while starting: {status}");
             }
-            assert!(Instant::now() < deadline, "wispd did not start listening");
+            assert!(Instant::now() < deadline, "wispd did not start answering");
             sleep(Duration::from_millis(10)).await;
         }
     }
@@ -98,6 +101,39 @@ impl Drop for Wispd {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+async fn answers_handshake(socket: &Path) -> bool {
+    let Ok(stream) = UnixStream::connect(socket).await else {
+        return false;
+    };
+    let mut framed = Framed::new(stream, FrameCodec::new());
+    if framed
+        .send(&Request::new::<Initialize>(
+            1,
+            initialize_params(ProtocolRange::SUPPORTED),
+        ))
+        .await
+        .is_err()
+    {
+        return false;
+    }
+    let Ok(Some(Ok(frame))) = timeout(Duration::from_secs(1), framed.next()).await else {
+        return false;
+    };
+    matches!(Message::from_frame(&frame), Ok(Message::Response(response)) if response.result.is_ok())
+}
+
+fn initialize_params(protocol: ProtocolRange) -> InitializeParams {
+    InitializeParams {
+        protocol,
+        client: ClientInfo {
+            name: "wispd-tests".to_owned(),
+            version: "0.0.0".to_owned(),
+            machine_id: None,
+        },
+        capabilities: Capabilities::default(),
     }
 }
 
@@ -207,16 +243,7 @@ impl Client {
         &mut self,
         protocol: ProtocolRange,
     ) -> Result<InitializeResult, ErrorObject> {
-        let params = InitializeParams {
-            protocol,
-            client: ClientInfo {
-                name: "wispd-tests".to_owned(),
-                version: "0.0.0".to_owned(),
-                machine_id: None,
-            },
-            capabilities: Capabilities::default(),
-        };
-        self.call::<Initialize>(params).await
+        self.call::<Initialize>(initialize_params(protocol)).await
     }
 
     /// Sends a request and returns its id without waiting for the answer.
