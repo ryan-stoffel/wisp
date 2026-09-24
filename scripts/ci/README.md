@@ -123,7 +123,9 @@ Caches follow the same scopes as the `fork` job's markers. A PR can restore a bu
 
 A build needs `GITHUB_TOKEN`: upstream's install and build download from GitHub (ripgrep, the built-in extensions, Electron), and anonymous API calls from shared runners hit the rate limit. The job gives it the workflow's `contents: read` token.
 
-To use the cached app elsewhere (#38, #43), compute the same key, restore the zip with `actions/cache/restore`, and unzip it with `ditto -x -k`. On a PR that changes an input, the key misses until this job has saved the new build.
+To use the cached app for checks elsewhere, such as screenshots (#38), compute the same key, restore the zip with `actions/cache/restore`, and unzip it with `ditto -x -k`. On a PR that changes an input, the key misses until this job has saved the new build.
+
+Never ship the cached app. `release.yml` builds the release app from source and never restores this cache. A cache entry has no provenance: any job in a `develop` run can write one under this predictable key, npm install scripts and cargo build scripts included. `check-app` checks the branding, not where the zip came from.
 
 ## Switching to the real app
 
