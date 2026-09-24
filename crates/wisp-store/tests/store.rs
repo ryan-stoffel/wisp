@@ -17,7 +17,6 @@ fn sample_fields() -> ProjectFields {
     ProjectFields {
         name: "wisp".to_string(),
         repo_path: "/Users/ryan/dev/wisp".to_string(),
-        host: "macbook".to_string(),
     }
 }
 
@@ -70,7 +69,6 @@ fn reopening_an_existing_database_keeps_its_data() {
 
     assert_eq!(project.name, sample_fields().name);
     assert_eq!(project.repo_path, sample_fields().repo_path);
-    assert_eq!(project.host, sample_fields().host);
 }
 
 #[test]
@@ -126,12 +124,12 @@ fn update_replaces_fields_and_bumps_updated_at() {
         .expect("create should succeed");
 
     let mut updated_fields = sample_fields();
-    updated_fields.host = "mac-mini".to_string();
+    updated_fields.name = "renamed".to_string();
     let updated = store
         .update_project(id, &updated_fields)
         .expect("update of an existing project should succeed");
 
-    assert_eq!(updated.host, "mac-mini");
+    assert_eq!(updated.name, "renamed");
     assert_eq!(updated.created_at, created.created_at);
     assert!(updated.updated_at >= created.updated_at);
 }
@@ -235,8 +233,8 @@ fn concurrent_read_succeeds_while_another_connection_is_writing() {
             .expect("set busy timeout");
         let tx = conn.transaction().expect("begin write transaction");
         tx.execute(
-            "INSERT INTO projects (id, name, repo_path, host, created_at, updated_at)
-             VALUES ('01978c1e-70a0-7c3d-9b1a-000000000000', 'n', '/r', 'h', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            "INSERT INTO projects (id, name, repo_path, created_at, updated_at)
+             VALUES ('01978c1e-70a0-7c3d-9b1a-000000000000', 'n', '/r', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
             [],
         )
         .expect("insert inside the open transaction");
@@ -300,8 +298,8 @@ fn projects_created_in_the_same_second_list_oldest_first() {
     ] {
         conn.execute(
             &format!(
-                "INSERT INTO projects (id, name, repo_path, host, created_at, updated_at)
-                 VALUES ('{id}', 'n', '/r', 'h', '{created_at}', '{created_at}')"
+                "INSERT INTO projects (id, name, repo_path, created_at, updated_at)
+                 VALUES ('{id}', 'n', '/r', '{created_at}', '{created_at}')"
             ),
             [],
         )
@@ -335,8 +333,8 @@ fn reads_timestamps_written_in_the_old_variable_width_format() {
     let conn = Connection::open(&path).expect("open raw connection");
     conn.execute(
         &format!(
-            "INSERT INTO projects (id, name, repo_path, host, created_at, updated_at)
-             VALUES ('{id}', 'legacy', '/r', 'h', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00.5Z')"
+            "INSERT INTO projects (id, name, repo_path, created_at, updated_at)
+             VALUES ('{id}', 'legacy', '/r', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00.5Z')"
         ),
         [],
     )
@@ -355,4 +353,70 @@ fn reads_timestamps_written_in_the_old_variable_width_format() {
         "2026-01-01T00:00:00.5Z".parse().unwrap()
     );
     assert_eq!(store.list_projects().expect("list").len(), 1);
+}
+
+/// Migration 2 drops the `host` column. A database written at schema
+/// version 1, with a row in it, must open, keep the row, and lose the
+/// column.
+#[test]
+fn a_version_1_database_migrates_and_keeps_its_projects() {
+    let (_dir, path) = temp_db_path();
+    let id = Uuid::now_v7();
+    let conn = Connection::open(&path).expect("open raw connection");
+    conn.execute_batch(&format!(
+        "CREATE TABLE schema_version (
+             version INTEGER NOT NULL PRIMARY KEY,
+             applied_at TEXT NOT NULL
+         );
+         CREATE TABLE projects (
+             id TEXT NOT NULL PRIMARY KEY,
+             name TEXT NOT NULL,
+             repo_path TEXT NOT NULL,
+             host TEXT NOT NULL,
+             created_at TEXT NOT NULL,
+             updated_at TEXT NOT NULL
+         );
+         INSERT INTO schema_version VALUES (1, '2026-09-24T12:00:00.000000000Z');
+         INSERT INTO projects VALUES ('{id}', 'wisp', '/r', 'macbook',
+             '2026-09-24T12:00:00.000000000Z', '2026-09-24T12:00:00.000000000Z');"
+    ))
+    .expect("write a version 1 database");
+    drop(conn);
+
+    let mut store = Store::open(&path).expect("open should migrate to version 2");
+    let project = store
+        .get_project(id)
+        .expect("get")
+        .expect("the row should survive the migration");
+    assert_eq!(project.name, "wisp");
+    assert_eq!(project.repo_path, "/r");
+    let again = store
+        .create_project(
+            id,
+            &ProjectFields {
+                name: "wisp".to_string(),
+                repo_path: "/r".to_string(),
+            },
+        )
+        .expect("an idempotent create should match the migrated row");
+    assert_eq!(again, project);
+
+    let conn = Connection::open(&path).expect("open verification connection");
+    let columns: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('projects')")
+        .expect("prepare")
+        .query_map([], |row| row.get(0))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("collect");
+    assert_eq!(
+        columns,
+        ["id", "name", "repo_path", "created_at", "updated_at"]
+    );
+    let version: i64 = conn
+        .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+            row.get(0)
+        })
+        .expect("read schema version");
+    assert_eq!(version, 2);
 }

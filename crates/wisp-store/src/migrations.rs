@@ -10,17 +10,25 @@ struct Migration {
 
 /// Versioned migrations, applied in order. Add new tables here by appending
 /// a migration; never edit one that has already shipped.
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    sql: "CREATE TABLE projects (
-        id TEXT NOT NULL PRIMARY KEY,
-        name TEXT NOT NULL,
-        repo_path TEXT NOT NULL,
-        host TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-    );",
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        sql: "CREATE TABLE projects (
+            id TEXT NOT NULL PRIMARY KEY,
+            name TEXT NOT NULL,
+            repo_path TEXT NOT NULL,
+            host TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );",
+    },
+    // A wispd's store only holds projects on its own host, so the column
+    // had nothing to say (decision record 0009).
+    Migration {
+        version: 2,
+        sql: "ALTER TABLE projects DROP COLUMN host;",
+    },
+];
 
 /// Bootstraps the `schema_version` table and applies any migration whose
 /// version is newer than what's recorded.
