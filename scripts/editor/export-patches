@@ -7,9 +7,11 @@ usage() {
   cat <<'EOF'
 Usage: scripts/editor/export-patches [--check]
 
-Writes the commits on top of the pinned upstream commit in editor/vscode to
-editor/patches, one patch per commit, replacing the patches there. Commit
-your changes in editor/vscode first: uncommitted work is not exported.
+Writes the commits on top of the pinned upstream commit and wisp's overlay in
+editor/vscode to editor/patches, one patch per commit, replacing the patches
+there. Commit your changes in editor/vscode first: uncommitted work is not
+exported. The overlay commit that prepare makes is never exported; change
+editor/product.json and editor/overlay directly instead.
 
   --check  write nothing; fail if editor/patches differs from what an export
            would write
@@ -38,15 +40,32 @@ fi
 [ -z "$(uncommitted_changes)" ] || fail "$tree has uncommitted changes or untracked files; commit them first"
 tree_git merge-base --is-ancestor "$commit" HEAD 2>/dev/null ||
   fail "HEAD in $tree is not based on $tag ($commit), the pin in editor/upstream.json; use scripts/editor/upgrade to move to another release"
-[ -z "$(tree_git rev-list --merges "$commit..HEAD")" ] ||
+base=$(current_base)
+[ "$base" = "$commit" ] || [ "$(tree_git rev-parse -q --verify "$base^" || true)" = "$commit" ] ||
+  fail "the overlay commit in $tree is not on $tag; run scripts/editor/prepare"
+tree_git merge-base --is-ancestor "$base" HEAD 2>/dev/null ||
+  fail "HEAD in $tree is not based on the overlay commit that scripts/editor/prepare made; run scripts/editor/prepare"
+[ -z "$(tree_git rev-list --merges "$base..HEAD")" ] ||
   fail "the commits after $tag in $tree include a merge; the series must be linear"
+
+# Keeps what the overlay owns out of the patches (docs/decisions/0007-editor-overlay.md).
+owned=$(overlay_files) || exit 1
+owned="product.json
+$owned"
+touched=$(tree_git diff --name-only --no-renames "$base" HEAD --)
+clash=$(printf '%s\n' "$owned" | while IFS= read -r path; do
+  [ -n "$path" ] || continue
+  if printf '%s\n' "$touched" | grep -Fxq -- "$path"; then printf '%s\n' "$path"; fi
+done)
+[ -z "$clash" ] ||
+  fail "commits in $tree change files that the overlay owns ($(printf '%s' "$clash" | tr '\n' ' ' | sed 's/ $//')); drop those changes from the commits and make them in editor/product.json or editor/overlay instead"
 
 out=$(mktemp -d "${TMPDIR:-/tmp}/wisp-patches.XXXXXX")
 trap 'rm -rf "$out"' EXIT
 
 tree_git format-patch --quiet --zero-commit --no-signature --no-numbered --no-stat \
   --full-index --no-renames --unified=3 --diff-algorithm=myers \
-  --src-prefix=a/ --dst-prefix=b/ --output-directory "$out" "$commit..HEAD"
+  --src-prefix=a/ --dst-prefix=b/ --output-directory "$out" "$base..HEAD"
 count=$(find "$out" -name '*.patch' | wc -l | tr -d ' ')
 
 if $check; then

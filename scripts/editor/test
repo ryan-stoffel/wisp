@@ -33,36 +33,118 @@ pin() {
     "$upstream" "$1" "$(git -C "$upstream" rev-parse "$1")" >"$repo/editor/upstream.json"
 }
 
+# Fails unless the JSON value at key path $1 (dot-separated) in the tree's
+# product.json is $2, given as JSON. "undefined" means absent.
+product_has() {
+  node -e '
+    const [file, path, want] = process.argv.slice(1);
+    let value = JSON.parse(require("fs").readFileSync(file, "utf8"));
+    for (const key of path.split(".")) value = value?.[key];
+    const got = value === undefined ? "undefined" : JSON.stringify(value);
+    if (got !== want) {
+      console.error("product.json " + path + " is " + got + ", expected " + want);
+      process.exit(1);
+    }
+  ' "$tree/product.json" "$1" "$2" || fail "the overlay did not merge $1 into product.json"
+}
+
+clean() {
+  [ -z "$(git -C "$tree" status --porcelain)" ] || fail "$1: $(git -C "$tree" status --porcelain)"
+}
+
 git init -q --initial-branch=main "$upstream"
 printf '* text=auto\n*.crlf -text\n' >"$upstream/.gitattributes"
 printf '24.0.0\n' >"$upstream/.nvmrc"
 printf 'line 1\nline 2\nline 3\n' >"$upstream/a.txt"
 printf 'one\r\ntwo\r\n' >"$upstream/b.crlf"
+printf '{\n\t"nameShort": "Code - OSS",\n\t"applicationName": "code-oss",\n\t"updateUrl": "https://update.invalid",\n\t"gallery": {\n\t\t"serviceUrl": "https://gallery.invalid",\n\t\t"itemUrl": "https://item.invalid"\n\t}\n}\n' >"$upstream/product.json"
+mkdir -p "$upstream/resources"
+printf 'upstream icon\n' >"$upstream/resources/icon.icns"
 release 1.0.0
 
-mkdir -p "$repo/scripts/editor" "$repo/editor"
+mkdir -p "$repo/scripts/editor" "$repo/editor/overlay/resources" "$repo/editor/overlay/bin"
 cp "$here/lib.sh" "$here/prepare" "$here/export-patches" "$here/upgrade" "$repo/scripts/editor/"
 pin 1.0.0
+printf '{\n\t"nameShort": "Wisp",\n\t"updateUrl": null,\n\t"gallery": {\n\t\t"serviceUrl": "https://open-vsx.invalid"\n\t},\n\t"added": ["x"]\n}\n' >"$repo/editor/product.json"
+printf 'wisp icon\n' >"$repo/editor/overlay/resources/icon.icns"
+printf '#!/bin/sh\n' >"$repo/editor/overlay/bin/tool"
+chmod +x "$repo/editor/overlay/bin/tool"
 
+# The overlay lands as one commit under the patches, and the tree stays clean.
 "$repo/scripts/editor/prepare" >/dev/null
+product_has nameShort '"Wisp"'
+product_has applicationName '"code-oss"'
+product_has updateUrl undefined
+product_has gallery.serviceUrl '"https://open-vsx.invalid"'
+product_has gallery.itemUrl '"https://item.invalid"'
+product_has added '["x"]'
+printf 'wisp icon\n' | cmp -s - "$tree/resources/icon.icns" || fail "the overlay did not replace resources/icon.icns"
+[ -x "$tree/bin/tool" ] || fail "the overlay did not keep bin/tool executable"
+clean "prepare left the tree dirty"
+[ "$(git -C "$tree" rev-parse HEAD^)" = "$(git -C "$upstream" rev-parse 1.0.0)" ] ||
+  fail "the overlay is not one commit on the pinned upstream commit"
+[ "$(git -C "$tree" log -1 --format='%an %ae %aI %cn %ce %cI' HEAD)" = \
+  "wisp prepare prepare@wisp.invalid $(git -C "$upstream" log -1 --format=%cI 1.0.0) wisp prepare prepare@wisp.invalid $(git -C "$upstream" log -1 --format=%cI 1.0.0)" ] ||
+  fail "the overlay commit does not have the fixed author, committer, and upstream date"
+case $("$repo/scripts/editor/prepare") in
+  *'already prepared'*) ;;
+  *) fail "a second prepare did the work again" ;;
+esac
+"$repo/scripts/editor/export-patches" --check >/dev/null || fail "export-patches --check failed on the overlay alone"
+[ ! -e "$repo/editor/patches" ] || fail "the overlay was exported as a patch"
+
+# A commit made on top of the overlay is exported as a patch, and round-trips.
 printf 'line 1\nline 2\nline 3 from wisp\n' >"$tree/a.txt"
 printf 'one\r\ntwo from wisp\r\n' >"$tree/b.crlf"
 git -C "$tree" commit -q -a -m "$subject"
 "$repo/scripts/editor/export-patches" >/dev/null
+[ "$(find "$repo/editor/patches" -name '*.patch' | wc -l | tr -d ' ')" = 1 ] || fail "expected one patch"
+if grep -q 'product.json\|icon.icns\|bin/tool' "$repo/editor/patches"/*.patch; then
+  fail "the patch carries the overlay"
+fi
 
 rm -rf "$tree"
 "$repo/scripts/editor/prepare" >/dev/null
 [ "$(git -C "$tree" log -1 --format=%s)" = "$subject" ] ||
   fail "git am changed the subject to: $(git -C "$tree" log -1 --format=%s)"
 printf 'one\r\ntwo from wisp\r\n' | cmp -s - "$tree/b.crlf" || fail "the CRLF file changed on the round trip"
+product_has nameShort '"Wisp"'
 "$repo/scripts/editor/export-patches" --check >/dev/null || fail "the series changed on the round trip"
 first=$(git -C "$tree" rev-parse HEAD)
 rm -rf "$tree"
 "$repo/scripts/editor/prepare" >/dev/null
 [ "$(git -C "$tree" rev-parse HEAD)" = "$first" ] || fail "preparing twice gave different commits"
 
+# Changing the overlay, or the scripts, prepares again without --force.
+printf '{\n\t"nameShort": "Wisp 2",\n\t"updateUrl": null\n}\n' >"$repo/editor/product.json"
+"$repo/scripts/editor/prepare" >/dev/null
+product_has nameShort '"Wisp 2"'
+product_has gallery.serviceUrl '"https://gallery.invalid"'
+[ "$(git -C "$tree" log -1 --format=%s)" = "$subject" ] || fail "the patch was lost when the overlay changed"
+"$repo/scripts/editor/export-patches" --check >/dev/null || fail "export-patches --check failed after the overlay changed"
+printf '\n' >>"$repo/scripts/editor/lib.sh"
+case $("$repo/scripts/editor/prepare") in
+  *'already prepared'*) fail "prepare kept a tree prepared by other scripts" ;;
+esac
+
+# A patch may not change what the overlay owns.
+printf '{}\n' >"$tree/product.json"
+git -C "$tree" commit -q -a -m 'branding: edit product.json in a patch'
+if output=$("$repo/scripts/editor/export-patches" 2>&1); then
+  fail "export-patches exported a change to product.json"
+fi
+case $output in
+  *'overlay owns (product.json)'*) ;;
+  *) fail "export-patches failed without naming product.json: $output" ;;
+esac
+git -C "$tree" reset -q --hard HEAD^
+
+# An upgrade across upstream changes to product.json and to an overlaid file
+# does not conflict: the overlay is made again, not rebased.
 printf 'added in 1.1.0\n' >"$upstream/c.txt"
 printf '24.1.0\n' >"$upstream/.nvmrc"
+printf '{\n\t"nameShort": "Code - OSS",\n\t"applicationName": "code-oss",\n\t"updateUrl": "https://update2.invalid",\n\t"gallery": {\n\t\t"serviceUrl": "https://gallery2.invalid"\n\t},\n\t"newInUpstream": true\n}\n' >"$upstream/product.json"
+printf 'upstream icon 2\n' >"$upstream/resources/icon.icns"
 release 1.1.0
 "$repo/scripts/editor/upgrade" 1.1.0 >/dev/null 2>&1 || fail "upgrade to 1.1.0 failed"
 grep -q '"tag": "1.1.0"' "$repo/editor/upstream.json" || fail "upgrade did not rewrite the pin"
@@ -70,6 +152,12 @@ grep -q '"tag": "1.1.0"' "$repo/editor/upstream.json" || fail "upgrade did not r
 "$repo/scripts/editor/prepare" >/dev/null
 [ "$(git -C "$tree" log -1 --format=%s)" = "$subject" ] || fail "the subject changed on upgrade"
 "$repo/scripts/editor/export-patches" --check >/dev/null || fail "the series changed on upgrade"
+product_has nameShort '"Wisp 2"'
+product_has updateUrl undefined
+product_has newInUpstream true
+printf 'wisp icon\n' | cmp -s - "$tree/resources/icon.icns" || fail "the overlay lost resources/icon.icns on upgrade"
+[ -e "$tree/c.txt" ] || fail "the tree is not on 1.1.0 after the upgrade"
+clean "the upgrade left the tree dirty"
 
 printf 'line 1\nline 2\nline 3 changed upstream\n' >"$upstream/a.txt"
 release 1.2.0
