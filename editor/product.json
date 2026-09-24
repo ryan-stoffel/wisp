@@ -26,6 +26,7 @@
 	"linuxIconName": "wisp",
 	"reportIssueUrl": "https://github.com/ryan-stoffel/wisp/issues/new",
 	"urlProtocol": "wisp",
+	"quality": "stable",
 	"extensionsGallery": {
 		"serviceUrl": "https://open-vsx.org/vscode/gallery",
 		"itemUrl": "https://open-vsx.org/vscode/item",
@@ -35,6 +36,7 @@
 	"linkProtectionTrustedDomains": [
 		"https://open-vsx.org"
 	],
+	"builtInExtensionsEnabledWithAutoUpdates": [],
 	"enableTelemetry": false,
 	"aiConfig": null,
 	"appCenter": null,
