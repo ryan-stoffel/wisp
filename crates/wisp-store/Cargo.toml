@@ -13,8 +13,8 @@ workspace = true
 
 [dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }
-uuid = { version = "1", features = ["v7"] }
-time = { version = "0.3", features = ["formatting", "parsing"] }
+uuid = { workspace = true, features = ["v7"] }
+jiff = { workspace = true }
 thiserror = "2"
 
 [dev-dependencies]
