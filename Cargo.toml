@@ -1,5 +1,5 @@
 [workspace]
-members = ["daemon"]
+members = ["daemon", "crates/wisp-store"]
 resolver = "3"
 
 [workspace.package]
