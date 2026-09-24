@@ -28,8 +28,8 @@ Versions read: Claude Code 2.1.281 [19], Codex CLI 0.156.1 [27], Cursor CLI 2026
 | Resume | `--resume <session_id>` [10] | `codex exec resume <thread_id>` [23] | `--resume <chatId>` [38] |
 | cwd and worktrees | Process cwd plus `--add-dir`; `-p` never shows the trust dialog [10][13] | `-C <dir>`; the dir must be in a git repo, and linked worktrees count [23][27] | `--workspace <dir>`; an untrusted folder fails without `--trust` [38][41] |
 | Model | `--model` [10] | `-m` [27] | `--model`; list with `agent models` [38] |
-| No-write mode | `--tools Read,Glob,Grep --setting-sources user --settings '{"disableAllHooks":true}' --strict-mcp-config --permission-mode dontAsk`. Write tools are removed, the project's settings, `env` block, and `.mcp.json` are skipped, and hooks are off [10][11][13]. `wispd`'s tools also need `--mcp-config` and `--allowedTools "mcp__wispd__*"`, or `dontAsk` denies them [10][11] | `-s read-only`, which Seatbelt enforces for commands [25]. `wispd`'s MCP tools must be set not to prompt, since exec fails on approval requests [26][27] | `--mode ask --sandbox enabled`. Ask mode disables MCP execution, so Cursor cannot coordinate, and staff say modes "were never meant to be isolation" [44] |
-| Tool needs approval | Denied, with a `permission_denied` event [11] | exec forces approval policy `never`, and a request fails the run [27] | Held back unless `--force` or an allow rule is set; the docs disagree on whether edits are blocked or only proposed [36][38] |
+| No-write mode | `--tools Read,Glob,Grep --setting-sources user --settings '{"disableAllHooks":true}' --strict-mcp-config --permission-mode dontAsk`. Write tools are removed, the project's settings, `env` block, and `.mcp.json` are skipped, and hooks are off, except managed-policy hooks [10][11][13]. `wispd`'s tools also need `--mcp-config` and `--allowedTools "mcp__wispd__*"`, or `dontAsk` denies them [10][11] | `-s read-only`, which Seatbelt enforces for commands [25]. `wispd`'s MCP tools need `mcp_servers.wispd.default_tools_approval_mode = "approve"` and no destructive hint [26], since exec denies approval requests [27] | `--mode ask --sandbox enabled`. Ask mode disables MCP execution, so Cursor cannot coordinate, and staff say modes "were never meant to be isolation" [44] |
+| Tool needs approval | Denied, with a `permission_denied` event [11] | exec runs with approval policy `never`. An approval request is denied, so that call fails and the turn continues [27] | Held back unless `--force` or an allow rule is set; the docs disagree on whether edits are blocked or only proposed [36][38] |
 | Cancel | SIGINT ends the turn; SIGTERM exits 143 and leaves the turn unfinished [11] | SIGINT interrupts the turn; there is no SIGTERM handler [27] | Undocumented; kill the process group |
 | Signed in | `claude auth status`: JSON, exit 0 or 1 [10] | `codex login status`: text on stderr, exit 0 or 1 [27] | `agent status --format json` [38][40] |
 | Plan | `subscriptionType` in `auth status`, undocumented and sometimes stale [18] | `planType` from `account/read` in `codex app-server` [22] | "Subscription Tier" in `agent about`, undocumented [47] |
@@ -37,7 +37,7 @@ Versions read: Claude Code 2.1.281 [19], Codex CLI 0.156.1 [27], Cursor CLI 2026
 | Second account per machine | `CLAUDE_CONFIG_DIR` [12] | `CODEX_HOME` [24] | Unverified; the login lives in fixed Keychain items [46] |
 | Tokens and cost | `result.modelUsage[model]`, which includes subagents and carries over into resumed sessions. `result.usage` covers the main loop only, and all costs are client-side estimates [14][15] | `turn.completed.usage`, cumulative for the thread [27] | `result.usage`: `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`; no cost [41][43] |
 | Limit windows | Only the last `rate_limit_event.rate_limit_info` seen: `status`, `rateLimitType` (`five_hour`, `seven_day`, ...), `utilization`, `resetsAt`. An experimental `get_usage` control request also returns the plan and windows [14] | `account/rateLimits/read` in `codex app-server`: `primary` and `secondary`, each with `usedPercent`, `windowDurationMins`, `resetsAt`; never in exec output [22] | None in headless output; `/usage` is interactive only; there is no public usage API for individual plans [41][45] |
-| API key | `ANTHROPIC_API_KEY`, which wins over the login in `-p` [12]. Subscription runs strip `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and `CLAUDE_CODE_OAUTH_TOKEN`, since all three outrank `/login` [12]. Direct calls: `POST https://api.anthropic.com/v1/messages` [17] | `CODEX_API_KEY` for exec [23]. Direct calls: `POST https://api.openai.com/v1/responses` [31] | `CURSOR_API_KEY` [40] runs the Cursor agent, not a model API [48], and falls under the same AUP question [34] |
+| API key | `ANTHROPIC_API_KEY`, which wins over the login in `-p` [12]. Subscription runs strip `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and `CLAUDE_CODE_OAUTH_TOKEN`, since all three outrank `/login` [12]. A project's `env` block can still set a key for worker runs [13], so `wispd` checks `apiKeySource` in `system/init` before charging a subscription account [14]. Direct calls: `POST https://api.anthropic.com/v1/messages` [17] | `CODEX_API_KEY` for exec [23]. Direct calls: `POST https://api.openai.com/v1/responses` [31] | `CURSOR_API_KEY` [40] runs the Cursor agent, not a model API [48], and falls under the same AUP question [34] |
 | Remote Mac | A locked Keychain over SSH falls back to `~/.claude/.credentials.json` [12] | Stores `$CODEX_HOME/auth.json` by default [24][27] | Keychain writes fail over SSH; set `AGENT_CLI_CREDENTIAL_STORE=file` [46] |
 
 ## Terms assessment
@@ -55,7 +55,7 @@ Versions read: Claude Code 2.1.281 [19], Codex CLI 0.156.1 [27], Cursor CLI 2026
   - let each user sign in with their own credentials, without paying for or reselling their usage;
   - name Claude Code in plain text only.
 
-  Other guidance cuts the other way. Product developers should use API keys [1]. Keys are "the preferred way" for third-party tools, "including open-source projects", and Anthropic may bill their use to usage credits [3]. Third parties may not offer "claude.ai login or rate limits" [5].
+  Other guidance cuts the other way. Product developers should use API keys [1]. Keys are "the preferred way" for third-party tools, "including open-source projects" [3]. Anthropic lets such tools use a plan only at its discretion, and only for subscribers who have enabled usage credits. It may then draw that use from usage credits instead of plan limits [3]. Third parties may not offer "claude.ai login or rate limits" [5].
 - **OpenAI.** The Terms of Use ban programmatic extraction and credential sharing [20]. Even so, OpenAI documents `codex exec` and an app-server for "a deep integration inside your own product" [22][23], and its staff invite third-party ChatGPT sign-in [28][29][30].
 - **Cursor.** Staff say that calling private endpoints with a user's token breaks ToS section 1.5 and "can trigger abuse enforcement, up to and including an account ban" [35]. The AUP bans "Accessing the Service through automated or non-human means, whether through a bot, script, or otherwise" [34], but the docs still point scripts at the CLI [36][40]. The staff post that endorses automation (Aug 10) predates the AUP; the Aug 16 post does not address automation [35].
 
@@ -89,7 +89,7 @@ What it smooths over, beyond the table's differences:
 
 ## Open risks
 
-- **Claude billing.** Today `claude -p` and third-party app usage count against plan limits [4]. A plan announced in May [8] would have moved it to a monthly credit, then to usage credits if enabled, and otherwise stopped it. That plan is paused [4], but Anthropic may still bill third-party tools to usage credits [3]. Limits assume "ordinary, individual usage" [1], which parallel subagents may exceed.
+- **Claude billing.** Today `claude -p` and third-party app usage count against plan limits [4]. A plan announced in May [8] would have moved it to a monthly credit, then to usage credits if enabled, and otherwise stopped it. That plan is paused [4]. Anthropic may still require usage credits for third-party tools and bill their use there [3]. Limits assume "ordinary, individual usage" [1], which parallel subagents may exceed.
 - **Commercial Terms.** A Claude Console account may satisfy this condition; unverified (#35).
 - **Cursor.** Unsupported until #35 is answered. OpenAI plans to stop supplying models to Cursor on Nov 12, 2026 [32].
 - **Schema churn.** Several fields are undocumented or experimental, including the Codex app-server [22]. Adapters pin tested CLI versions, replay recorded transcripts in CI, and ignore unknown fields.
@@ -112,7 +112,7 @@ Anthropic
 10. Claude Code CLI reference: https://code.claude.com/docs/en/cli-reference
 11. Claude Code headless mode: https://code.claude.com/docs/en/headless
 12. Claude Code authentication: https://code.claude.com/docs/en/authentication
-13. Claude Code permissions, "What runs before you trust a folder": https://code.claude.com/docs/en/permissions
+13. Claude Code permissions, "What runs before you trust a folder", and hooks, "Disable or remove hooks": https://code.claude.com/docs/en/permissions, https://code.claude.com/docs/en/hooks
 14. Agent SDK types 0.3.281 (`SDKRateLimitInfo`, result message, `get_usage`): https://cdn.jsdelivr.net/npm/@anthropic-ai/claude-agent-sdk@0.3.281/sdk.d.ts
 15. Agent SDK cost tracking: https://code.claude.com/docs/en/agent-sdk/cost-tracking
 16. Claude Code environment variables: https://code.claude.com/docs/en/env-vars
@@ -129,7 +129,7 @@ OpenAI
 24. Codex authentication: https://learn.chatgpt.com/docs/auth
 25. Codex permissions: https://learn.chatgpt.com/docs/permissions
 26. Codex approvals and security, and the configuration reference: https://learn.chatgpt.com/docs/agent-approvals-security, https://learn.chatgpt.com/docs/config-file/config-reference
-27. Codex CLI 0.156.1 release and source: https://github.com/openai/codex/releases/tag/rust-v0.156.1. Files under `codex-rs/` at that tag: `exec/src/exec_events.rs`, `exec/src/event_processor_with_jsonl_output.rs`, `exec/src/lib.rs`, `cli/src/login.rs`, `config/src/types.rs`, `git-utils/src/info.rs`, `utils/cli/src/shared_options.rs`
+27. Codex CLI 0.156.1 release and source: https://github.com/openai/codex/releases/tag/rust-v0.156.1. Files under `codex-rs/` at that tag: `exec/src/exec_events.rs`, `exec/src/event_processor_with_jsonl_output.rs`, `exec/src/lib.rs`, `app-server/src/bespoke_event_handling.rs`, `cli/src/login.rs`, `config/src/types.rs`, `git-utils/src/info.rs`, `utils/cli/src/shared_options.rs`
 28. Codex for Open Source: https://developers.openai.com/community/codex-for-oss
 29. Sam Altman, 2026-05-01: https://x.com/sama/status/2050357911915028689
 30. Tibo Sottiaux (OpenAI), 2026-05-23: https://x.com/thsottiaux/status/2058071172361998482
