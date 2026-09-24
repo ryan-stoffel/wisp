@@ -32,12 +32,4 @@ export const scenarios: readonly Scenario[] = [
       return screenshot(window);
     },
   },
-  {
-    name: 'broken-on-purpose',
-    title: 'Broken on purpose',
-    async run({ window }) {
-      await window.locator('.does-not-exist').waitFor({ timeout: 2_000 });
-      return screenshot(window);
-    },
-  },
 ];
