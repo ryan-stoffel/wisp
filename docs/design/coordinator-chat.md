@@ -1,7 +1,7 @@
 # Coordinator chat and workbench layout
 
 - Status: design for M0, from #11. The layout follows the proposed default in #14, which Ryan has not answered yet.
-- Builds on: #12 (M0 placeholder view), #10 (stripping the workbench), decision 0002 (the editor fork strategy, in PR #46), and decisions [0004](../decisions/0004-subscription-providers.md) and [0005](../decisions/0005-shared-context-folder.md).
+- Builds on: #12 (M0 placeholder view), #10 (stripping the workbench), and decisions [0002](../decisions/0002-editor-fork-strategy.md), [0004](../decisions/0004-subscription-providers.md), and [0005](../decisions/0005-shared-context-folder.md).
 - Upstream: Code - OSS 1.139.0, with its default Modern UI.
 
 The coordinator chat lives in the secondary side bar on the right, in a wisp view container that is open at startup in every window. The file tree stays on the left, the editor in the center, and the terminal in the bottom panel. Later milestones fill in around the chat without moving it. Host status goes in the status bar, the project switcher and the agent list go inside the chat view, shared context goes in the Explorer, and diff review goes in the editor area.
@@ -411,4 +411,4 @@ WISP_EDITOR_DIR=<repo>/editor/vscode \
   node <repo>/docs/design/coordinator-chat/src/capture-tokens.mjs  # after an upstream upgrade
 ```
 
-`capture-tokens.mjs` needs a built editor tree; see `docs/editor-upgrade.md`, from PR #46. Rerun it after each upstream upgrade, then rerun `render.mjs`.
+`capture-tokens.mjs` needs a built editor tree; see [editor-upgrade.md](../editor-upgrade.md). Rerun it after each upstream upgrade, then rerun `render.mjs`.
