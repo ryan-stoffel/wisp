@@ -7,11 +7,13 @@ use crate::error::StoreError;
 use crate::timestamp;
 
 /// The fields of a project that a caller supplies and can change.
+///
+/// A project has no host field: every project in a store is on the host
+/// whose wispd owns that store (decision record 0009).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectFields {
     pub name: String,
     pub repo_path: String,
-    pub host: String,
 }
 
 /// A project row.
@@ -20,7 +22,6 @@ pub struct Project {
     pub id: Uuid,
     pub name: String,
     pub repo_path: String,
-    pub host: String,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -31,7 +32,6 @@ struct RawProject {
     id: String,
     name: String,
     repo_path: String,
-    host: String,
     created_at: String,
     updated_at: String,
 }
@@ -42,14 +42,13 @@ impl RawProject {
             id: row.get(0)?,
             name: row.get(1)?,
             repo_path: row.get(2)?,
-            host: row.get(3)?,
-            created_at: row.get(4)?,
-            updated_at: row.get(5)?,
+            created_at: row.get(3)?,
+            updated_at: row.get(4)?,
         })
     }
 
     fn matches(&self, fields: &ProjectFields) -> bool {
-        self.name == fields.name && self.repo_path == fields.repo_path && self.host == fields.host
+        self.name == fields.name && self.repo_path == fields.repo_path
     }
 
     fn into_project(self) -> Result<Project, StoreError> {
@@ -57,7 +56,6 @@ impl RawProject {
             id: Uuid::parse_str(&self.id)?,
             name: self.name,
             repo_path: self.repo_path,
-            host: self.host,
             created_at: timestamp::parse(&self.created_at)?,
             updated_at: timestamp::parse(&self.updated_at)?,
         })
@@ -67,7 +65,7 @@ impl RawProject {
 fn fetch_raw(conn: &Connection, id_text: &str) -> Result<Option<RawProject>, StoreError> {
     Ok(conn
         .query_row(
-            "SELECT id, name, repo_path, host, created_at, updated_at
+            "SELECT id, name, repo_path, created_at, updated_at
              FROM projects WHERE id = ?1",
             params![id_text],
             RawProject::from_row,
@@ -112,10 +110,10 @@ impl Store {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute(
-            "INSERT INTO projects (id, name, repo_path, host, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+            "INSERT INTO projects (id, name, repo_path, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?4)
              ON CONFLICT (id) DO NOTHING",
-            params![id_text, fields.name, fields.repo_path, fields.host, now],
+            params![id_text, fields.name, fields.repo_path, now],
         )?;
         let created = tx.changes() == 1;
 
@@ -151,7 +149,7 @@ impl Store {
     /// are corrupt.
     pub fn list_projects(&self) -> Result<Vec<Project>, StoreError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, repo_path, host, created_at, updated_at
+            "SELECT id, name, repo_path, created_at, updated_at
              FROM projects
              ORDER BY created_at ASC, id ASC",
         )?;
@@ -177,9 +175,9 @@ impl Store {
 
         let changed = self.conn.execute(
             "UPDATE projects
-             SET name = ?2, repo_path = ?3, host = ?4, updated_at = ?5
+             SET name = ?2, repo_path = ?3, updated_at = ?4
              WHERE id = ?1",
-            params![id_text, fields.name, fields.repo_path, fields.host, now],
+            params![id_text, fields.name, fields.repo_path, now],
         )?;
         if changed == 0 {
             return Err(StoreError::NotFound { id });

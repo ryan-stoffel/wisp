@@ -43,5 +43,8 @@
 	"crashReporter": null,
 	"tasConfig": null,
 	"updateUrl": null,
-	"downloadUrl": null
+	"downloadUrl": null,
+	"builtInExtensions": [],
+	"trustedExtensionAuthAccess": null,
+	"voiceWsUrl": null
 }

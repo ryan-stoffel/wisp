@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ryan Stoffel <stoffel.thomas.ryan@gmail.com>
+Date: Thu, 24 Sep 2026 07:42:08 -0700
+Subject: [PATCH] strip: hide the Accounts entry by default
+
+The Accounts entry at the bottom of the activity bar signs in to GitHub
+and Microsoft accounts for Copilot and Settings Sync. wisp ships neither
+sign-in provider, and its design (docs/design/coordinator-chat.md) keeps
+only Explorer, Search, Source Control, and Extensions in the activity
+bar, with Manage at the bottom.
+
+Upstream stores the entry's visibility per profile and shows it unless a
+user hid it. Change the default to hidden. The activity bar's context
+menu still has the Accounts toggle, and a stored choice wins either way.
+No setting controls this, so it takes a patch.
+
+diff --git a/src/vs/workbench/browser/parts/globalCompositeBar.ts b/src/vs/workbench/browser/parts/globalCompositeBar.ts
+index df905d0daa7d01d4e64efbae2f1a55bfbd52f25c..27d3f91624fa9bcc8becdb5b19d78ee95d97646f 100644
+--- a/src/vs/workbench/browser/parts/globalCompositeBar.ts
++++ b/src/vs/workbench/browser/parts/globalCompositeBar.ts
+@@ -851,7 +851,7 @@ function simpleActivityContextMenuActions(storageService: IStorageService, isAcc
+ }
+ 
+ export function isAccountsActionVisible(storageService: IStorageService): boolean {
+-	return storageService.getBoolean(AccountsActivityActionViewItem.ACCOUNTS_VISIBILITY_PREFERENCE_KEY, StorageScope.PROFILE, true);
++	return storageService.getBoolean(AccountsActivityActionViewItem.ACCOUNTS_VISIBILITY_PREFERENCE_KEY, StorageScope.PROFILE, false);
+ }
+ 
+ function setAccountsActionVisible(storageService: IStorageService, visible: boolean) {

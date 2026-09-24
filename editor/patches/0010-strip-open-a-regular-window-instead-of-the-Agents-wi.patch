@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ryan Stoffel <stoffel.thomas.ryan@gmail.com>
+Date: Thu, 24 Sep 2026 07:42:24 -0700
+Subject: [PATCH] strip: open a regular window instead of the Agents window
+
+The Agents window is upstream's separate agent workbench. It opens when a
+window loads the agent sessions workspace, and every way to open it goes
+through ensureAgentsWindow: the --agents flag, agent session links, a
+second instance started with --agents, and the in-app command. wisp's
+coordinator replaces it.
+
+Upstream's AI switch hides the in-app buttons, but not the others. With
+chat.disableAIFeatures on, `wisp --agents` still opened the Agents
+window, signed out of Copilot, listing the agent sessions and skills it
+found in the user's home folder.
+
+Leave the agent sessions workspace out of the window this opens, so the
+request gets a regular window, with any folders from the command line.
+Upstream's code around it stays as it is.
+
+diff --git a/src/vs/platform/windows/electron-main/windowsMainService.ts b/src/vs/platform/windows/electron-main/windowsMainService.ts
+index f9321a2601f859a0aa6bd4b1180808936d24f1c5..e67ca84651f1405e5e61033482674fa8baac9ff2 100644
+--- a/src/vs/platform/windows/electron-main/windowsMainService.ts
++++ b/src/vs/platform/windows/electron-main/windowsMainService.ts
+@@ -321,7 +321,6 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
+ 		}
+ 
+ 		return {
+-			urisToOpen: [{ workspaceUri: agentSessionsWorkspaceUri }],
+ 			userEnv: openConfig.userEnv,
+ 			cli: openConfig.cli,
+ 			noRecentEntry: true,
