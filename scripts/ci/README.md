@@ -14,7 +14,7 @@ Each script finds the repo root on its own, so it runs from any directory.
 
 ## Requirements
 
-- Rust: rustup. `rust-toolchain.toml` pins the toolchain and its components, and rustup installs them on first use.
+- Rust: rustup. `rust-toolchain.toml` pins the toolchain and its components. In CI, run `rustup toolchain install` with no arguments as its own step before `check-rust`. It installs exactly what the file pins, and it does not rely on rustup's auto-install, which can be turned off. Locally, rustup installs the pin on first use.
 - Node: the exact version in the root `.nvmrc`. In Actions, use `actions/setup-node` with `node-version-file: .nvmrc`. `check-editor` and `build-app` stop with an error when `node` has a different major version, so local runs use the same Node as CI.
 - macOS, for `build-app` and `app-launch`.
 
@@ -66,4 +66,4 @@ The fixture has no packaging, so there is no `.app` for `release.yml` yet. #5 ad
 ## Notes for workflows
 
 - `check-editor` never downloads the Electron binary. Electron 44 fetches it on first use rather than at install, and `build-app` fetches it explicitly.
-- Worth caching: `~/.cargo/registry`, `~/.cargo/git`, and `target/`; `~/.npm`, keyed on `ci/fixtures/electron-smoke/package-lock.json`; and `~/Library/Caches/electron` for the Electron download.
+- Worth caching: `~/.rustup/toolchains`, keyed on `rust-toolchain.toml`, because the runner's preinstalled stable never matches the pin; `~/.cargo/registry`, `~/.cargo/git`, and `target/`; `~/.npm`, keyed on `ci/fixtures/electron-smoke/package-lock.json`; and `~/Library/Caches/electron` for the Electron download.
