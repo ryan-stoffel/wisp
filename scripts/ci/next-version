@@ -1,0 +1,14 @@
+#!/usr/bin/env node
+'use strict';
+
+const path = require('node:path');
+const { computeVersion } = require('./release/version.js');
+
+try {
+  const { version, reason } = computeVersion(path.resolve(__dirname, '..', '..'));
+  process.stderr.write(`next-version: ${reason}: ${version}\n`);
+  process.stdout.write(`${version}\n`);
+} catch (error) {
+  process.stderr.write(`next-version: ${error.message}\n`);
+  process.exit(1);
+}

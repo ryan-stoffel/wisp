@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+cd "$(dirname "$0")/../.."
+set -x
+
+node --version
+node --test "scripts/ci/release/*.test.js"
