@@ -25,18 +25,23 @@ The output is one line with absolute paths:
 {"executablePath":"<repo>/ci/fixtures/electron-smoke/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron","args":["<repo>/ci/fixtures/electron-smoke/out/main.js"]}
 ```
 
-Pass it to Playwright unchanged:
+Resolve the script from the repo root, so the caller's working directory does not matter. Merge `env` into your own environment, because `_electron.launch` uses `env` as the whole environment instead of adding to it:
 
 ```js
-const options = JSON.parse(execFileSync('scripts/ci/app-launch', { encoding: 'utf8' }));
-const electronApp = await _electron.launch(options);
+import { execFileSync } from 'node:child_process';
+import { join } from 'node:path';
+import { _electron } from '@playwright/test';
+
+const repoRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
+const options = JSON.parse(execFileSync(join(repoRoot, 'scripts/ci/app-launch'), { encoding: 'utf8' }));
+const electronApp = await _electron.launch({ ...options, env: { ...process.env, ...options.env } });
 const window = await electronApp.firstWindow();
 ```
 
 - The fixture opens one window titled `wisp`.
 - If the app is not built, `app-launch` explains why on stderr, prints nothing to stdout, and exits 1. Run `build-app` first.
 - `WISP_APP_BUNDLE=/path/to/wisp.app` launches a built bundle instead: the bundle's `CFBundleExecutable`, with no arguments.
-- Callers pass the output straight to `_electron.launch`, so every key must be one of its options.
+- Every key in the output is an `_electron.launch` option. The fixture prints no `env`. If a later app needs one, it lists only additions, and the merge above keeps `PATH`, `HOME`, and the rest.
 - Playwright adds its startup hook only when it locates Electron itself. With `executablePath`, the app starts without waiting for Playwright, so wait for `firstWindow()` before inspecting windows with `electronApp.evaluate()`.
 
 ## Switching to the real app (#8)
@@ -44,7 +49,7 @@ const window = await electronApp.firstWindow();
 When the fork builds, #8 does one of these:
 
 - Packaged build: set `WISP_APP_BUNDLE` to the built `wisp.app` in the workflows, or make that path the default in `app-launch`.
-- Development build, which Code - OSS runs as `.build/electron/<name>.app` with the source tree as its argument: replace `fromFixture()` in `app-launch` with a function that returns that executable, `args: ['<editor dir>']`, and any `env` the build needs (upstream `scripts/code.sh` sets `VSCODE_DEV=1`, among others).
+- Development build, which Code - OSS runs as `.build/electron/<name>.app` with the source tree as its argument: replace `fromFixture()` in `app-launch` with a function that returns that executable, `args: ['<editor dir>']`, and an `env` with only the additions the build needs (upstream `scripts/code.sh` sets `VSCODE_DEV=1`, among others). Callers already merge `env`, so the spec does not change.
 
 Then point `check-editor` and `build-app` at the fork's commands and delete the fixture, as 0001 describes.
 
