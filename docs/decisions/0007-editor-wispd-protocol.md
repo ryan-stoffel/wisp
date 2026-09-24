@@ -74,9 +74,11 @@ The editor and `wispd` need one protocol, whether `wispd` runs on this Mac or on
   - -32800 means cancelled.
   - Every wisp error is -32000 with `data: {kind, detail?}`. The editor matches on `kind`, a generated enum such as `projectNotFound`, and never on `message`.
 - **Cancelling a request:** `$/cancelRequest {id}` cancels it, and the request still gets exactly one answer.
-- **Disconnects:** a disconnect fails pending requests but never stops an agent.
-  - Long work returns an id (`runId`) and stops only through its own method (`agent/stop`), which uses 0004's cancel for each CLI.
-  - Create methods take a client-generated id, so retrying after a lost connection can't create a duplicate.
+- **Disconnects:** a disconnect fails pending requests but never stops an agent. Long work takes a client-generated id (`runId`) and stops only through its own method (`agent/stop`), which uses 0004's cancel for each CLI.
+- **Idempotent creates and starts:** every method that creates or starts something takes the new thing's id from the caller: `project/create {id}`, `agent/start {runId}`, `coordinator/send {turnId}`, `runner/start {runId}`, and `trigger/create {id}`.
+  - The caller generates the id (UUIDv7) once and sends the same id on every retry.
+  - If a thing with that id exists, the receiver returns it instead of creating or starting another. If the params differ from the original call, it fails with `idConflict`.
+  - A retry after a lost connection therefore never starts a second agent or spends quota twice.
 
 ### Types
 
@@ -92,7 +94,7 @@ The editor and `wispd` need one protocol, whether `wispd` runs on this Mac or on
 | `host/health` | editor to wispd | Uptime, store state, running agents; heartbeat |
 | `host/version` | editor to wispd | wispd and protocol versions, macOS, arch |
 | `project/list` | editor to wispd | `{projects, seq}` |
-| `project/create` | editor to wispd | `{id, name, repoPath}`, safe to retry |
+| `project/create` | editor to wispd | `{id, name, repoPath}`; idempotent on `id` |
 | `events/subscribe`, `events/unsubscribe` | editor to wispd | Replay after `seq`, then live |
 | `events/event` | wispd to editor | One event, such as `project.created` |
 | `$/cancelRequest` | either | Cancels a request |
@@ -101,10 +103,10 @@ Later milestones add methods and events behind a capability, with no version bum
 
 | Capability | Methods | Events |
 | --- | --- | --- |
-| M3 `agents` | `agent/start` (returns `runId`), `agent/stop`, `agent/list`, `agent/diff` (paged), `context/read`, `context/write` | `agent.started`, `agent.output`, `agent.finished`, `agent.diffReady`, `context.changed` |
-| M4 `coordinator` | `coordinator/send`, `coordinator/stop`, `plan/approve`; the coordinator's MCP tools (0004) connect through `wispd mcp`, a second stdio bridge | `coordinator.output`, `coordinator.turnFinished`, `plan.proposed`; parallel agents are just more `runId`s |
-| M5 `localRunner` | `runner/start`, `runner/stop`, and the shared context mirror sync (0005), which the host sends over the connection the MacBook opened | `runner.output`, `runner.finished` |
-| M6 `triggers` | `trigger/list`, `trigger/create` | `trigger.fired` |
+| M3 `agents` | `agent/start {runId, ...}`, `agent/stop`, `agent/list`, `agent/diff` (paged), `context/read`, `context/write` | `agent.started`, `agent.output`, `agent.finished`, `agent.diffReady`, `context.changed` |
+| M4 `coordinator` | `coordinator/send {turnId, ...}`, `coordinator/stop`, `plan/approve`; the coordinator's MCP tools (0004) connect through `wispd mcp`, a second stdio bridge | `coordinator.output`, `coordinator.turnFinished`, `plan.proposed`; parallel agents are just more `runId`s |
+| M5 `localRunner` | `runner/start {runId, ...}`, `runner/stop`, and the shared context mirror sync (0005), which the host sends over the connection the MacBook opened | `runner.output`, `runner.finished` |
+| M6 `triggers` | `trigger/list`, `trigger/create {id, ...}` | `trigger.fired` |
 
 ## Alternatives
 
