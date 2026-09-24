@@ -71,9 +71,12 @@ jobs:
         with:
           persist-credentials: false
 
+      # git ls-files -s lists each tracked file's mode, blob, and path, which hashFiles leaves out.
       - name: Hash the inputs of the Code - OSS check
         id: inputs
-        run: echo "key=fork-check-${{ hashFiles('editor/upstream.json', 'editor/patches/**', '.nvmrc', '.gitattributes', 'scripts/editor/**', 'scripts/ci/check-fork', '.github/workflows/ci.yml') }}" >> "$GITHUB_OUTPUT"
+        run: |
+          inputs=$(git ls-files -s -- editor .nvmrc .gitattributes scripts/editor scripts/ci/check-fork .github/workflows/ci.yml)
+          echo "key=fork-check-$(printf '%s\n' "$inputs" | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       # Each pass saves an empty marker under its inputs' hash, so a PR can reuse a pass from develop or from an earlier push.
       - name: Look for an earlier pass with the same inputs
