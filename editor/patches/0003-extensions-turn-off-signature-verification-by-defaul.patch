@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ryan Stoffel <stoffel.thomas.ryan@gmail.com>
+Date: Thu, 24 Sep 2026 07:17:26 -0700
+Subject: [PATCH] extensions: turn off signature verification by default
+
+Code - OSS does not ship @vscode/vsce-sign, Microsoft's closed-source
+module that verifies extension signatures. In a built app, every signed
+extension from Open VSX then fails to install with "Signature
+verification was not executed", which makes wisp's gallery unusable.
+
+Default extensions.verifySignature to false, both where the setting is
+registered and in the fallback that extension management uses in the
+shared process and the CLI, which never load that registration. A user
+can still turn it on. VSCodium turns the check off the same way
+(00-extension-disable-signature-verification.patch).
+
+diff --git a/src/vs/platform/extensionManagement/node/extensionManagementService.ts b/src/vs/platform/extensionManagement/node/extensionManagementService.ts
+index 6eefd7163dbb1f5d9f5ec4a62e0abd5081514d73..8df5a46adf518e8b23851c4402fb5fdbaccadb74 100644
+--- a/src/vs/platform/extensionManagement/node/extensionManagementService.ts
++++ b/src/vs/platform/extensionManagement/node/extensionManagementService.ts
+@@ -340,7 +340,7 @@ export class ExtensionManagementService extends AbstractExtensionManagementServi
+ 	private async downloadExtension(extension: IGalleryExtension, operation: InstallOperation, verifySignature: boolean, clientTargetPlatform?: TargetPlatform): Promise<{ readonly location: URI; readonly verificationStatus: ExtensionSignatureVerificationCode | undefined }> {
+ 		if (verifySignature) {
+ 			const value = this.configurationService.getValue(VerifyExtensionSignatureConfigKey);
+-			verifySignature = isBoolean(value) ? value : true;
++			verifySignature = isBoolean(value) ? value : false;
+ 		}
+ 		const { location, verificationStatus } = await this.extensionsDownloader.download(extension, operation, verifySignature, clientTargetPlatform);
+ 		const shouldRequireSignature = shouldRequireRepositorySignatureFor(extension.private, await this.extensionGalleryManifestService.getExtensionGalleryManifest());
+diff --git a/src/vs/workbench/contrib/extensions/browser/extensions.contribution.ts b/src/vs/workbench/contrib/extensions/browser/extensions.contribution.ts
+index b06c588bd0ecd71d710ad660be0ff87041195a97..0f330da83c6c12ee49f6287cbb6cc384aa230ed0 100644
+--- a/src/vs/workbench/contrib/extensions/browser/extensions.contribution.ts
++++ b/src/vs/workbench/contrib/extensions/browser/extensions.contribution.ts
+@@ -331,7 +331,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration)
+ 			[VerifyExtensionSignatureConfigKey]: {
+ 				type: 'boolean',
+ 				description: localize('extensions.verifySignature', "When enabled, extensions are verified to be signed before getting installed."),
+-				default: true,
++				default: false,
+ 				scope: ConfigurationScope.APPLICATION,
+ 				included: isNative
+ 			},
