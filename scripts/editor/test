@@ -143,6 +143,21 @@ case $output in
 esac
 git -C "$tree" reset -q --hard HEAD^
 
+# Nor may two commits that change an overlaid file and then change it back,
+# although the series as a whole leaves the file as the overlay made it.
+printf 'hacked icon\n' >"$tree/resources/icon.icns"
+git -C "$tree" commit -q -a -m 'branding: edit the icon in a patch'
+git -C "$tree" checkout -q HEAD^ -- resources/icon.icns
+git -C "$tree" commit -q -m 'branding: put the icon back'
+if output=$("$repo/scripts/editor/export-patches" 2>&1); then
+  fail "export-patches exported a change to an overlaid file that a later commit undoes"
+fi
+case $output in
+  *'overlay owns (resources/icon.icns)'*) ;;
+  *) fail "export-patches failed without naming resources/icon.icns: $output" ;;
+esac
+git -C "$tree" reset -q --hard HEAD~2
+
 # An upgrade across upstream changes to product.json and to an overlaid file
 # does not conflict: the overlay is made again, not rebased.
 printf 'added in 1.1.0\n' >"$upstream/c.txt"

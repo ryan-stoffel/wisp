@@ -52,7 +52,8 @@ tree_git merge-base --is-ancestor "$base" HEAD 2>/dev/null ||
 owned=$(overlay_files) || exit 1
 owned="product.json
 $owned"
-touched=$(tree_git diff --name-only --no-renames "$base" HEAD --)
+# Each commit's own paths, not the net diff: a later commit that undoes a change leaves both in the series.
+touched=$(tree_git log --format= --name-only --no-renames "$base..HEAD" --)
 clash=$(printf '%s\n' "$owned" | while IFS= read -r path; do
   [ -n "$path" ] || continue
   if printf '%s\n' "$touched" | grep -Fxq -- "$path"; then printf '%s\n' "$path"; fi
