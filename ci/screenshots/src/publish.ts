@@ -1,7 +1,7 @@
 import { appendFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { readCapture, readLogTail, type Capture } from './artifact.ts';
+import { missingArtifactError, readCapture, readLogTail, type Capture } from './artifact.ts';
 import { commitFiles } from './branch.ts';
 import { MARKER, renderComment, type FailedStep, type Images } from './comment.ts';
 
@@ -49,6 +49,7 @@ try {
   artifactError = error instanceof Error ? error.message : String(error);
   console.error(`rejected the capture results in ${dir}: ${artifactError}`);
 }
+artifactError ??= missingArtifactError(capture, process.env.CAPTURE_OUTCOME);
 const failedSteps = await readFailedSteps(values.logs);
 
 let images: Images | undefined;
