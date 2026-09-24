@@ -6,7 +6,7 @@ target/
 **/*.rs.bk
 
 # Node / editor fork
-/editor/vscode/
+/editor/vscode
 node_modules/
 out/
 out-build/
