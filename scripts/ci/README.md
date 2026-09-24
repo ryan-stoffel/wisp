@@ -10,8 +10,8 @@ Each script finds the repo root on its own, so it runs from any directory.
 | `check-editor` | `npm ci`, then lint, type-check (`tsc --noEmit`), build, and test the editor, currently `ci/fixtures/electron-smoke/` | `ci.yml` (#3) |
 | `build-app` | Installs, builds, and downloads the Electron binary: what `app-launch` needs, without lint or tests | `screenshots.yml` (#4) |
 | `app-launch` | Prints Playwright `_electron.launch` options for the built app as one line of JSON | `screenshots.yml` (#4) |
-| `screenshots` | Captures every scenario in `ci/screenshots/` from the built app into a directory (see [Screenshots](#screenshots)) | `screenshots.yml` (#4) |
-| `publish-screenshots` | Commits the captures to the `ci-screenshots` branch and creates or updates the PR comment. It needs Actions' environment; locally, `--dry-run` prints the comment | `screenshots.yml` (#4) |
+| `screenshots` | Captures every scenario in `ci/screenshots/` from the built app into a directory (see [Screenshots](#screenshots)) | `screenshots.yml` (#4), `capture` job |
+| `publish-screenshots` | Checks a capture directory, commits its PNGs to the `ci-screenshots` branch, and creates or updates the PR comment. It needs Actions' environment; locally, `--dry-run` prints the comment | `screenshots.yml` (#4), `publish` job |
 | `check-screenshots` | `npm ci`, then lint, type-check, and test `ci/screenshots/` | Not yet: #39 adds it to `ci.yml` |
 | `package-app` | Not yet written: #5 adds it (see [package-app](#package-app-added-by-5)) | `release.yml` (#5) |
 
@@ -50,23 +50,27 @@ const window = await electronApp.firstWindow();
 
 ## Screenshots
 
-On every PR from a branch in this repo, `screenshots.yml` runs `build-app`, then `screenshots <dir>`, then `publish-screenshots <dir>`. PRs from forks get a read-only token, so the job logs a notice and skips the rest.
+`screenshots.yml` runs on every PR from a branch in this repo. It has two jobs, so the PR's code never runs where the write token is:
 
-- `screenshots` installs `ci/screenshots/`, whose only runtime dependency is `playwright-core`, and runs each scenario in `ci/screenshots/src/scenarios.ts` against a fresh launch of the app from `app-launch`'s output. It writes the PNGs and a `manifest.json` to `<dir>` (default `ci/screenshots/out/`) and exits 1 if any scenario failed.
-- `publish-screenshots` commits the PNGs to the orphan branch `ci-screenshots` under `pr-<number>/<short-sha>/`, then creates or updates the one PR comment that contains `<!-- wisp-screenshots -->`. The images are `raw.githubusercontent.com` URLs pinned to the `ci-screenshots` commit, so no cache shows an old image. The step also runs after a failed build or capture, so the comment always says what happened. Nothing is deleted from `ci-screenshots` yet (#40).
+- `capture` (macOS, `contents: read`) runs `build-app`, then `screenshots <dir>`, and uploads the PNGs, `manifest.json`, and both steps' logs as the `screenshots` artifact. `screenshots` installs `ci/screenshots/`, whose only runtime dependency is `playwright-core`, and runs each scenario in `ci/screenshots/src/scenarios.ts` against a fresh launch of the app from `app-launch`'s output. It exits 1 if any scenario failed. For PRs from forks, whose token is read-only, the job logs a notice and skips the rest, and `publish` does not run.
+- `publish` (Linux, `contents: write` and `pull-requests: write`) runs even when `capture` failed. It checks out only `scripts/ci/` and `ci/screenshots/src/`, installs nothing, downloads the artifact, and runs `publish-screenshots`. That commits the PNGs to the orphan branch `ci-screenshots` under `pr-<number>/<short-sha>/`, then creates or updates the one comment by `github-actions[bot]` that contains `<!-- wisp-screenshots -->`. The images are `raw.githubusercontent.com` URLs pinned to the `ci-screenshots` commit, so no cache shows an old image. Nothing is deleted from `ci-screenshots` yet (#40).
+
+Rules that keep the token away from the PR's build:
+
+- `publish.ts` and the files it imports (`artifact.ts`, `branch.ts`, `comment.ts`, `manifest.ts`) use only Node built-ins. A test enforces this, and the `publish` job has no `node_modules`, so a package import fails instead of running.
+- `publish` treats the artifact as untrusted. `manifest.json` must parse into the known shape. Each file must be `<name>.png` or `<name>.failed.png` for a listed scenario, a regular file, at most 10 MB, and start with the PNG signature. Titles and reasons must be plain text. Only the last 64 KB of `build.log` and `capture.log` are read, and only when the job outputs say that step failed. If anything fails these checks, nothing is pushed, the comment says the results were rejected, and the `publish` job fails.
+- Nothing secret goes into the `capture` job. Its logs are written with `tee`, so Actions' masking does not apply, and their tails are posted in the comment.
 
 ### Adding a view
 
 Add an entry to `scenarios` in `ci/screenshots/src/scenarios.ts`. The workflow does not change.
 
 - `name`: the file name, in lowercase words joined by hyphens.
-- `title`: the heading and alt text in the comment.
+- `title`: the heading and alt text in the comment. Plain text: letters, digits, spaces, and `, . : ; ' " ( ) / + & = _ -`.
 - `args` (optional): extra app arguments, such as a folder and a file to open.
-- `run({ app, window })`: drives the app and returns `screenshot(window)`. If this build does not have the view yet, it returns `notAvailable(reason)` instead: the comment lists the view as not available, and the job still passes. If the view exists but breaks, `run` throws. The job then fails, and the comment shows the error and a screenshot of the window at that moment.
+- `run({ app, window })`: drives the app and returns `screenshot(window)`. If this build does not have the view yet, it returns `notAvailable(reason)` instead: the comment lists the view as not available, and the job still passes. The reason follows the same plain-text rule as `title`, so it cannot hold `#123` or `@name`, which would notify that issue or person from every PR. If the view exists but breaks, `run` throws. The `capture` job then fails, and the comment shows the error and a screenshot of the window at that moment.
 
-Keep `#123` and `@name` out of reasons. The comment is posted on every PR, and each mention would add a cross-reference to that issue.
-
-Before `run` is called, the first window has loaded, and for a Code - OSS window `.monaco-workbench` exists. After `app-launch`'s `args`, the harness passes `--user-data-dir=<new temp dir>`, `--skip-welcome`, `--skip-release-notes`, `--disable-workspace-trust`, and then the scenario's `args`. The fixture ignores all of them.
+Before `run` is called, the first window has loaded, its content area is 1024x640, and for a Code - OSS window `.monaco-workbench` exists. After `app-launch`'s `args`, the harness passes `--user-data-dir=<new temp dir>`, `--skip-welcome`, `--skip-release-notes`, `--disable-workspace-trust`, and then the scenario's `args`. The fixture ignores all of them. Launching gets 60 seconds for the process and 60 for the first window, then waiting for the window plus `run` gets 180 seconds. The `capture` step has 20 minutes, and when a step times out, `publish` still reports it.
 
 The shipped scenarios look for these hooks:
 
@@ -82,7 +86,7 @@ scripts/ci/publish-screenshots --dry-run
 scripts/ci/check-screenshots
 ```
 
-`screenshots` writes to `ci/screenshots/out/`, and `publish-screenshots --dry-run` prints the comment it would post for that directory.
+`screenshots` writes to `ci/screenshots/out/`, and `publish-screenshots --dry-run` checks that directory the way the `publish` job does and prints the comment it would post. Add `--logs <dir>` with `BUILD_OUTCOME=failure` or `CAPTURE_OUTCOME=failure` to include a failed step's `build.log` or `capture.log`.
 
 ## Switching to the real app (#8)
 
