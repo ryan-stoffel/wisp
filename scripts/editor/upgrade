@@ -7,9 +7,11 @@ usage() {
   cat <<'EOF'
 Usage: scripts/editor/upgrade <tag>
 
-Moves wisp's patches to another Code - OSS release: fetches <tag>, rebases the
-commits in editor/vscode onto it, then rewrites editor/upstream.json and
-editor/patches. Run scripts/editor/prepare first.
+Moves wisp's patches to another Code - OSS release: fetches <tag>, commits
+wisp's overlay on it, rebases the patch commits in editor/vscode onto that,
+then rewrites editor/upstream.json and editor/patches. The overlay is made
+again for <tag>, never rebased, so it cannot conflict. Run
+scripts/editor/prepare first.
 
 If the rebase stops on a conflict, resolve it in editor/vscode, run
 git rebase --continue there until the rebase finishes, then rerun this
@@ -41,16 +43,18 @@ fi
 [ -z "$(uncommitted_changes)" ] || fail "$tree has uncommitted changes or untracked files; commit and export them, or discard them, first"
 
 new_commit=$(fetch_tag "$new_tag")
+new_base=$(make_base "$new_commit")
 
-if tree_git merge-base --is-ancestor "$new_commit" HEAD 2>/dev/null; then
+if tree_git merge-base --is-ancestor "$new_base" HEAD 2>/dev/null; then
   printf 'editor/vscode is already based on %s\n' "$new_tag"
 else
-  tree_git merge-base --is-ancestor "$commit" HEAD 2>/dev/null ||
+  old_base=$(current_base)
+  tree_git merge-base --is-ancestor "$old_base" HEAD 2>/dev/null ||
     fail "HEAD in $tree is not based on the pinned $tag; run scripts/editor/prepare first"
   [ "$(tree_git rev-parse HEAD)" = "$(tree_git rev-parse -q --verify refs/wisp/applied || true)" ] ||
     fail "$tree has commits that are not in editor/patches; run scripts/editor/export-patches first"
-  printf 'Rebasing %s commit(s) from %s onto %s\n' "$(tree_git rev-list --count "$commit..HEAD")" "$tag" "$new_tag"
-  if ! git -C "$tree" rebase --onto "$new_commit" "$commit"; then
+  printf 'Rebasing %s commit(s) from %s onto %s\n' "$(tree_git rev-list --count "$old_base..HEAD")" "$tag" "$new_tag"
+  if ! git -C "$tree" rebase --onto "$new_base" "$old_base"; then
     cat >&2 <<EOF
 
 upgrade: a patch conflicts with $new_tag. In $tree:
@@ -63,6 +67,7 @@ EOF
   fi
 fi
 
+tree_git update-ref refs/wisp/base "$new_base"
 write_pin "$new_tag" "$new_commit"
 cp "$tree/.nvmrc" "$root/.nvmrc"
 "$(dirname "$0")/export-patches"

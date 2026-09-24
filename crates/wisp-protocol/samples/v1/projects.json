@@ -1,0 +1,107 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "project/list",
+    "params": {}
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "result": { "projects": [], "seq": 0 }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "project/create",
+    "params": {
+      "id": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "name": "wisp",
+      "repoPath": "/Users/me/src/wisp"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "result": {
+      "project": {
+        "id": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+        "name": "wisp",
+        "repoPath": "/Users/me/src/wisp",
+        "createdAt": "2026-09-24T12:00:00Z",
+        "updatedAt": "2026-09-24T12:00:00Z"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "project/create",
+    "params": {
+      "id": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "name": "wisp",
+      "repoPath": "/Users/me/src/wisp"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "result": {
+      "project": {
+        "id": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+        "name": "wisp",
+        "repoPath": "/Users/me/src/wisp",
+        "createdAt": "2026-09-24T12:00:00Z",
+        "updatedAt": "2026-09-24T12:00:00Z"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "method": "project/create",
+    "params": {
+      "id": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "name": "wisp-renamed",
+      "repoPath": "/Users/me/src/wisp"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "error": {
+      "code": -32000,
+      "message": "project 01a0d349-6e00-7c9e-80e2-0426486a8cae exists with a different name or repository",
+      "data": { "kind": "idConflict" }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": "list-2",
+    "method": "project/list",
+    "params": {}
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": "list-2",
+    "result": {
+      "projects": [
+        {
+          "id": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+          "name": "wisp",
+          "repoPath": "/Users/me/src/wisp",
+          "createdAt": "2026-09-24T12:00:00Z",
+          "updatedAt": "2026-09-24T12:00:00Z"
+        },
+        {
+          "id": "01a0d34e-01e0-7dc0-b326-598cbff22558",
+          "name": "roster",
+          "repoPath": "/Users/me/src/roster",
+          "createdAt": "2026-09-24T12:05:00Z",
+          "updatedAt": "2026-09-24T12:05:00.125Z"
+        }
+      ],
+      "seq": 2
+    }
+  }
+]

@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#312e81"/>
+      <stop offset="1" stop-color="#1e1b4b"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#a78bfa" stop-opacity="0.7"/>
+      <stop offset="0.5" stop-color="#8b5cf6" stop-opacity="0.25"/>
+      <stop offset="1" stop-color="#8b5cf6" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="flame" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c4b5fd"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <linearGradient id="core" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ede9fe"/>
+      <stop offset="1" stop-color="#ffffff"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#background)"/>
+  <circle cx="512" cy="560" r="330" fill="url(#glow)"/>
+  <path d="M 512 240 C 572 350 690 440 690 590 C 690 700 610 780 512 780 C 414 780 334 700 334 590 C 334 440 452 350 512 240 Z" fill="url(#flame)"/>
+  <path d="M 512 450 C 548 520 610 570 610 650 C 610 710 566 750 512 750 C 458 750 414 710 414 650 C 414 570 476 520 512 450 Z" fill="url(#core)"/>
+</svg>

@@ -11,6 +11,7 @@ A decision that affects more than one issue gets a record here. Records supersed
 | [0005](0005-shared-context-folder.md) | Shared context is a daemon-owned folder outside the repo |
 | [0006](0006-release-versioning-and-packaging.md) | Versions come from release tags; releases are arm64-only and ad-hoc signed until #7; bundle id `io.github.ryan-stoffel.wisp` |
 | [0007](0007-editor-wispd-protocol.md) | The editor speaks JSON-RPC 2.0 as newline-delimited JSON through `wispd attach`, locally or over the user's `ssh`; types come from the `wisp-protocol` crate |
+| [0008](0008-editor-overlay.md) | `editor/product.json` and `editor/overlay/` reach the editor tree as one commit under the patches, never as a patch |
 
 Numbers are assigned in order. Take the next free number when you start the record, add a row to this table in the same PR, and link the record from its issue.
 
