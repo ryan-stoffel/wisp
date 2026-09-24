@@ -34,7 +34,7 @@ function fromFixture() {
 function fromBundle(bundle) {
   const infoPlist = path.join(bundle, 'Contents', 'Info.plist');
   if (!existsSync(infoPlist)) {
-    fail(`${bundle} is not an app bundle: ${infoPlist} does not exist`);
+    fail(`WISP_APP_BUNDLE=${bundle} is not an app bundle: ${infoPlist} does not exist`);
   }
   let executable;
   try {
@@ -62,7 +62,7 @@ function fromEditor() {
   }
   const electronDir = path.join(editorDir, '.build', 'electron');
   const appName = existsSync(electronDir) && readdirSync(electronDir).find((name) => name.endsWith('.app'));
-  if (!appName) {
+  if (!appName || !existsSync(path.join(electronDir, appName, 'Contents', 'Info.plist'))) {
     fail(`${electronDir} contains no Electron app; ${editorBuildHint}`);
   }
   const { executablePath } = fromBundle(path.join(electronDir, appName));
