@@ -45,9 +45,10 @@ jobs:
       - name: Lint, type-check, build, and test
         run: scripts/ci/check-rust
 
-  editor:
-    runs-on: macos-26
-    timeout-minutes: 120
+  # ci/screenshots holds screenshots.yml's harness and publish script, including the checks that keep publish's token safe.
+  screenshots:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -57,10 +58,10 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-          cache-dependency-path: ci/fixtures/electron-smoke/package-lock.json
+          cache-dependency-path: ci/screenshots/package-lock.json
 
-      - name: Lint, type-check, build, and test
-        run: scripts/ci/check-editor
+      - name: Lint, type-check, and test
+        run: scripts/ci/check-screenshots
 
   # The Code - OSS type-check needs about 6.4 GB, which swaps on the 7 GB macOS runner, and does not depend on the platform.
   fork:
@@ -212,7 +213,7 @@ jobs:
   # Branch protection requires this job's name, ci, as the only check (#6). Renaming it blocks every merge.
   ci:
     if: always()
-    needs: [rust, editor, fork, app, actionlint]
+    needs: [rust, screenshots, fork, app, actionlint]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
