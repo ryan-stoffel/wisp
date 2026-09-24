@@ -11,16 +11,16 @@
 ## Decision
 
 - Scaffold the real Cargo workspace now. `daemon/` builds `wispd`, which handles only `--version` and `--help` and has unit and integration tests. It is the start of the daemon, not a fixture, and it stays.
-- Add a throwaway Electron app, `ci/fixtures/electron-smoke/`, that stands in for the editor: strict TypeScript, ESLint, unit tests, and one window titled `wisp`. It has no packaging.
-- Workflows reach both parts only through `scripts/ci/`: `check-rust`, `check-editor`, `build-app`, and `app-launch`, which prints Playwright `_electron.launch` options. Replacing the fixture with the fork changes these scripts, not the workflows.
+- Add a throwaway Electron app, `ci/fixtures/electron-smoke/`, that stands in for the editor: strict TypeScript, ESLint, unit tests, and one window titled `wisp`. It has no packaging yet.
+- Workflows reach both parts only through `scripts/ci/`: `check-rust`, `check-editor`, `build-app`, and `app-launch`, which prints Playwright `_electron.launch` options. #5 adds `scripts/ci/package-app`, which builds `wisp.app` with a stamped version; its contract is in `scripts/ci/README.md`. Replacing the fixture with the fork changes these scripts, not the workflows.
 
 ## Consequences
 
-- #3, #4, and #5 can be written and proven green before any product code exists.
+- #3 and #4 can be written and proven green before any product code exists. #5 cannot be proven green until it adds `scripts/ci/package-app`, because until then there is no `.app` to package.
 - A green screenshot job proves the pipeline, not the editor. Until the fork lands, the screenshots show the fixture.
 - The fixture's Electron, TypeScript, and ESLint versions need occasional updates until it is removed.
 - `scripts/ci/` is an interface. A PR that changes what a script does or prints also updates the workflows that call it.
 
 ## Removal
 
-Delete `ci/fixtures/electron-smoke/` once #8 makes the real app launchable through `scripts/ci/app-launch` and `screenshots.yml` (#4) captures it. The same change points `check-editor` and `build-app` at the fork. The workflows keep calling the same scripts; only cache keys that name the fixture's lockfile change.
+Delete `ci/fixtures/electron-smoke/` once #8 makes the real app launchable through `scripts/ci/app-launch` and `screenshots.yml` (#4) captures it. The same change points `check-editor`, `build-app`, and `package-app` at the fork. The workflows keep calling the same scripts; only cache keys that name the fixture's lockfile change.

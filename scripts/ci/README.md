@@ -10,6 +10,7 @@ Each script finds the repo root on its own, so it runs from any directory.
 | `check-editor` | `npm ci`, then lint, type-check (`tsc --noEmit`), build, and test the editor, currently `ci/fixtures/electron-smoke/` | `ci.yml` (#3) |
 | `build-app` | Installs, builds, and downloads the Electron binary: what `app-launch` needs, without lint or tests | `screenshots.yml` (#4) |
 | `app-launch` | Prints Playwright `_electron.launch` options for the built app as one line of JSON | `screenshots.yml` (#4) |
+| `package-app` | Not yet written: #5 adds it (see [package-app](#package-app-added-by-5)) | `release.yml` (#5) |
 
 ## Requirements
 
@@ -51,10 +52,18 @@ When the fork builds, #8 does one of these:
 - Packaged build: set `WISP_APP_BUNDLE` to the built `wisp.app` in the workflows, or make that path the default in `app-launch`.
 - Development build, which Code - OSS runs as `.build/electron/<name>.app` with the source tree as its argument: replace `fromFixture()` in `app-launch` with a function that returns that executable, `args: ['<editor dir>']`, and an `env` with only the additions the build needs (upstream `scripts/code.sh` sets `VSCODE_DEV=1`, among others). Callers already merge `env`, so the spec does not change.
 
-Then point `check-editor` and `build-app` at the fork's commands and delete the fixture, as 0001 describes.
+Then point `check-editor`, `build-app`, and `package-app` at the fork's commands and delete the fixture, as 0001 describes.
+
+## package-app (added by #5)
+
+The fixture has no packaging, so there is no `.app` for `release.yml` yet. #5 adds `scripts/ci/package-app` with this contract, and #9 later points it at the fork:
+
+- `scripts/ci/package-app <version>` builds `wisp.app` with `<version>` stamped in and prints the bundle's absolute path as the only line on stdout. That path goes straight into the zip step, and into `WISP_APP_BUNDLE` for a launch check.
+- The version is stamped in the CI checkout only and never committed, so publishing never pushes to `main`.
+- Stamping the fixture: run `npm version <version> --no-git-tag-version` in `ci/fixtures/electron-smoke/`. It updates `package.json` and `package-lock.json` together, so `npm ci` keeps working.
+- Stamping `wispd`: after setting `version` in `[workspace.package]` in `Cargo.toml`, run `cargo update --workspace --offline`. Otherwise `Cargo.lock` keeps the old version, and every `--locked` build, `check-rust` included, fails with "cannot update the lock file".
 
 ## Notes for workflows
 
 - `check-editor` never downloads the Electron binary. Electron 44 fetches it on first use rather than at install, and `build-app` fetches it explicitly.
 - Worth caching: `~/.cargo/registry`, `~/.cargo/git`, and `target/`; `~/.npm`, keyed on `ci/fixtures/electron-smoke/package-lock.json`; and `~/Library/Caches/electron` for the Electron download.
-- There is no packaging for the fixture. #5 can package `ci/fixtures/electron-smoke/` after `build-app`, or wait for #9.
