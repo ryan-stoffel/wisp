@@ -10,6 +10,8 @@
 //!   follow too.
 //! - [`logging`]: the log file and its level.
 //! - [`server`]: the server behind `wispd serve`.
+//! - [`service`]: installs, removes, and reports on the per-user `LaunchAgent` that keeps
+//!   `serve` running (#61).
 
 #![warn(missing_docs)]
 
@@ -18,6 +20,7 @@ pub mod logging;
 mod methods;
 pub mod paths;
 pub mod server;
+pub mod service;
 mod store;
 
 /// wispd's release version.

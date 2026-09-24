@@ -59,3 +59,30 @@ fn an_unknown_log_level_is_a_usage_error() {
         "{output:?}"
     );
 }
+
+// This only ever reads: `launchctl print` on a label nobody bootstrapped, a socket connect
+// that finds nobody listening, and a file existence check. It never calls `install`, so running
+// `cargo test` never bootstraps a real LaunchAgent.
+#[test]
+fn service_status_reports_a_fresh_label_as_absent() {
+    let temp = tempfile::Builder::new()
+        .prefix("wispd-cli-")
+        .tempdir_in("/tmp")
+        .expect("create a temp dir under /tmp");
+    let data_dir = temp.path().to_str().expect("a UTF-8 temp path");
+    let output = wispd(&[
+        "service",
+        "status",
+        "--data-dir",
+        data_dir,
+        "--label",
+        "io.github.ryan-stoffel.wisp.wispd.cli-test-status",
+    ]);
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("installed: false"), "{stdout}");
+    assert!(stdout.contains("loaded: false"), "{stdout}");
+    assert!(stdout.contains("running: false"), "{stdout}");
+    assert!(stdout.contains("answers initialize: false"), "{stdout}");
+}
