@@ -6,62 +6,69 @@
 
 ## Context
 
-M2 is done when one subscription login and one API key work, model calls route through them, and usage shows per account. Ryan picked Claude Max, ChatGPT Plus, and Cursor Pro+, with API keys as the fallback (#15). The plan warns that consumer logins in a public open-source app may break vendor terms. This record is desk research as of 2026-09-23, and nothing was run against a real account. Vendor rules changed often in 2026, so recheck the terms before each release.
+M2 is done when one subscription login and one API key work, model calls route through them, and usage shows per account. Ryan picked Claude Max, ChatGPT Plus, and Cursor Pro+, with API keys as the fallback (#15). The plan warns that consumer logins in a third-party app may break vendor terms. This is desk research as of 2026-09-23, with no runs against real accounts. Recheck the terms before each release.
 
 ## Decision
 
-- **wisp never handles consumer credentials.** It has no vendor sign-in of its own. It never reads, stores, or forwards OAuth or session tokens, including `claude setup-token` output, and it never calls a model endpoint with them.
-- **Each subscription runs through the vendor's official CLI.** The user installs the CLI and signs in through the vendor's own flow on every machine that runs tasks. `wispd` launches the unmodified CLI once per task and parses its JSON events.
-- **API keys use the same adapters.** Keys live in the macOS Keychain and reach the CLI at spawn as `ANTHROPIC_API_KEY`, `CODEX_API_KEY`, or `CURSOR_API_KEY`. wisp's own tool-free calls may use the Anthropic Messages API [17] or the OpenAI Responses API [31]. Cursor has no raw model API [48].
-- **Sign-in happens in the editor terminal**, on the machine that needs it, over SSH for a remote host. Status comes from each CLI's own command. Extra accounts with the same vendor get their own config directory (`CLAUDE_CONFIG_DIR` [12], `CODEX_HOME` [24]).
-- **The coordinator runs in no-write mode** (see the table), and `wispd` checks `git status` after each coordinator turn.
-- **Order.** Claude Code first: one adapter covers a Claude Max login and an Anthropic key, which is enough for M2. Codex second. Cursor last, because its usage data is thinnest and its terms have an open question.
+- **wisp never handles consumer credentials.** It has no vendor sign-in of its own. It never reads, stores, or forwards OAuth or session tokens, including `claude setup-token` output, and never calls a model endpoint with them.
+- **Subscriptions run through the vendor's official CLI.** The user installs it and signs in through the vendor's own flow in the editor terminal, on every machine that runs tasks. `wispd` runs the unmodified CLI once per task and parses its JSON events.
+- **API keys use the same adapters** and are kept in the macOS Keychain. wisp's own tool-free calls may use the vendor API directly.
+- **The coordinator runs only on Claude Code or Codex**, in no-write mode, with `wispd`'s tools served over MCP. If `git status` changes during its turn, `wispd` stops the turn and shows the diff without reverting it. The check misses writes outside the repo and to ignored files.
+- **Order:** Claude Code first, because one adapter covers a Max login and an Anthropic key, which is enough for M2. Codex second. Cursor ships only after Cursor confirms in writing (#35); if Cursor declines, its adapter is dropped. `CURSOR_API_KEY` is no fallback, because the AUP applies however the Service is accessed [34].
 
 ## Provider integration
 
-Versions read on 2026-09-23: Claude Code 2.1.281 [19], Codex CLI 0.156.1 [27], and Cursor CLI 2026.09.23 [42]. "Undocumented" means the field was seen in real output but not in the docs.
+Versions read: Claude Code 2.1.281 [19], Codex CLI 0.156.1 [27], Cursor CLI 2026.09.23 [42]. "Undocumented" means seen in real output but absent from the docs.
 
 | | Claude Max | ChatGPT Plus | Cursor Pro+ |
 | --- | --- | --- | --- |
-| Binary | `claude` | `codex` | `agent`, with `cursor-agent` as the legacy name [42] |
+| Binary | `claude` | `codex` | `agent`, with legacy name `cursor-agent` [42] |
 | Headless run | `claude -p --output-format stream-json --verbose` [10] | `codex exec --json`, with stdin closed or holding the prompt [23][27] | `agent -p --output-format stream-json --trust` [38][41] |
-| Events | `system` (`init`), `assistant`, `user`, `rate_limit_event`, `result` [14] | `thread.started`, `turn.started`, `item.started`/`updated`/`completed`, `turn.completed`, `turn.failed`, `error` [27] | `system` (`init`), `user`, `assistant`, `tool_call`, `result`; on failure the stream can end with no terminal event [39] |
+| Events | `system` (`init`), `assistant`, `user`, `rate_limit_event`, `result` [14] | `thread.started`, `turn.started`, `item.started`/`updated`/`completed`, `turn.completed`, `turn.failed`, `error` [27] | `system` (`init`), `user`, `assistant`, `tool_call`, `result`; a failed run can end with no terminal event [39] |
 | Resume | `--resume <session_id>` [10] | `codex exec resume <thread_id>` [23] | `--resume <chatId>` [38] |
-| cwd and worktrees | Process cwd plus `--add-dir`; `-p` never shows the trust dialog [10][13] | `-C <dir>`; must be inside a git repo, and linked worktrees count [23][27] | `--workspace <dir>`; an untrusted folder fails without `--trust` [38][41] |
+| cwd and worktrees | Process cwd plus `--add-dir`; `-p` never shows the trust dialog [10][13] | `-C <dir>`; the dir must be in a git repo, and linked worktrees count [23][27] | `--workspace <dir>`; an untrusted folder fails without `--trust` [38][41] |
 | Model | `--model` [10] | `-m` [27] | `--model`; list with `agent models` [38] |
-| No-write mode | `--tools Read,Glob,Grep --strict-mcp-config --permission-mode dontAsk`; removes tools, no OS sandbox [10][11] | `-s read-only`; Seatbelt enforces it for commands, while MCP servers and web search have separate controls [25] | `--mode ask --sandbox enabled`; staff say modes "were never meant to be isolation" [44] |
-| Tool needs approval | Denied, with a `permission_denied` event [11] | exec forces approval policy `never`; a request fails the run [27] | Held back unless `--force` or an allow rule; the docs disagree on whether edits are blocked or only proposed [36][38] |
-| Cancel | SIGINT ends the turn; SIGTERM exits 143 and leaves it unfinished [11] | SIGINT interrupts the turn; no SIGTERM handler [27] | Undocumented; kill the process group |
+| No-write mode | `--tools Read,Glob,Grep --setting-sources user --settings '{"disableAllHooks":true}' --strict-mcp-config --permission-mode dontAsk`. Write tools are removed, the project's settings, `env` block, and `.mcp.json` are skipped, and hooks are off [10][11][13]. `wispd`'s tools also need `--mcp-config` and `--allowedTools "mcp__wispd__*"`, or `dontAsk` denies them [10][11] | `-s read-only`, which Seatbelt enforces for commands [25]. `wispd`'s MCP tools must be set not to prompt, since exec fails on approval requests [26][27] | `--mode ask --sandbox enabled`. Ask mode disables MCP execution, so Cursor cannot coordinate, and staff say modes "were never meant to be isolation" [44] |
+| Tool needs approval | Denied, with a `permission_denied` event [11] | exec forces approval policy `never`, and a request fails the run [27] | Held back unless `--force` or an allow rule is set; the docs disagree on whether edits are blocked or only proposed [36][38] |
+| Cancel | SIGINT ends the turn; SIGTERM exits 143 and leaves the turn unfinished [11] | SIGINT interrupts the turn; there is no SIGTERM handler [27] | Undocumented; kill the process group |
 | Signed in | `claude auth status`: JSON, exit 0 or 1 [10] | `codex login status`: text on stderr, exit 0 or 1 [27] | `agent status --format json` [38][40] |
-| Plan | `subscriptionType` in `auth status`, undocumented and sometimes stale [18] | `account/read` returns `planType` from `codex app-server` [22] | "Subscription Tier" in `agent about`, undocumented [47] |
-| Login command | `claude auth login` [10] | `codex login`, or `--device-auth` on a remote machine [24] | `agent login`, with `NO_OPEN_BROWSER=1` on a remote machine [40] |
-| Tokens and cost | `result.usage` and `result.modelUsage[model]`; `total_cost_usd` is a client-side estimate [14][15] | `turn.completed.usage`, cumulative for the thread [27] | `result.usage`: `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`; no cost [41][43] |
-| Limit windows | `rate_limit_event.rate_limit_info`: `status`, `rateLimitType` (`five_hour`, `seven_day`, ...), `utilization`, `resetsAt` [14] | `account/rateLimits/read` in `codex app-server`: `primary` and `secondary`, each with `usedPercent`, `windowDurationMins`, `resetsAt`; never in exec output [22] | Not in headless output; interactive `/usage` only; no public usage API for individual plans [41][45] |
-| API key | `ANTHROPIC_API_KEY` overrides the login in `-p` [12]; direct calls go to `POST https://api.anthropic.com/v1/messages` [17] | `CODEX_API_KEY` for exec [23]; direct calls go to `POST https://api.openai.com/v1/responses` [31] | `CURSOR_API_KEY` [40], which runs the Cursor agent (CLI, SDK, Cloud Agents API) and is not a model API [48] |
-| Remote Mac | A locked Keychain over SSH falls back to `~/.claude/.credentials.json` [12] | Stores `$CODEX_HOME/auth.json` by default; no Keychain needed [24][27] | Keychain writes fail over SSH; set `AGENT_CLI_CREDENTIAL_STORE=file` [46] |
+| Plan | `subscriptionType` in `auth status`, undocumented and sometimes stale [18] | `planType` from `account/read` in `codex app-server` [22] | "Subscription Tier" in `agent about`, undocumented [47] |
+| Login command | `claude auth login` [10] | `codex login`; on a remote machine, `--device-auth`, which is beta and must first be enabled in ChatGPT security settings [24] | `agent login`, with `NO_OPEN_BROWSER=1` on a remote machine [40] |
+| Second account per machine | `CLAUDE_CONFIG_DIR` [12] | `CODEX_HOME` [24] | Unverified; the login lives in fixed Keychain items [46] |
+| Tokens and cost | `result.modelUsage[model]`, which includes subagents and carries over into resumed sessions. `result.usage` covers the main loop only, and all costs are client-side estimates [14][15] | `turn.completed.usage`, cumulative for the thread [27] | `result.usage`: `inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`; no cost [41][43] |
+| Limit windows | Only the last `rate_limit_event.rate_limit_info` seen: `status`, `rateLimitType` (`five_hour`, `seven_day`, ...), `utilization`, `resetsAt`. An experimental `get_usage` control request also returns the plan and windows [14] | `account/rateLimits/read` in `codex app-server`: `primary` and `secondary`, each with `usedPercent`, `windowDurationMins`, `resetsAt`; never in exec output [22] | None in headless output; `/usage` is interactive only; there is no public usage API for individual plans [41][45] |
+| API key | `ANTHROPIC_API_KEY`, which wins over the login in `-p` [12]. Subscription runs strip `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and `CLAUDE_CODE_OAUTH_TOKEN`, since all three outrank `/login` [12]. Direct calls: `POST https://api.anthropic.com/v1/messages` [17] | `CODEX_API_KEY` for exec [23]. Direct calls: `POST https://api.openai.com/v1/responses` [31] | `CURSOR_API_KEY` [40] runs the Cursor agent, not a model API [48], and falls under the same AUP question [34] |
+| Remote Mac | A locked Keychain over SSH falls back to `~/.claude/.credentials.json` [12] | Stores `$CODEX_HOME/auth.json` by default [24][27] | Keychain writes fail over SSH; set `AGENT_CLI_CREDENTIAL_STORE=file` [46] |
 
 ## Terms assessment
 
 | Approach | Claude Max | ChatGPT Plus | Cursor Pro+ |
 | --- | --- | --- | --- |
-| wisp signs in, or uses subscription tokens itself | Prohibited [1][5] | Allowed in practice [22][29][30], but wisp does not do it | Prohibited; risks a ban [35] |
-| wisp launches the user's own signed-in official CLI | Allowed, with conditions [1] | Allowed [21][22][23] | Allowed per docs and staff [35][36][37]; the AUP wording is unclear [34] |
-| API key in the CLI or the vendor API | Allowed; recommended for third-party tools [3] | Allowed [23] | Agent-level only [35][48] |
+| wisp signs in, or uses subscription tokens itself | Prohibited [1][5][6] | Unclear in the Terms [20]; endorsed by staff and the app-server docs [22][29][30]. wisp does not do it | Prohibited, with a ban risk [33][35] |
+| wisp launches the user's own signed-in official CLI | Allowed if wisp meets the product conditions, including the Commercial Terms [1]; whether they apply to a local open-source launcher is unclear (#35) | Allowed [21][22][23] | Unclear. The AUP bans automated or scripted access with no CLI carve-out [34], while the CLI docs [36][37][40] and an Aug 10 staff post that predates the AUP [35] endorse it. Pending written confirmation (#35) |
+| API key in the CLI or the vendor API | Allowed; the recommended path for third-party tools [1][3] | Allowed [23] | Unclear, for the same AUP reason [34]; agent-level only [48] |
+| 2026 enforcement and changes | Jan: accounts whose third-party harnesses tripped abuse filters were banned, then anti-spoofing safeguards tightened [7]. By Feb 18: subscription tokens banned even in the Agent SDK, a ban removed by Apr 13 [2]. Apr 4: third-party harnesses moved to extra usage (secondary report [9]). Late Aug: the carve-out below [2] | None found | Aug 10: staff warn that token proxies risk a ban [35]. Aug 11: new AUP [34] |
 
-- **Anthropic.** Automated access needs an API key unless Anthropic "explicitly permit[s] it" [6]. Third parties may not offer claude.ai login "unless previously approved" [5], and may not collect, store, or intermediate Claude.ai credentials [1]. The permission wisp relies on is on the legal page: nothing prevents "an end user from signing in to the unmodified Claude Code binary with their own Claude subscription" [1]. Its conditions are to leave the binary and its sign-in methods alone, not to pay for or resell usage, and to name Claude Code only in plain text. That text arrived in late August 2026 [2], after a year of reversals. Anthropic blocked spoofed harnesses on Jan 9 [7]. It barred subscription tokens even in the Agent SDK on Feb 19, then removed that line by Apr 13 [2]. It began billing harnesses to extra usage on Apr 4 [9]. It announced a separate `claude -p` credit on May 13 [8] and paused it on Jun 15 [4].
-- **OpenAI.** The Terms of Use ban programmatic extraction of output and credential sharing [20]. Even so, OpenAI documents `codex exec` and an app-server for "a deep integration inside your own product" [22][23], and its staff invite ChatGPT sign-in from third-party tools [28][29][30]. I found no 2026 enforcement against third-party clients.
-- **Cursor.** Staff say that calling private endpoints with a user's token breaks ToS section 1.5 [33] and "can trigger abuse enforcement, up to and including an account ban". They call the CLI, SDK, and Cloud Agents API "the official and safe path" [35], and the docs pitch the CLI for "scripts and automation workflows" [36]. The open question is the Acceptable Use Policy of Aug 11, 2026. It bans "Accessing the Service through automated or non-human means, whether through a bot, script, or otherwise", with no CLI carve-out [34]. The staff statements came after it.
+- **Anthropic.** After barring third-party Claude.ai login and credential handling, the legal page adds: "Nor does it prevent an end user from signing in to the unmodified Claude Code binary with their own Claude subscription, including where a platform hosts Claude Code as described under *Can customers offer Claude Code in their products?* above" [1]. That section sets four conditions [1]:
+  - accept the Commercial Terms;
+  - leave the binary unmodified, with every sign-in method in place;
+  - let each user sign in with their own credentials, without paying for or reselling their usage;
+  - name Claude Code in plain text only.
+
+  Other guidance cuts the other way. Product developers should use API keys [1]. Keys are "the preferred way" for third-party tools, "including open-source projects", and Anthropic may bill their use to usage credits [3]. Third parties may not offer "claude.ai login or rate limits" [5].
+- **OpenAI.** The Terms of Use ban programmatic extraction and credential sharing [20]. Even so, OpenAI documents `codex exec` and an app-server for "a deep integration inside your own product" [22][23], and its staff invite third-party ChatGPT sign-in [28][29][30].
+- **Cursor.** Staff say that calling private endpoints with a user's token breaks ToS section 1.5 and "can trigger abuse enforcement, up to and including an account ban" [35]. The AUP bans "Accessing the Service through automated or non-human means, whether through a bot, script, or otherwise" [34], but the docs still point scripts at the CLI [36][40]. The staff post that endorses automation (Aug 10) predates the AUP; the Aug 16 post does not address automation [35].
 
 ## Backend interface
 
-A sketch for `wispd` (async omitted):
+A sketch, with async omitted:
 
 ```rust
 trait Backend {
     fn probe(&self, account: &Account) -> Probe;            // installed, version, signed in, auth kind, plan
     fn login_command(&self, account: &Account) -> Command;  // run in the editor terminal
-    fn start(&self, account: &Account, task: Task) -> Run;  // cwd, prompt, model, tool policy, resume id
-    fn limits(&self, account: &Account) -> Option<Limits>;  // windows, percent used, reset times
+    fn start(&self, account: &Account, task: Task) -> Run;  // cwd, prompt, model, tool policy, wispd MCP server, resume id
+    fn limits(&self, account: &Account) -> Option<Limits>;  // latest windows and when they were read
 }
 trait Run {
     fn events(&mut self) -> Events; // Started, Text, ToolCall, FileChange, Usage, Limit, Finished, Failed
@@ -69,30 +76,23 @@ trait Run {
 }
 ```
 
-Gaps it papers over:
+What it smooths over, beyond the table's differences:
 
-- **Usage.** All three report tokens, but only Claude reports cost, as an estimate. Limit percentages come from Claude's stream or a `codex app-server` query; Cursor has none. The UI shows "not reported" rather than zero.
-- **Write protection.** Codex has an OS sandbox, Claude removes tools, and Cursor's mode plus sandbox is weakest, hence the `git status` check.
-- **Commits.** Codex's `workspace-write` sandbox keeps `.git` read-only, worktrees included [26], so `wispd` commits for Codex workers.
-- **Approvals.** All three deny or fail in headless mode, so M2 fixes the policy up front. Prompting the user later needs Claude's `--permission-prompt-tool`, the Codex app-server, or Cursor's ACP.
-- **Completion and counters.** Cursor can exit with no terminal event, so completion is the exit code plus the last event. Claude and Codex totals are cumulative per session, so `wispd` stores per-run deltas.
-- **Accounts.** Only Codex documents plan detection. Cursor keeps one login in fixed Keychain items [46], so a second Cursor account per machine is unverified.
-- **Later options.** ACP is native only in Cursor [50] and carries no usage there [43]. Cursor's Rust-friendly SDK Bridge needs an API key [49].
+- **Approvals.** All three deny or fail in headless mode, so M2 fixes the policy up front.
+- **Completion and counters.** A Cursor run can end with no terminal event, so completion comes from the exit code plus the last event. Cumulative totals become per-run deltas.
+- **Commits.** Codex keeps `.git` read-only under `workspace-write`, including in worktrees [26], so `wispd` commits for Codex workers.
 
 ## Consequences
 
-- Users install and sign into each CLI on each machine; wisp only shows status and opens the login.
-- Adapters pin a tested CLI version and run against recorded transcripts in CI.
-- Keys in the environment would reach the agent's shell commands, so `wispd` sets `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` [16] and Codex's `shell_environment_policy.ignore_default_excludes=false` [26]. Cursor has no documented equivalent.
-- On a remote Mac, `wispd` runs as a LaunchAgent in the user's login session so the CLIs can reach the Keychain [12][46].
-- Routing is per task: wisp picks the account and the CLI makes the model calls.
+- Keys in the environment would reach the agent's shell, so `wispd` sets `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` [16] and Codex's `shell_environment_policy.ignore_default_excludes=false` [26].
+- On a remote Mac, SSH sessions may not reach the Keychain [12][46]. Running `wispd` as a LaunchAgent in the user's GUI session should avoid this, but that is unverified and requires the user to be logged in.
 
 ## Open risks
 
-- **Claude billing.** Anthropic paused but did not drop a separate `claude -p` credit, and it may bill third-party tools to usage credits [3][4]. Plan limits assume "ordinary, individual usage" [1], and parallel subagents will exceed that. Expect to fall back to API keys.
-- **Anthropic's product clause.** Running Claude Code "in your products or services" requires the Commercial Terms [1]. It's unclear whether a local open-source launcher counts; a Claude Console account, needed for the API key anyway, would cover it.
-- **Cursor.** Get the AUP question answered in writing before release [34]. OpenAI stops supplying models to Cursor on Nov 12, 2026, after SpaceX bought it [32].
-- **Schema churn.** Several fields above are undocumented or experimental, including the Codex app-server [22]. Parsers ignore unknown fields.
+- **Claude billing.** Today `claude -p` and third-party app usage count against plan limits [4]. A plan announced in May [8] would have moved it to a monthly credit, then to usage credits if enabled, and otherwise stopped it. That plan is paused [4], but Anthropic may still bill third-party tools to usage credits [3]. Limits assume "ordinary, individual usage" [1], which parallel subagents may exceed.
+- **Commercial Terms.** A Claude Console account may satisfy this condition; unverified (#35).
+- **Cursor.** Unsupported until #35 is answered. OpenAI plans to stop supplying models to Cursor on Nov 12, 2026 [32].
+- **Schema churn.** Several fields are undocumented or experimental, including the Codex app-server [22]. Adapters pin tested CLI versions, replay recorded transcripts in CI, and ignore unknown fields.
 
 ## Sources
 
@@ -101,7 +101,7 @@ Read on 2026-09-23 unless dated.
 Anthropic
 
 1. Claude Code, Legal and compliance: https://code.claude.com/docs/en/legal-and-compliance
-2. The same page on the Wayback Machine, 2026-02-19, 2026-04-13, 2026-08-16, and 2026-08-30: https://web.archive.org/web/20260219142355/https://code.claude.com/docs/en/legal-and-compliance, https://web.archive.org/web/20260413021834/https://code.claude.com/docs/en/legal-and-compliance, https://web.archive.org/web/20260816100739/https://code.claude.com/docs/en/legal-and-compliance, https://web.archive.org/web/20260830094710/https://code.claude.com/docs/en/legal-and-compliance
+2. The same page on the Wayback Machine, 2026-02-01, 2026-02-18, 2026-04-13, 2026-08-16, and 2026-08-30: https://web.archive.org/web/20260201064220/https://code.claude.com/docs/en/legal-and-compliance, https://web.archive.org/web/20260218171531/https://code.claude.com/docs/en/legal-and-compliance, https://web.archive.org/web/20260413021834/https://code.claude.com/docs/en/legal-and-compliance, https://web.archive.org/web/20260816100739/https://code.claude.com/docs/en/legal-and-compliance, https://web.archive.org/web/20260830094710/https://code.claude.com/docs/en/legal-and-compliance
 3. Claude Help Center, Log in to your Claude account: https://support.claude.com/en/articles/13189465-log-in-to-your-claude-account
 4. Claude Help Center, Use the Claude Agent SDK with your Claude plan (update of 2026-06-15): https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan
 5. Agent SDK overview: https://code.claude.com/docs/en/agent-sdk/overview
@@ -112,8 +112,8 @@ Anthropic
 10. Claude Code CLI reference: https://code.claude.com/docs/en/cli-reference
 11. Claude Code headless mode: https://code.claude.com/docs/en/headless
 12. Claude Code authentication: https://code.claude.com/docs/en/authentication
-13. Claude Code permissions: https://code.claude.com/docs/en/permissions
-14. Agent SDK types 0.3.281 (`SDKRateLimitInfo`, result message): https://cdn.jsdelivr.net/npm/@anthropic-ai/claude-agent-sdk@0.3.281/sdk.d.ts
+13. Claude Code permissions, "What runs before you trust a folder": https://code.claude.com/docs/en/permissions
+14. Agent SDK types 0.3.281 (`SDKRateLimitInfo`, result message, `get_usage`): https://cdn.jsdelivr.net/npm/@anthropic-ai/claude-agent-sdk@0.3.281/sdk.d.ts
 15. Agent SDK cost tracking: https://code.claude.com/docs/en/agent-sdk/cost-tracking
 16. Claude Code environment variables: https://code.claude.com/docs/en/env-vars
 17. Claude API, Messages: https://platform.claude.com/docs/en/api/messages
@@ -134,13 +134,13 @@ OpenAI
 29. Sam Altman, 2026-05-01: https://x.com/sama/status/2050357911915028689
 30. Tibo Sottiaux (OpenAI), 2026-05-23: https://x.com/thsottiaux/status/2058071172361998482
 31. OpenAI Responses API: https://developers.openai.com/api/reference/resources/responses/methods/create
-32. OpenAI, Our decision on Cursor following its acquisition by SpaceX, 2026-08-28: https://openai.com/index/our-decision-on-cursor-following-its-acquisition-by-spacex/
+32. OpenAI, Our decision on Cursor following its acquisition by SpaceX, 2026-08-28 (the Nov 12 shutoff date is proposed): https://openai.com/index/our-decision-on-cursor-following-its-acquisition-by-spacex/
 
 Cursor
 
 33. Cursor Terms of Service, updated 2026-09-03: https://cursor.com/terms-of-service
 34. Cursor Acceptable Use Policy, updated 2026-08-11: https://cursor.com/acceptable-use-policy
-35. Cursor staff on official clients, 2026-08-10 and 2026-08-16: https://forum.cursor.com/t/167778
+35. Cursor staff on official clients, 2026-08-10 (before the AUP) and 2026-08-16: https://forum.cursor.com/t/167778
 36. Cursor headless CLI: https://cursor.com/docs/cli/headless
 37. Cursor ACP: https://cursor.com/docs/cli/acp
 38. Cursor CLI parameters: https://cursor.com/docs/cli/reference/parameters
@@ -154,8 +154,3 @@ Cursor
 46. Cursor staff on the Keychain over SSH, 2026-01-16, and on the file credential store, 2026-08-04: https://forum.cursor.com/t/149045, https://forum.cursor.com/t/167325
 47. `agent about` output showing "Subscription Tier Pro+", 2026-09-20: https://forum.cursor.com/t/172448
 48. Cursor API overview: https://cursor.com/docs/api
-49. Cursor SDK Bridge: https://cursor.com/docs/sdk/bridge
-
-Other
-
-50. Agent Client Protocol, agent list: https://agentclientprotocol.com/overview/agents
