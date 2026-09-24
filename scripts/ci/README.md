@@ -1,21 +1,21 @@
 # CI entry points
 
-Workflows call these scripts instead of running cargo or npm themselves, so a local run is the same as a CI run. When the Code - OSS fork (#8) replaces the Electron fixture, these scripts change and the workflows do not. Background: [0001](../../docs/decisions/0001-ci-before-product-code.md).
+Workflows call these scripts instead of running cargo or npm themselves, so a local run is the same as a CI run. Background: [0001](../../docs/decisions/0001-ci-before-product-code.md), which built CI against a stand-in Electron app until #38 switched it to the real `Wisp.app`.
 
 Each script finds the repo root on its own, so it runs from any directory.
 
 | Script | What it does | Called by |
 | --- | --- | --- |
 | `check-rust` | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo build`, and `cargo test` on the workspace, with `--locked`. The tests include the [protocol type](#protocol-types) checks. | `ci.yml` (#3) |
-| `check-editor` | `npm ci`, then lint, type-check (`tsc --noEmit`), build, and test the editor, currently `ci/fixtures/electron-smoke/` | `ci.yml` (#3), `editor` job |
 | `check-fork` | Runs `scripts/editor/test`, then checks that the Code - OSS pin and patches apply (`scripts/editor/prepare`, then `scripts/editor/export-patches --check`) and that the root `.nvmrc` equals upstream's. Then it type-checks `src/` in the patched tree with upstream's `npm run typecheck-client`, after `npm ci --ignore-scripts` when `node_modules` is missing and upstream's `node build/npm/electronTypes.ts`, which downloads the checksum-verified `electron.d.ts` | `ci.yml` (#8), `fork` job |
-| `build-app` | Installs, builds, and downloads the Electron binary: what `app-launch` needs, without lint or tests. `WISP_APP=editor` builds the Code - OSS development build in `editor/vscode/` instead of the fixture. The packaged `Wisp.app` comes from `scripts/editor/build-app` instead (see [The app job](#the-app-job)). | `screenshots.yml` (#4) |
+| `build-app` | Builds the packaged `Wisp.app` with `scripts/editor/build-app`, for this Mac's architecture or the one named (`arm64` or `x64`), and prints its path. It is the app `app-launch` launches by default. | `screenshots.yml` (#4), `capture` job, when the app cache misses |
 | `check-app` | Checks a packaged `Wisp.app`, or a zip of one, for an architecture: its signature, its main binary's architecture, its `product.json` against `editor/product.json`, its bundle id, icon, and `wisp` launcher, and `wisp --version` | `ci.yml` (#9), `app` job |
-| `app-launch` | Prints Playwright `_electron.launch` options for the built app as one line of JSON. `WISP_APP=editor` selects the Code - OSS development build. | `screenshots.yml` (#4) |
-| `screenshots` | Captures every scenario in `ci/screenshots/` from the built app into a directory (see [Screenshots](#screenshots)) | `screenshots.yml` (#4), `capture` job |
+| `app-cache-key` | Prints the cache key of the packaged app for an architecture (see [The app job](#the-app-job)) | `ci.yml` (#9), `app` job; `screenshots.yml`, `capture` job |
+| `app-launch` | Prints Playwright `_electron.launch` options for a packaged `Wisp.app` as one line of JSON (see [app-launch](#app-launch)) | `screenshots` |
+| `screenshots` | Captures every scenario in `ci/screenshots/` from the app into a directory (see [Screenshots](#screenshots)) | `screenshots.yml` (#4), `capture` job |
 | `publish-screenshots` | Checks a capture directory, commits its PNGs to the `ci-screenshots` branch, and creates or updates the PR comment. It needs Actions' environment; locally, `--dry-run` prints the comment | `screenshots.yml` (#4), `publish` job |
-| `check-screenshots` | `npm ci`, then lint, type-check, and test `ci/screenshots/` | Not yet: #39 adds it to `ci.yml` |
-| `package-app` | Builds `wisp.app` with a version stamped in, ad-hoc signs it, zips it, and prints the bundle path (see [package-app](#package-app)) | `release.yml` (#5), `build` job |
+| `check-screenshots` | `npm ci`, then lint, type-check, and test `ci/screenshots/`, including the tests that guard the `publish` job | `ci.yml` (#39), `screenshots` job |
+| `package-app` | Builds `wisp.app` with a version stamped in, ad-hoc signs it, zips it, and prints the bundle path (see [package-app](#package-app)). It fails until #43, because it still packages the deleted Electron fixture. | `release.yml` (#5), `build` job |
 | `next-version` | Prints the version the next release gets, from tags and Conventional Commits (see [Releases](#releases)) | `release.yml` (#5), `build` job |
 | `generate-cask` | Prints the Homebrew cask for a version and its zips, from `release/wisp.rb.template` | `release.yml` (#5), `build` job |
 | `audit-cask` | Runs `brew style` and `brew audit` on a cask in a throwaway tap, then installs and uninstalls it | `release.yml` (#5), `build` job |
@@ -26,8 +26,9 @@ Each script finds the repo root on its own, so it runs from any directory.
 ## Requirements
 
 - Rust: rustup. `rust-toolchain.toml` pins the toolchain and its components. In CI, run `rustup toolchain install` with no arguments as its own step before `check-rust`. It installs exactly what the file pins, and it does not rely on rustup's auto-install, which can be turned off. Locally, rustup installs the pin on first use.
-- Node: the exact version in the root `.nvmrc`. It always equals upstream's `.nvmrc` at the pinned Code - OSS release: `scripts/editor/upgrade` copies it, and `check-fork` fails if the two differ. In Actions, use `actions/setup-node` with `node-version-file: .nvmrc`. The scripts that run Node stop with an error when `node` has a different major version, so local runs use the same Node as CI.
-- macOS, for `build-app`, `app-launch`, and `package-app`.
+- Node: the exact version in the root `.nvmrc`. It always equals upstream's `.nvmrc` at the pinned Code - OSS release: `scripts/editor/upgrade` copies it, and `check-fork` fails if the two differ. In Actions, use `actions/setup-node` with `node-version-file: .nvmrc`. The scripts that run Node stop with an error when `node` has a different major version, so local runs use the same Node as CI. The `engines` field in `ci/screenshots/package.json` gives only the oldest Node 24 that the package supports; `.nvmrc` decides what runs.
+- macOS, for `build-app`, `app-launch`, `screenshots`, and `package-app`.
+- mikefarah's `yq` 4, for `app-cache-key`. GitHub's runners have it.
 - Homebrew, for `audit-cask`. GitHub's macOS runners have it.
 
 ## Protocol types
@@ -42,7 +43,7 @@ Each script finds the repo root on its own, so it runs from any directory.
 The output is one line with absolute paths:
 
 ```json
-{"executablePath":"<repo>/ci/fixtures/electron-smoke/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron","args":["<repo>/ci/fixtures/electron-smoke/out/main.js"]}
+{"executablePath":"<repo>/editor/VSCode-darwin-arm64/Wisp.app/Contents/MacOS/Wisp","args":[]}
 ```
 
 Resolve the script from the repo root, so the caller's working directory does not matter. Merge `env` into your own environment, because `_electron.launch` uses `env` as the whole environment instead of adding to it:
@@ -58,34 +59,39 @@ const electronApp = await _electron.launch({ ...options, env: { ...process.env, 
 const window = await electronApp.firstWindow();
 ```
 
-- The fixture opens one window titled `wisp`.
-- If the app is not built, `app-launch` explains why on stderr, prints nothing to stdout, and exits 1. Run `build-app` first, with the same `WISP_APP`.
-- `WISP_APP_BUNDLE=/path/to/wisp.app` launches a built bundle instead: the bundle's `CFBundleExecutable`, with no arguments.
-- Every key in the output is an `_electron.launch` option. The fixture prints no `env`. The editor prints only additions, and the merge above keeps `PATH`, `HOME`, and the rest.
+- It launches a packaged `Wisp.app`: `WISP_APP_BUNDLE` when that is set, otherwise the app that `build-app` built for this Mac's architecture, `editor/VSCode-darwin-<arch>/Wisp.app`. The executable is the bundle's `CFBundleExecutable`, with no arguments.
+- If there is no app, `app-launch` explains why on stderr, prints nothing to stdout, and exits 1.
+- Every key in the output is an `_electron.launch` option. It prints no `env` today. Merge it anyway, as above, so that an addition cannot drop `PATH`, `HOME`, and the rest.
 - Playwright adds its startup hook only when it locates Electron itself. With `executablePath`, the app starts without waiting for Playwright, so wait for `firstWindow()` before inspecting windows with `electronApp.evaluate()`.
-
-### The Code - OSS development build
-
-`WISP_APP=editor` prints the development build in `editor/vscode/` ([0002](../../docs/decisions/0002-editor-fork-strategy.md)). Build it with `WISP_APP=editor scripts/ci/build-app`. The executable is the Electron app that upstream downloads into `.build/electron/`. The source tree is its first argument, and `env` holds the variables that upstream's `scripts/code.sh` sets:
-
-```json
-{"executablePath":"<repo>/editor/vscode/.build/electron/Wisp.app/Contents/MacOS/Wisp","args":["<repo>/editor/vscode","--disable-extension=vscode.vscode-api-tests"],"env":{"NODE_ENV":"development","VSCODE_DEV":"1","VSCODE_CLI":"1","ELECTRON_ENABLE_STACK_DUMPING":"1","ELECTRON_ENABLE_LOGGING":"1"}}
-```
-
-- Add arguments after the printed ones, and keep the source tree first, as the screenshot harness does. Add `--extensions-dir=<dir>` as well as a fresh `--user-data-dir` to keep a run apart from any other Code - OSS development build on the machine.
+- The development build (`./scripts/code.sh`, see [editor-upgrade.md](../../docs/editor-upgrade.md)) is not an option, because the screenshots show the app that ships.
 
 ## Screenshots
 
 `screenshots.yml` runs on every PR from a branch in this repo. It has two jobs, so the PR's build and its dependencies never run where the write token is; the publish script and this workflow itself still come from the PR head until #48:
 
-- `capture` (macOS, `contents: read`) runs `build-app`, then `screenshots <dir>`, and uploads the PNGs, `manifest.json`, and both steps' logs as the `screenshots` artifact. `screenshots` installs `ci/screenshots/`, whose only runtime dependency is `playwright-core`, and runs each scenario in `ci/screenshots/src/scenarios.ts` against a fresh launch of the app from `app-launch`'s output. It exits 1 if any scenario failed. For PRs from forks, whose token is read-only, the job logs a notice and skips the rest, and `publish` does not run.
+- `capture` (macOS, `contents: read`) gets the arm64 `Wisp.app` (see [Getting the app](#getting-the-app)), runs `screenshots <dir>`, and uploads the PNGs, `manifest.json`, and both steps' logs as the `screenshots` artifact. `screenshots` installs `ci/screenshots/`, whose only runtime dependency is `playwright-core`, and runs each scenario in `ci/screenshots/src/scenarios.ts` against a fresh launch of the app from `app-launch`'s output. It exits 1 if any scenario failed. For PRs from forks, whose token is read-only, the job logs a notice and skips the rest, and `publish` does not run.
 - `publish` (Linux, `contents: write` and `pull-requests: write`) runs even when `capture` failed. It checks out only `scripts/ci/` and `ci/screenshots/src/`, installs nothing, downloads the artifact, and runs `publish-screenshots`. That commits the PNGs to the orphan branch `ci-screenshots` under `pr-<number>/<short-sha>/`, then creates or updates the one comment by `github-actions[bot]` that contains `<!-- wisp-screenshots -->`. The images are `raw.githubusercontent.com` URLs pinned to the `ci-screenshots` commit, so no cache shows an old image. Nothing is deleted from `ci-screenshots` yet (#40).
 
 Rules that keep the token away from the PR's build:
 
 - `publish.ts` and the files it imports (`artifact.ts`, `branch.ts`, `comment.ts`, `manifest.ts`) use only Node built-ins. A test enforces this, and the `publish` job has no `node_modules`, so a package import fails instead of running.
 - `publish` treats the artifact as untrusted. `manifest.json` must parse into the known shape. Each file must be `<name>.png` or `<name>.failed.png` for a listed scenario, a regular file, at most 10 MB, and start with the PNG signature; the files together must total at most 25 MB. Titles and reasons must be plain text. Only the last 64 KB of `build.log` and `capture.log` are read, and only when the job outputs say that step failed. If anything fails these checks, nothing is pushed, the comment says the results were rejected, and the `publish` job fails. If `capture` succeeded but its artifact never reaches `publish` (a lost upload or a failed download), `publish` reports the results as missing and fails instead of passing silently.
-- Nothing secret goes into the `capture` job. Its logs are written with `tee`, so Actions' masking does not apply, and their tails are posted in the comment.
+- No repository secret goes into the `capture` job. Its logs are written with `tee`, so Actions' masking does not apply, and their tails are posted in the comment. The job's one credential is its own `contents: read` `GITHUB_TOKEN`, which only the build step gets, and only on a cache miss. It reads nothing that is not public, and it expires when the job ends, before `publish` reads any log.
+
+### Getting the app
+
+`capture` shows the app that ships, not the development build:
+
+1. It runs `app-cache-key arm64`, which gives the same key as `ci.yml`'s `app (arm64)` job.
+2. It restores `dist/editor/wisp-darwin-arm64.zip` under that key with `actions/cache/restore`. On a hit, it unpacks the zip with `ditto -x -k` and sets `WISP_APP_BUNDLE`.
+3. On a miss, the `build` step runs `build-app arm64` itself. That step gets the `GITHUB_TOKEN`, because upstream's build calls GitHub's API and anonymous calls from shared runners hit the rate limit.
+4. The job summary says which of the two happened.
+
+`capture` never saves to that cache. The `app` job stays its only writer, and saves only builds that passed `check-app`. Screenshots are informational, so a cached app is good enough here; releases never use one.
+
+A push that changes no fork input hits: the zip comes from an earlier run of the same PR or from `develop`. A push that changes a fork input misses in both workflows at once, because `screenshots.yml` cannot wait on a job in `ci.yml`. On that push `capture` builds arm64 while the `app` job builds both architectures. So the PR's first screenshots arrive about as fast as the `app` job's own cold run, within #9's 30 minutes, at the cost of one extra arm64 build, about 20 macOS runner minutes.
+
+Waiting for the `app` job instead would not be faster, because the wait lasts as long as the build. It would also need a token that can read Actions, polling, and a way to notice a failed `app` job. And it could never finish when the keys differ: `ci.yml` builds the PR's merge commit, while `capture` checks out the head, whose screenshots the comment shows. When a PR is behind `develop` on a fork input, the `app` job saves a key that `capture` never asks for. A build handles that case, and an evicted cache entry too.
 
 ### Adding a view
 
@@ -93,20 +99,36 @@ Add an entry to `scenarios` in `ci/screenshots/src/scenarios.ts`. The workflow d
 
 - `name`: the file name, in lowercase words joined by hyphens.
 - `title`: the heading and alt text in the comment. Plain text: letters, digits, spaces, and `, . : ; ' " ( ) / + & = _ -`.
-- `args` (optional): extra app arguments, such as a folder and a file to open.
+- `args(dir)` (optional): returns extra app arguments, such as a folder and a file to open. `dir` is an empty directory for the scenario's own files, deleted afterwards. Copy fixtures into it rather than opening them in the checkout, so the app never writes into the repo. A test checks that every absolute path it returns is inside `dir`.
 - `run({ app, window })`: drives the app and returns `screenshot(window)`. If this build does not have the view yet, it returns `notAvailable(reason)` instead: the comment lists the view as not available, and the job still passes. The reason follows the same plain-text rule as `title`, so it cannot hold `#123` or `@name`, which would notify that issue or person from every PR. If the view exists but breaks, `run` throws. The `capture` job then fails, and the comment shows the error and a screenshot of the window at that moment.
 
-Before `run` is called, the first window has loaded, its content area is 1024x640, and for a Code - OSS window `.monaco-workbench` exists. After `app-launch`'s `args`, the harness passes `--user-data-dir=<new temp dir>`, `--skip-welcome`, `--skip-release-notes`, `--disable-workspace-trust`, and then the scenario's `args`. The fixture ignores all of them. Launching gets 60 seconds for the process and 60 for the first window, then waiting for the window plus `run` gets 180 seconds. The `capture` step has 20 minutes, and when a step times out, `publish` still reports it.
+Before `run` is called:
 
-The shipped scenarios look for these hooks:
+- The first window's content area is 1024x640.
+- The workbench has restored: `.monaco-workbench` exists, and upstream's `code/didStartWorkbench` performance mark is set.
+- The DOM has been quiet for 500 ms, or 10 s have passed.
 
-- `editor-file-open` opens `ci/screenshots/fixtures/workspace/` with `src/tasks.ts` and waits for `.monaco-editor[data-uri$="/src/tasks.ts"]`, the attribute upstream's smoke tests use.
+After `app-launch`'s `args`, the harness passes these arguments, then the scenario's own:
+
+- `--user-data-dir` and `--extensions-dir` in a new temp directory.
+- `--skip-welcome`, `--skip-release-notes`, `--disable-workspace-trust`, and `--use-inmemory-secretstorage`, the flags upstream's smoke tests use. A run then never reads the machine's extensions or keychain.
+- Not `--enable-smoke-test-driver`, because it hides notification toasts, and the screenshots should show what a user sees.
+
+Launching gets 60 seconds for the process and 60 for the first window, then waiting for the window plus `run` gets 180 seconds. The `capture` step has 20 minutes, and when a step times out, `publish` still reports it.
+
+The shipped scenarios wait for these elements, using the classes and attributes that upstream's smoke tests use, never pixel positions:
+
+- `startup` opens an empty window and waits for the title bar, activity bar, editor, and status bar parts (`.part.titlebar` and so on).
+- `editor-file-open` copies `ci/screenshots/fixtures/workspace/` into its directory and opens that folder with `src/tasks.ts`. It waits for three things:
+  - the editor, `.monaco-editor[data-uri$="/src/tasks.ts"]`
+  - the active tab, `.tab.active[data-resource-name="tasks.ts"]`
+  - the file's row in the explorer
 - `coordinator-chat` waits up to 10 seconds for `.wisp-coordinator-chat`. #12 puts that class on the view's root element and, if the view is hidden at startup, adds the steps that reveal it.
 
 ### Running it locally
 
 ```sh
-scripts/ci/build-app
+scripts/ci/build-app            # or set WISP_APP_BUNDLE to a Wisp.app you already have
 scripts/ci/screenshots
 scripts/ci/publish-screenshots --dry-run
 scripts/ci/check-screenshots
@@ -114,11 +136,15 @@ scripts/ci/check-screenshots
 
 `screenshots` writes to `ci/screenshots/out/`, and `publish-screenshots --dry-run` checks that directory the way the `publish` job does and prints the comment it would post. Add `--logs <dir>` with `BUILD_OUTCOME=failure` or `CAPTURE_OUTCOME=failure` to include a failed step's `build.log` or `capture.log`.
 
+- A local run takes about 30 seconds once the app is built. `build-app` takes about 8 minutes on an M3 Pro from a clean tree, or 5 once `node_modules` is installed.
+- The windows open on your screen. A Retina display doubles the image size.
+- The app follows macOS's Increase Contrast setting, as any build of the editor does, so with it on you get the high contrast theme.
+
 ## The app job
 
 `ci.yml`'s `app` job builds the packaged `Wisp.app` for arm64 and x64 on `macos-26`, one matrix leg each. A leg rebuilds only when its inputs changed since a run that saved a build:
 
-1. It hashes its inputs: `git ls-files -s` over `editor/`, `.nvmrc`, `.gitattributes`, and `scripts/editor/`, plus the job's own definition (`yq '.jobs.app'`). The cache key is `wisp-app-darwin-<arch>-<hash>`. Edits to other jobs, the docs, or `scripts/ci/` do not rebuild the app.
+1. `app-cache-key <arch>` hashes its inputs: `git ls-files -s` over `editor/`, `.nvmrc`, `.gitattributes`, and `scripts/editor/`, plus the job's own definition (`yq '.jobs.app'`). The cache key is `wisp-app-darwin-<arch>-<hash>`. Edits to other jobs, the docs, or the rest of `scripts/ci/` do not rebuild the app.
 2. It restores `dist/editor/wisp-darwin-<arch>.zip` from the cache under that key.
 3. On a miss, it runs `scripts/editor/build-app <arch>` and zips the bundle with `ditto`, the way `package-app` does. x64 cross-builds on the arm64 runner.
 4. On a hit or a build, it runs `check-app` on the zip.
@@ -130,25 +156,13 @@ Caches follow the same scopes as the `fork` job's markers. A PR can restore a bu
 
 A build needs `GITHUB_TOKEN`: upstream's install and build download from GitHub (ripgrep, the built-in extensions, Electron), and anonymous API calls from shared runners hit the rate limit. The job gives it the workflow's `contents: read` token.
 
-To use the cached app for checks elsewhere, such as screenshots (#38), compute the same key, restore the zip with `actions/cache/restore`, and unzip it with `ditto -x -k`. On a PR that changes an input, the key misses until this job has saved the new build.
+To use the cached app for checks elsewhere, do what `screenshots.yml` does ([Getting the app](#getting-the-app)): run `app-cache-key`, restore the zip with `actions/cache/restore`, unzip it with `ditto -x -k`, and never save to this cache. The key is one script so that the two workflows cannot drift apart. On a PR that changes an input, the key misses until this job has saved the new build.
 
 Never ship the cached app. `release.yml` builds the release app from source and never restores this cache. A cache entry has no provenance: any job in a `develop` run can write one under this predictable key, npm install scripts and cargo build scripts included. `check-app` checks the branding, not where the zip came from.
 
-## Switching to the real app
-
-#8 imported the fork:
-
-- It added the development build to `build-app` and `app-launch` behind `WISP_APP=editor`, with the fixture still the default.
-- It added `check-fork` and the `fork` job.
-- It set the root `.nvmrc` to upstream's.
-
-#9 added the packaged `Wisp.app` and its cached build, the `app` job. The fixture stays the default until #38:
-
-- Makes the editor the default in `build-app` and `app-launch`, or sets `WISP_APP_BUNDLE` to the packaged `wisp.app`.
-- Points `check-editor` at the fork's commands. #43 does the same for `package-app`.
-- Deletes the fixture, as 0001 describes.
-
 ## package-app
+
+Until #43 points it at the fork, `package-app` still packages the Electron fixture, which #38 deleted. It stops at its first step, and so does the release dry run in `release.yml`, whose `setup-node` step also names the fixture's lockfile. The steps below are the ones #43 replaces.
 
 `scripts/ci/package-app <version> [arm64|x64]` packages for this Mac's architecture unless you name one. It prints the bundle's absolute path as the only line on stdout, for `WISP_APP_BUNDLE`, and sends everything else to stderr. Steps:
 
@@ -218,9 +232,8 @@ If a run fails after the release exists, re-run it, but only while no newer rele
 
 ## Notes for workflows
 
-- `check-editor` never downloads the Electron binary. Electron 44 fetches it on first use rather than at install, and `build-app` fetches it explicitly.
-- Worth caching: `~/.rustup/toolchains`, keyed on `rust-toolchain.toml`, because the runner's preinstalled stable never matches the pin; `~/.cargo/registry`, `~/.cargo/git`, and `target/`; `~/.npm`, keyed on `ci/fixtures/electron-smoke/package-lock.json` in the `editor` job and on `editor/upstream.json` in the `fork` job; and `~/Library/Caches/electron` for the Electron download.
-- Building the editor (`WISP_APP=editor`) is dominated by `npm ci`: 2 min 20 s cold and 2 min with a warm `~/.npm` on an M3 Pro. Most of that is native module builds and install scripts, so caching the installed `node_modules` directories saves more than caching `~/.npm`. #8's Progress comment has the full numbers for #9.
+- Worth caching: `~/.rustup/toolchains`, keyed on `rust-toolchain.toml`, because the runner's preinstalled stable never matches the pin; `~/.cargo/registry`, `~/.cargo/git`, and `target/`; and `~/.npm`, keyed on `ci/screenshots/package-lock.json` in the `screenshots` job and on `editor/upstream.json` wherever the editor is installed: the `fork` job, and the `app` and `capture` jobs when they build.
+- Installing the editor is dominated by `npm ci`: 2 min 20 s cold and 2 min with a warm `~/.npm` on an M3 Pro. Most of that is native module builds and install scripts, so a warm `~/.npm` saves little. #8's Progress comment has the full numbers.
 - `npm run download-builtin-extensions` calls the GitHub REST API. Pass `GITHUB_TOKEN` so that it does not share the anonymous rate limit.
 - Upstream's lockfiles exist only after `scripts/editor/prepare` has run, so a cache step that runs before it, such as `actions/setup-node` with `cache: npm`, cannot key on them. Key editor caches on the committed `editor/upstream.json` and `editor/patches/**`, or run `prepare` before the cache step.
 - The `fork` job runs on Ubuntu because upstream's type-check needs about 6.4 GB, which swaps on the 7 GB macOS runner, and it does not depend on the platform.
