@@ -8,6 +8,7 @@ A decision that affects more than one issue gets a record here. Records supersed
 | [0003](0003-naming.md) | Wisp, `wisp`, and `wispd` |
 | [0004](0004-subscription-providers.md) | Subscriptions run through each vendor's official CLI; wisp never handles consumer credentials |
 | [0005](0005-shared-context-folder.md) | Shared context is a daemon-owned folder outside the repo |
+| [0006](0006-release-versioning-and-packaging.md) | Versions come from release tags; releases are arm64-only and ad-hoc signed until #7; bundle id `io.github.ryan-stoffel.wisp` |
 
 Reserved: 0002 (#8).
 

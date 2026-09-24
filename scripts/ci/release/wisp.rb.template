@@ -1,0 +1,38 @@
+cask "wisp" do
+  {{arch}}
+
+  version "{{version}}"
+  {{sha256}}
+
+  url "https://github.com/ryan-stoffel/wisp/releases/download/v#{version}/wisp-#{version}-#{arch}.zip"
+  name "Wisp"
+  desc "Editor with a coordinator chat that runs AI agents on machines you own"
+  homepage "https://github.com/ryan-stoffel/wisp"
+
+  livecheck do
+    url :url
+    strategy :github_latest
+  end
+
+  {{depends_on_arch}}
+  depends_on macos: :ventura
+
+  app "wisp.app"
+
+  zap trash: [
+    "~/Library/Application Support/wisp",
+    "~/Library/Caches/io.github.ryan-stoffel.wisp",
+    "~/Library/HTTPStorages/io.github.ryan-stoffel.wisp",
+    "~/Library/Preferences/io.github.ryan-stoffel.wisp.plist",
+    "~/Library/Saved Application State/io.github.ryan-stoffel.wisp.savedState",
+  ]
+
+  caveats <<~EOS
+    Wisp is not signed with an Apple Developer ID yet, so macOS blocks its first launch.
+    Try to open it, close the warning, then click Open Anyway in
+    System Settings > Privacy & Security. Or remove the quarantine attribute:
+      xattr -dr com.apple.quarantine #{appdir}/wisp.app
+    macOS asks again after each upgrade. Details:
+      https://github.com/ryan-stoffel/wisp#install
+  EOS
+end

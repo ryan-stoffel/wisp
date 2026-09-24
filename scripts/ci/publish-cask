@@ -1,0 +1,119 @@
+#!/usr/bin/env node
+'use strict';
+
+const { readFileSync } = require('node:fs');
+const { requirePinnedNode } = require('./release/node-version.js');
+const { planTapCommit } = require('./release/tap.js');
+
+requirePinnedNode('publish-cask');
+
+const TAP = 'ryan-stoffel/homebrew-taps';
+const CASK_PATH = 'Casks/wisp.rb';
+const TOKEN_HELP = 'Create or renew the TAP_GITHUB_TOKEN secret as described in #28.';
+const USAGE = 'usage: publish-cask --check | [--dry-run] <cask.rb> <version>';
+
+const READ_TAP = `query($owner: String!, $name: String!, $expression: String!) {
+  repository(owner: $owner, name: $name) {
+    isArchived
+    defaultBranchRef { name target { oid } }
+    cask: object(expression: $expression) { ... on Blob { text } }
+  }
+}`;
+
+const COMMIT = `mutation($input: CreateCommitOnBranchInput!) {
+  createCommitOnBranch(input: $input) { commit { oid url } }
+}`;
+
+async function graphql(token, query, variables) {
+  const response = await fetch('https://api.github.com/graphql', {
+    method: 'POST',
+    headers: { authorization: `bearer ${token}`, 'content-type': 'application/json', 'user-agent': 'wisp-release' },
+    body: JSON.stringify({ query, variables }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (response.status === 401) {
+    throw new Error(`GitHub rejected TAP_GITHUB_TOKEN (401): it is wrong or expired. ${TOKEN_HELP}`);
+  }
+  if (!response.ok || body.errors) {
+    throw new Error(`GitHub GraphQL returned ${response.status}: ${JSON.stringify(body.errors ?? body)}`);
+  }
+  return body.data;
+}
+
+async function readTap(token) {
+  const [owner, name] = TAP.split('/');
+  const { repository } = await graphql(token, READ_TAP, { owner, name, expression: `HEAD:${CASK_PATH}` });
+  if (!repository || !repository.defaultBranchRef) {
+    throw new Error(`TAP_GITHUB_TOKEN cannot see ${TAP}. ${TOKEN_HELP}`);
+  }
+  if (repository.isArchived) {
+    throw new Error(`${TAP} is archived, so it cannot take a new cask`);
+  }
+  return {
+    branch: repository.defaultBranchRef.name,
+    head: repository.defaultBranchRef.target.oid,
+    current: repository.cask ? repository.cask.text : null,
+  };
+}
+
+function commitInput(tap, cask, version, headline) {
+  return {
+    branch: { repositoryNameWithOwner: TAP, branchName: tap.branch },
+    expectedHeadOid: tap.head,
+    message: {
+      headline,
+      body: `Release: https://github.com/ryan-stoffel/wisp/releases/tag/v${version}`,
+    },
+    fileChanges: { additions: [{ path: CASK_PATH, contents: Buffer.from(cask).toString('base64') }] },
+  };
+}
+
+async function main(args) {
+  const token = process.env.TAP_GITHUB_TOKEN;
+  if (!token) {
+    throw new Error(`TAP_GITHUB_TOKEN is not set. ${TOKEN_HELP}`);
+  }
+  if (args.length === 1 && args[0] === '--check') {
+    const tap = await readTap(token);
+    console.log(`publish-cask: TAP_GITHUB_TOKEN can read ${TAP} (default branch ${tap.branch})`);
+    return;
+  }
+  const dryRun = args[0] === '--dry-run';
+  const [caskFile, version] = dryRun ? args.slice(1) : args;
+  if (!caskFile || !version || args.length !== (dryRun ? 3 : 2)) {
+    throw new Error(USAGE);
+  }
+  const cask = readFileSync(caskFile, 'utf8');
+  for (let attempt = 1; ; attempt += 1) {
+    const tap = await readTap(token);
+    const plan = planTapCommit(tap.current, cask, version);
+    if (plan.action === 'skip') {
+      console.log(`publish-cask: ${TAP}/${CASK_PATH} on ${tap.branch} already matches; nothing to commit`);
+      return;
+    }
+    if (plan.action === 'refuse') {
+      throw new Error(`left ${TAP}/${CASK_PATH} on ${tap.branch} unchanged: ${plan.reason}`);
+    }
+    const input = commitInput(tap, cask, version, plan.headline);
+    if (dryRun) {
+      const shown = { ...input, fileChanges: { additions: [{ path: CASK_PATH, contents: '<base64 of the cask>' }] } };
+      console.log(`publish-cask: would commit to ${TAP}:\n${JSON.stringify(shown, null, 2)}`);
+      return;
+    }
+    try {
+      const { createCommitOnBranch } = await graphql(token, COMMIT, { input });
+      console.log(`publish-cask: committed ${createCommitOnBranch.commit.url}`);
+      return;
+    } catch (error) {
+      if (attempt >= 3 || !/Expected branch to point to/i.test(error.message)) {
+        throw error;
+      }
+      console.error(`publish-cask: ${tap.branch} moved while committing; retrying (${attempt})`);
+    }
+  }
+}
+
+main(process.argv.slice(2)).catch((error) => {
+  console.error(`publish-cask: ${error.message}`);
+  process.exit(1);
+});
