@@ -9,8 +9,15 @@ if [ "$have" != "$want" ]; then
   exit 1
 fi
 
-cd "$root/ci/fixtures/electron-smoke"
 set -x
+"$root/scripts/editor/prepare"
+"$root/scripts/editor/export-patches" --check
+if ! cmp -s "$root/.nvmrc" "$root/editor/vscode/.nvmrc"; then
+  echo "${0##*/}: .nvmrc pins Node $(cat "$root/.nvmrc"), but Code - OSS in editor/upstream.json requires $(cat "$root/editor/vscode/.nvmrc"); copy editor/vscode/.nvmrc to .nvmrc" >&2
+  exit 1
+fi
+
+cd "$root/ci/fixtures/electron-smoke"
 
 node --version
 npm ci --no-audit --no-fund
