@@ -58,7 +58,7 @@ pub fn generate() -> String {
          /** The newest protocol version these types describe. */\n\
          export const PROTOCOL_VERSION = {PROTOCOL_VERSION};\n\
          \n\
-         /** The largest frame either side sends or accepts: 8 MiB, not counting the newline. */\n\
+         /** The largest frame either side sends or accepts: 8 MiB, not counting the line ending. */\n\
          export const MAX_FRAME_BYTES = {MAX_FRAME_BYTES};\n\
          \n\
          /** JSON-RPC error codes. A `WispError`'s `data` is an `ErrorData`. */\n\

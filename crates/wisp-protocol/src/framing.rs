@@ -9,7 +9,8 @@
 //!   nothing more. Close the connection.
 //!
 //! Frames end with `\n`. A `\r` before it is dropped, empty lines are skipped, and a last line
-//! without a newline still counts at the end of the stream.
+//! without a newline still counts at the end of the stream. The limit leaves out the line ending,
+//! whether it is `\n` or `\r\n`.
 //!
 //! It splits lines like `tokio_util`'s `LinesCodec::new_with_max_length`, which 0007 names, but
 //! yields bytes instead of strings. `LinesCodec` fails the stream on a line that is not UTF-8,
@@ -22,7 +23,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use serde::Serialize;
 use tokio_util::codec::{Decoder, Encoder};
 
-/// The largest frame either side sends or accepts: 8 MiB, not counting the newline.
+/// The largest frame either side sends or accepts: 8 MiB, not counting the line ending.
 ///
 /// Diffs, logs, and files that could be larger come through paged methods.
 pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
@@ -42,7 +43,7 @@ impl FrameCodec {
         Self::with_max_frame_bytes(MAX_FRAME_BYTES)
     }
 
-    /// A codec with another limit, in bytes, not counting the newline.
+    /// A codec with another limit, in bytes, not counting the line ending.
     #[must_use]
     pub fn with_max_frame_bytes(max_frame_bytes: usize) -> Self {
         Self {
@@ -52,7 +53,7 @@ impl FrameCodec {
         }
     }
 
-    /// The limit, in bytes, not counting the newline.
+    /// The limit, in bytes, not counting the line ending.
     #[must_use]
     pub fn max_frame_bytes(&self) -> usize {
         self.max_frame_bytes
@@ -77,16 +78,20 @@ impl Decoder for FrameCodec {
     type Error = FrameError;
 
     fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<Bytes>, FrameError> {
+        let max = self.max_frame_bytes;
         loop {
             if self.too_large {
                 return Err(self.too_large());
             }
-            let search_end = buf.len().min(self.max_frame_bytes.saturating_add(1));
+            // The limit leaves out the line ending, so the `\r` of a `\r\n` may sit just past it.
+            let search_end = buf.len().min(max.saturating_add(2));
             let newline = buf[self.next_index..search_end]
                 .iter()
                 .position(|&byte| byte == b'\n');
             let Some(offset) = newline else {
-                if buf.len() > self.max_frame_bytes {
+                let past_limit =
+                    buf.len() > max.saturating_add(1) || (buf.len() > max && buf[max] != b'\r');
+                if past_limit {
                     return Err(self.too_large());
                 }
                 self.next_index = buf.len();
@@ -97,6 +102,9 @@ impl Decoder for FrameCodec {
             line.truncate(line.len() - 1);
             if line.last() == Some(&b'\r') {
                 line.truncate(line.len() - 1);
+            }
+            if line.len() > max {
+                return Err(self.too_large());
             }
             if !line.is_empty() {
                 return Ok(Some(line.freeze()));
@@ -142,7 +150,7 @@ impl<T: Serialize> Encoder<T> for FrameCodec {
 pub enum FrameError {
     /// A frame is longer than the limit. When reading, the connection must close.
     TooLarge {
-        /// The limit, in bytes, not counting the newline.
+        /// The limit, in bytes, not counting the line ending.
         max_frame_bytes: usize,
     },
     /// A message could not be serialized.
@@ -256,6 +264,54 @@ mod tests {
             matches!(codec.decode(&mut buf), Err(FrameError::TooLarge { .. })),
             "nothing is decoded after an oversized frame"
         );
+    }
+
+    #[test]
+    fn the_limit_leaves_out_a_crlf_line_ending() {
+        for (input, frame) in [
+            (&b"12345678\r\n"[..], &b"12345678"[..]),
+            (b"12345678\n", b"12345678"),
+            (b"1234567\r\r\n", b"1234567\r"),
+        ] {
+            let mut codec = FrameCodec::with_max_frame_bytes(8);
+            let mut buf = BytesMut::from(input);
+            assert_eq!(codec.decode(&mut buf).unwrap().as_deref(), Some(frame));
+        }
+        for input in [&b"123456789\r\n"[..], b"123456789\n", b"12345678\r\r\n"] {
+            let mut codec = FrameCodec::with_max_frame_bytes(8);
+            let mut buf = BytesMut::from(input);
+            assert!(
+                matches!(codec.decode(&mut buf), Err(FrameError::TooLarge { .. })),
+                "{input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_crlf_split_across_reads_at_the_limit_passes() {
+        let mut codec = FrameCodec::with_max_frame_bytes(8);
+        let mut buf = BytesMut::from(&b"12345678\r"[..]);
+        assert_eq!(codec.decode(&mut buf).unwrap(), None);
+        buf.extend_from_slice(b"\n");
+        assert_eq!(
+            codec.decode(&mut buf).unwrap(),
+            Some(Bytes::from_static(b"12345678"))
+        );
+
+        let mut buf = BytesMut::from(&b"12345678\r"[..]);
+        assert_eq!(codec.decode(&mut buf).unwrap(), None);
+        assert_eq!(
+            codec.decode_eof(&mut buf).unwrap(),
+            Some(Bytes::from_static(b"12345678"))
+        );
+
+        let mut buf = BytesMut::from(&b"12345678\r"[..]);
+        assert_eq!(codec.decode(&mut buf).unwrap(), None);
+        buf.extend_from_slice(b"x");
+        assert!(matches!(
+            codec.decode(&mut buf),
+            Err(FrameError::TooLarge { .. })
+        ));
     }
 
     #[test]

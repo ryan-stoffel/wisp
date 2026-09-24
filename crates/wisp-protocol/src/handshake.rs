@@ -86,7 +86,7 @@ pub struct InitializeResult {
     pub log_id: LogId,
     /// What wispd supports.
     pub capabilities: Capabilities,
-    /// The largest frame wispd accepts, in bytes, not counting the newline.
+    /// The largest frame wispd accepts, in bytes, not counting the line ending.
     pub max_frame_bytes: u64,
 }
 

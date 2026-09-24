@@ -6,7 +6,7 @@
 /** The newest protocol version these types describe. */
 export const PROTOCOL_VERSION = 1;
 
-/** The largest frame either side sends or accepts: 8 MiB, not counting the newline. */
+/** The largest frame either side sends or accepts: 8 MiB, not counting the line ending. */
 export const MAX_FRAME_BYTES = 8388608;
 
 /** JSON-RPC error codes. A `WispError`'s `data` is an `ErrorData`. */
@@ -154,7 +154,7 @@ export type InitializeResult = {
 	 */
 	capabilities: Capabilities,
 	/**
-	 * The largest frame wispd accepts, in bytes, not counting the newline.
+	 * The largest frame wispd accepts, in bytes, not counting the line ending.
 	 */
 	maxFrameBytes: number,
 };
