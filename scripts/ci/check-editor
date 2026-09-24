@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+cd "$(dirname "$0")/../../ci/fixtures/electron-smoke"
+set -x
+
+node --version
+npm ci --no-audit --no-fund
+npm run lint
+npm run typecheck
+npm run build
+npm test
