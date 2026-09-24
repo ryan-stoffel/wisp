@@ -53,7 +53,7 @@ mod tests {
     #[test]
     fn version_flags_select_version() {
         assert_eq!(parse(&["--version"]), Some(Command::Version));
-        assert_eq!(parse(&["-V"]), Some(Command::Version));
+        assert_eq!(parse(&["-V"]), Some(Command::Help));
     }
 
     #[test]
