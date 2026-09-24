@@ -57,7 +57,10 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-          cache-dependency-path: ci/fixtures/electron-smoke/package-lock.json
+          # Upstream Code - OSS lockfiles exist only after scripts/editor/prepare runs, so the pin stands in for them.
+          cache-dependency-path: |
+            ci/fixtures/electron-smoke/package-lock.json
+            editor/upstream.json
 
       - name: Lint, type-check, build, and test
         run: scripts/ci/check-editor
