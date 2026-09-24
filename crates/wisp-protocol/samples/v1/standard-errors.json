@@ -1,0 +1,57 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": null,
+    "error": {
+      "code": -32700,
+      "message": "Parse error: expected value at line 1 column 1"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": null,
+    "error": {
+      "code": -32600,
+      "message": "Invalid request: a message must be a JSON object; batches are not supported"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 13,
+    "method": "example/missing",
+    "params": {}
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 13,
+    "error": { "code": -32601, "message": "Method not found: example/missing" }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 14,
+    "method": "project/create",
+    "params": { "id": "not-a-uuid", "name": "wisp", "repoPath": "/Users/me/src/wisp" }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 14,
+    "error": {
+      "code": -32602,
+      "message": "Invalid params: expected a lowercase, hyphenated UUIDv7"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 15,
+    "method": "project/list",
+    "params": {}
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 15,
+    "error": {
+      "code": -32603,
+      "message": "Internal error: the project store is unavailable"
+    }
+  }
+]

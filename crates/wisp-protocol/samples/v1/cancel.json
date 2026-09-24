@@ -1,0 +1,18 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": 12,
+    "method": "project/list",
+    "params": {}
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "$/cancelRequest",
+    "params": { "id": 12 }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 12,
+    "error": { "code": -32800, "message": "Request cancelled" }
+  }
+]

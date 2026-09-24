@@ -65,7 +65,7 @@ pub(crate) fn run(conn: &mut Connection) -> Result<(), StoreError> {
             tx.execute_batch(migration.sql)?;
             tx.execute(
                 "INSERT INTO schema_version (version, applied_at) VALUES (?1, ?2)",
-                params![migration.version, timestamp::now()?],
+                params![migration.version, timestamp::now()],
             )?;
         }
 

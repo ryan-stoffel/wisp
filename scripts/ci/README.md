@@ -6,7 +6,7 @@ Each script finds the repo root on its own, so it runs from any directory.
 
 | Script | What it does | Called by |
 | --- | --- | --- |
-| `check-rust` | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo build`, and `cargo test` on the workspace, with `--locked` | `ci.yml` (#3) |
+| `check-rust` | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo build`, and `cargo test` on the workspace, with `--locked`. The tests include the [protocol type](#protocol-types) checks. | `ci.yml` (#3) |
 | `check-editor` | `npm ci`, then lint, type-check (`tsc --noEmit`), build, and test the editor, currently `ci/fixtures/electron-smoke/` | `ci.yml` (#3), `editor` job |
 | `check-fork` | Runs `scripts/editor/test`, then checks that the Code - OSS pin and patches apply (`scripts/editor/prepare`, then `scripts/editor/export-patches --check`) and that the root `.nvmrc` equals upstream's. Then it type-checks `src/` in the patched tree with upstream's `npm run typecheck-client`, after `npm ci --ignore-scripts` when `node_modules` is missing and upstream's `node build/npm/electronTypes.ts`, which downloads the checksum-verified `electron.d.ts` | `ci.yml` (#8), `fork` job |
 | `build-app` | Installs, builds, and downloads the Electron binary: what `app-launch` needs, without lint or tests. `WISP_APP=editor` builds the Code - OSS development build in `editor/vscode/` instead of the fixture. The packaged `Wisp.app` comes from `scripts/editor/build-app` instead (see [The app job](#the-app-job)). | `screenshots.yml` (#4) |
@@ -29,6 +29,13 @@ Each script finds the repo root on its own, so it runs from any directory.
 - Node: the exact version in the root `.nvmrc`. It always equals upstream's `.nvmrc` at the pinned Code - OSS release: `scripts/editor/upgrade` copies it, and `check-fork` fails if the two differ. In Actions, use `actions/setup-node` with `node-version-file: .nvmrc`. The scripts that run Node stop with an error when `node` has a different major version, so local runs use the same Node as CI.
 - macOS, for `build-app`, `app-launch`, and `package-app`.
 - Homebrew, for `audit-cask`. GitHub's macOS runners have it.
+
+## Protocol types
+
+`crates/wisp-protocol` is the source of the editor's protocol types ([0007](../../docs/decisions/0007-editor-wispd-protocol.md)). Two of its tests run in `check-rust`:
+
+- **Stale TypeScript.** The generated file, `editor/overlay/src/vs/platform/wisp/common/wispProtocol.ts`, must match the Rust types. When it doesn't, the test names the command that regenerates it: `cargo run -p wisp-protocol --bin generate-typescript`. Commit the result. The file is under `editor/`, so a protocol change also reruns the `fork` job.
+- **Samples.** Every message in `crates/wisp-protocol/samples/v<N>/` must still decode, so a change that is not additive fails. The rules for adding samples are in the crate's docs.
 
 ## app-launch
 

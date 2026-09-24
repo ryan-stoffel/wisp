@@ -1,5 +1,5 @@
+use jiff::Timestamp;
 use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::Store;
@@ -21,8 +21,8 @@ pub struct Project {
     pub name: String,
     pub repo_path: String,
     pub host: String,
-    pub created_at: OffsetDateTime,
-    pub updated_at: OffsetDateTime,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
 }
 
 /// A project row with its id and timestamps still as the TEXT SQLite stored
@@ -106,7 +106,7 @@ impl Store {
             return existing.into_project();
         }
 
-        let now = timestamp::now()?;
+        let now = timestamp::now();
 
         let tx = self
             .conn
@@ -173,7 +173,7 @@ impl Store {
     /// database error.
     pub fn update_project(&self, id: Uuid, fields: &ProjectFields) -> Result<Project, StoreError> {
         let id_text = id.to_string();
-        let now = timestamp::now()?;
+        let now = timestamp::now();
 
         let changed = self.conn.execute(
             "UPDATE projects
