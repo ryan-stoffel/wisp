@@ -25,6 +25,7 @@ dist/
 test-results/
 playwright-report/
 screenshots/
+!/ci/screenshots/
 
 # Env and secrets
 .env
