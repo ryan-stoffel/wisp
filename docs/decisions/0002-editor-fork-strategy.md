@@ -67,7 +67,7 @@ Option 3: upstream Code - OSS at a pinned tag, plus a patch series applied by on
   - It runs `prepare` and `export-patches --check`.
   - It runs upstream's TypeScript type-check (`npm run typecheck-client`), which covers `src/`.
 
-  A patch that no longer applies, was edited by hand, or breaks the types in `src/` therefore fails CI. A PR skips the check when the same inputs already passed it. The full build and its caching are left to #9.
+  A patch that no longer applies, was edited by hand, or breaks the types in `src/` therefore fails CI. A PR skips the check when the same inputs already passed it. That skip is advisory: pushes to `develop` always run the check, and that run is the check of record (`scripts/ci/README.md`). The full build and its caching are left to #9.
 
 ### What is committed
 

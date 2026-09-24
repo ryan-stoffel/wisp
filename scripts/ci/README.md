@@ -197,7 +197,14 @@ If a run fails after the release exists, re-run it, but only while no newer rele
 - Upstream's lockfiles exist only after `scripts/editor/prepare` has run, so a cache step that runs before it, such as `actions/setup-node` with `cache: npm`, cannot key on them. Key editor caches on the committed `editor/upstream.json` and `editor/patches/**`, or run `prepare` before the cache step.
 - The `fork` job runs on Ubuntu because upstream's type-check needs about 6.4 GB, which swaps on the 7 GB macOS runner, and it does not depend on the platform.
 - A PR skips `check-fork` when its inputs already passed it:
-  - The inputs are `editor/upstream.json`, `editor/patches/`, `.nvmrc`, `.gitattributes`, `scripts/editor/`, `check-fork`, and `ci.yml`.
-  - Each pass saves an empty marker with `actions/cache`, keyed on the hash of those inputs. A PR can reuse a pass from `develop` or from an earlier push to the same PR.
+  - The inputs are every tracked file under `editor/` (the pin, the patches, and anything #9 adds; `editor/vscode/` is never tracked), plus `.nvmrc`, `.gitattributes`, `scripts/editor/`, `check-fork`, and `ci.yml`.
+  - The key is a SHA-256 of `git ls-files -s` over those paths, so each file's mode and path count as well as its content. With `hashFiles`, a `chmod -x` or a renamed patch would have kept an old pass.
+  - Each pass saves an empty marker with `actions/cache` under that key. A PR can reuse a pass from `develop` or from an earlier push to the same PR.
   - Unlike a diff against the previous push, a later docs-only push cannot turn a failed check green.
   - The job always runs, so `ci` still gets its result. Pushes to `develop` and `main` always run the check.
+- The skip is advisory, and the push run on `develop` is the check of record:
+  - A PR's run executes the PR's own `ci.yml`. So a PR could save a marker under the key of inputs that fail, and skip the check.
+  - That marker lands only in the PR's own cache scope, `refs/pull/<n>/merge`, which other PRs cannot read.
+  - Only push runs write to the `develop` and `main` scopes. They execute the reviewed `ci.yml`, always run the full check, and save a marker only after a pass.
+  - The worst case is a merged break that turns `develop` red on its next push. A PR could already cause that by editing `ci.yml`; a forged marker only hides the edit from the squashed diff.
+  - A skip that cannot be forged would be decided from the merge commit instead (`fetch-depth: 2`, then `git diff --quiet HEAD^1 HEAD -- <inputs>`). It trusts only `develop`'s runs, but loses reuse within a PR.
