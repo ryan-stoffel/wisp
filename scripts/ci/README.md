@@ -10,12 +10,15 @@ Each script finds the repo root on its own, so it runs from any directory.
 | `check-editor` | `npm ci`, then lint, type-check (`tsc --noEmit`), build, and test the editor, currently `ci/fixtures/electron-smoke/` | `ci.yml` (#3) |
 | `build-app` | Installs, builds, and downloads the Electron binary: what `app-launch` needs, without lint or tests | `screenshots.yml` (#4) |
 | `app-launch` | Prints Playwright `_electron.launch` options for the built app as one line of JSON | `screenshots.yml` (#4) |
+| `screenshots` | Captures every scenario in `ci/screenshots/` from the built app into a directory (see [Screenshots](#screenshots)) | `screenshots.yml` (#4) |
+| `publish-screenshots` | Commits the captures to the `ci-screenshots` branch and creates or updates the PR comment. It needs Actions' environment; locally, `--dry-run` prints the comment | `screenshots.yml` (#4) |
+| `check-screenshots` | `npm ci`, then lint, type-check, and test `ci/screenshots/` | Not yet: #39 adds it to `ci.yml` |
 | `package-app` | Not yet written: #5 adds it (see [package-app](#package-app-added-by-5)) | `release.yml` (#5) |
 
 ## Requirements
 
 - Rust: rustup. `rust-toolchain.toml` pins the toolchain and its components. In CI, run `rustup toolchain install` with no arguments as its own step before `check-rust`. It installs exactly what the file pins, and it does not rely on rustup's auto-install, which can be turned off. Locally, rustup installs the pin on first use.
-- Node: the exact version in the root `.nvmrc`. In Actions, use `actions/setup-node` with `node-version-file: .nvmrc`. `check-editor` and `build-app` stop with an error when `node` has a different major version, so local runs use the same Node as CI.
+- Node: the exact version in the root `.nvmrc`. In Actions, use `actions/setup-node` with `node-version-file: .nvmrc`. The scripts that run Node stop with an error when `node` has a different major version, so local runs use the same Node as CI.
 - macOS, for `build-app` and `app-launch`.
 
 ## app-launch
@@ -44,6 +47,42 @@ const window = await electronApp.firstWindow();
 - `WISP_APP_BUNDLE=/path/to/wisp.app` launches a built bundle instead: the bundle's `CFBundleExecutable`, with no arguments.
 - Every key in the output is an `_electron.launch` option. The fixture prints no `env`. If a later app needs one, it lists only additions, and the merge above keeps `PATH`, `HOME`, and the rest.
 - Playwright adds its startup hook only when it locates Electron itself. With `executablePath`, the app starts without waiting for Playwright, so wait for `firstWindow()` before inspecting windows with `electronApp.evaluate()`.
+
+## Screenshots
+
+On every PR from a branch in this repo, `screenshots.yml` runs `build-app`, then `screenshots <dir>`, then `publish-screenshots <dir>`. PRs from forks get a read-only token, so the job logs a notice and skips the rest.
+
+- `screenshots` installs `ci/screenshots/`, whose only runtime dependency is `playwright-core`, and runs each scenario in `ci/screenshots/src/scenarios.ts` against a fresh launch of the app from `app-launch`'s output. It writes the PNGs and a `manifest.json` to `<dir>` (default `ci/screenshots/out/`) and exits 1 if any scenario failed.
+- `publish-screenshots` commits the PNGs to the orphan branch `ci-screenshots` under `pr-<number>/<short-sha>/`, then creates or updates the one PR comment that contains `<!-- wisp-screenshots -->`. The images are `raw.githubusercontent.com` URLs pinned to the `ci-screenshots` commit, so no cache shows an old image. The step also runs after a failed build or capture, so the comment always says what happened. Nothing is deleted from `ci-screenshots` yet (#40).
+
+### Adding a view
+
+Add an entry to `scenarios` in `ci/screenshots/src/scenarios.ts`. The workflow does not change.
+
+- `name`: the file name, in lowercase words joined by hyphens.
+- `title`: the heading and alt text in the comment.
+- `args` (optional): extra app arguments, such as a folder and a file to open.
+- `run({ app, window })`: drives the app and returns `screenshot(window)`. If this build does not have the view yet, it returns `notAvailable(reason)` instead: the comment lists the view as not available, and the job still passes. If the view exists but breaks, `run` throws. The job then fails, and the comment shows the error and a screenshot of the window at that moment.
+
+Keep `#123` and `@name` out of reasons. The comment is posted on every PR, and each mention would add a cross-reference to that issue.
+
+Before `run` is called, the first window has loaded, and for a Code - OSS window `.monaco-workbench` exists. After `app-launch`'s `args`, the harness passes `--user-data-dir=<new temp dir>`, `--skip-welcome`, `--skip-release-notes`, `--disable-workspace-trust`, and then the scenario's `args`. The fixture ignores all of them.
+
+The shipped scenarios look for these hooks:
+
+- `editor-file-open` opens `ci/screenshots/fixtures/workspace/` with `src/tasks.ts` and waits for `.monaco-editor[data-uri$="/src/tasks.ts"]`, the attribute upstream's smoke tests use.
+- `coordinator-chat` waits up to 10 seconds for `.wisp-coordinator-chat`. #12 puts that class on the view's root element and, if the view is hidden at startup, adds the steps that reveal it.
+
+### Running it locally
+
+```sh
+scripts/ci/build-app
+scripts/ci/screenshots
+scripts/ci/publish-screenshots --dry-run
+scripts/ci/check-screenshots
+```
+
+`screenshots` writes to `ci/screenshots/out/`, and `publish-screenshots --dry-run` prints the comment it would post for that directory.
 
 ## Switching to the real app (#8)
 
