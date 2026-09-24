@@ -1,8 +1,8 @@
 # 0003: Wisp, `wisp`, and `wispd`
 
-Status: accepted
-Date: 2026-09-23
-Issue: #17, #19
+- Status: accepted
+- Date: 2026-09-23
+- Issue: #17, #19
 
 ## Context
 
@@ -11,8 +11,9 @@ The plan left two naming questions open: whether to confirm the name wisp, and w
 ## Decision
 
 - The product is **Wisp**. The Homebrew cask token, bundle identifiers, and data folders use `wisp`.
-- `wisp` is the editor's command-line launcher, as the plan says.
-- The host daemon is **`wispd`**. It lives in `daemon/` and is not shared with Roster.
+- `wisp` is the editor's command-line launcher. The plan says "The command is `wisp`", and the editor is the user-facing program.
+- The host daemon is **`wispd`**. Ryan ruled out `projectd` without naming a replacement, so `wispd` is a default chosen in #17, and Ryan can override it. It lives in `daemon/` and is not shared with Roster (Ryan, #17).
+- Ryan confirmed the name (#19) without waiting for conflict checks. The GitHub, domain, and trademark checks listed in `docs/PLAN.md` no longer gate the release.
 
 ## Consequences
 

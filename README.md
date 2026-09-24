@@ -5,7 +5,7 @@ An open-source macOS app that reproduces the Cursor Projects workflow on machine
 wisp has two parts:
 
 - An editor app built on a stripped-down fork of VS Code (Code - OSS)
-- `projectd`, a Rust daemon that runs the coordinator, triggers, and project state on the host
+- `wispd`, a Rust daemon that runs the coordinator, triggers, and project state on the host
 
 Status: early development. See [docs/PLAN.md](docs/PLAN.md) for the plan and milestones.
 

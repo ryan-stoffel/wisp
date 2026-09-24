@@ -16,9 +16,9 @@ Numbers are assigned in order. Take the next free number when you start the reco
 ```markdown
 # NNNN: Title
 
-Status: accepted | superseded by NNNN
-Date: YYYY-MM-DD
-Issue: #n
+- Status: accepted | superseded by NNNN
+- Date: YYYY-MM-DD
+- Issue: #n
 
 ## Context
 
