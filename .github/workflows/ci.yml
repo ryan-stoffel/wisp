@@ -85,6 +85,14 @@ jobs:
       - name: Lint workflows
         run: actionlint -color
 
+      - name: Require ci to need every other job
+        run: |
+          workflow_jobs=$(yq -o=json '.jobs' .github/workflows/ci.yml)
+          if ! jq -e '(keys - ["ci"]) == (.ci.needs | sort)' <<< "$workflow_jobs" > /dev/null; then
+            echo "::error file=.github/workflows/ci.yml::ci.needs must list exactly the other jobs: $(jq -c 'keys - ["ci"]' <<< "$workflow_jobs")"
+            exit 1
+          fi
+
   # Branch protection requires this job's name, ci, as the only check (#6). Renaming it blocks every merge.
   ci:
     if: always()
