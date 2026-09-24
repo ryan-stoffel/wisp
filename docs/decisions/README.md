@@ -5,9 +5,10 @@ A decision that affects more than one issue gets a record here. Records supersed
 | Record | Decision |
 | --- | --- |
 | [0003](0003-naming.md) | Wisp, `wisp`, and `wispd` |
+| [0004](0004-subscription-providers.md) | Subscriptions run through each vendor's official CLI; wisp never handles consumer credentials |
 | [0005](0005-shared-context-folder.md) | Shared context is a daemon-owned folder outside the repo |
 
-Reserved: 0001 (#2), 0002 (#8), 0004 (#15).
+Reserved: 0001 (#2), 0002 (#8).
 
 Numbers are assigned in order. Take the next free number when you start the record, add a row to this table in the same PR, and link the record from its issue.
 
