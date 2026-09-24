@@ -50,7 +50,7 @@ const window = await electronApp.firstWindow();
 
 ## Screenshots
 
-`screenshots.yml` runs on every PR from a branch in this repo. It has two jobs, so the PR's code never runs where the write token is:
+`screenshots.yml` runs on every PR from a branch in this repo. It has two jobs, so the PR's build and its dependencies never run where the write token is; the publish script and this workflow itself still come from the PR head until #48:
 
 - `capture` (macOS, `contents: read`) runs `build-app`, then `screenshots <dir>`, and uploads the PNGs, `manifest.json`, and both steps' logs as the `screenshots` artifact. `screenshots` installs `ci/screenshots/`, whose only runtime dependency is `playwright-core`, and runs each scenario in `ci/screenshots/src/scenarios.ts` against a fresh launch of the app from `app-launch`'s output. It exits 1 if any scenario failed. For PRs from forks, whose token is read-only, the job logs a notice and skips the rest, and `publish` does not run.
 - `publish` (Linux, `contents: write` and `pull-requests: write`) runs even when `capture` failed. It checks out only `scripts/ci/` and `ci/screenshots/src/`, installs nothing, downloads the artifact, and runs `publish-screenshots`. That commits the PNGs to the orphan branch `ci-screenshots` under `pr-<number>/<short-sha>/`, then creates or updates the one comment by `github-actions[bot]` that contains `<!-- wisp-screenshots -->`. The images are `raw.githubusercontent.com` URLs pinned to the `ci-screenshots` commit, so no cache shows an old image. Nothing is deleted from `ci-screenshots` yet (#40).
@@ -58,7 +58,7 @@ const window = await electronApp.firstWindow();
 Rules that keep the token away from the PR's build:
 
 - `publish.ts` and the files it imports (`artifact.ts`, `branch.ts`, `comment.ts`, `manifest.ts`) use only Node built-ins. A test enforces this, and the `publish` job has no `node_modules`, so a package import fails instead of running.
-- `publish` treats the artifact as untrusted. `manifest.json` must parse into the known shape. Each file must be `<name>.png` or `<name>.failed.png` for a listed scenario, a regular file, at most 10 MB, and start with the PNG signature. Titles and reasons must be plain text. Only the last 64 KB of `build.log` and `capture.log` are read, and only when the job outputs say that step failed. If anything fails these checks, nothing is pushed, the comment says the results were rejected, and the `publish` job fails.
+- `publish` treats the artifact as untrusted. `manifest.json` must parse into the known shape. Each file must be `<name>.png` or `<name>.failed.png` for a listed scenario, a regular file, at most 10 MB, and start with the PNG signature; the files together must total at most 25 MB. Titles and reasons must be plain text. Only the last 64 KB of `build.log` and `capture.log` are read, and only when the job outputs say that step failed. If anything fails these checks, nothing is pushed, the comment says the results were rejected, and the `publish` job fails. If `capture` succeeded but its artifact never reaches `publish` (a lost upload or a failed download), `publish` reports the results as missing and fails instead of passing silently.
 - Nothing secret goes into the `capture` job. Its logs are written with `tee`, so Actions' masking does not apply, and their tails are posted in the comment.
 
 ### Adding a view
