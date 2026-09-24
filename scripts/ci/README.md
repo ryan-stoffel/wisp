@@ -7,7 +7,8 @@ Each script finds the repo root on its own, so it runs from any directory.
 | Script | What it does | Called by |
 | --- | --- | --- |
 | `check-rust` | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo build`, and `cargo test` on the workspace, with `--locked` | `ci.yml` (#3) |
-| `check-editor` | Checks that the Code - OSS pin and patches still apply (`scripts/editor/prepare`, then `scripts/editor/export-patches --check`) and that the root `.nvmrc` equals upstream's. It then type-checks the patched tree with upstream's `npm run typecheck-client`. Before that it runs `npm ci --ignore-scripts` when `node_modules` is missing, and upstream's `node build/npm/electronTypes.ts`, which downloads the checksum-verified `electron.d.ts`. Finally it runs `npm ci`, lint, type-check (`tsc --noEmit`), build, and test on the fixture, `ci/fixtures/electron-smoke/`. | `ci.yml` (#3) |
+| `check-editor` | `npm ci`, then lint, type-check (`tsc --noEmit`), build, and test the editor, currently `ci/fixtures/electron-smoke/` | `ci.yml` (#3), `editor` job |
+| `check-fork` | Runs `scripts/editor/test`, then checks that the Code - OSS pin and patches apply (`scripts/editor/prepare`, then `scripts/editor/export-patches --check`) and that the root `.nvmrc` equals upstream's. Then it type-checks `src/` in the patched tree with upstream's `npm run typecheck-client`, after `npm ci --ignore-scripts` when `node_modules` is missing and upstream's `node build/npm/electronTypes.ts`, which downloads the checksum-verified `electron.d.ts` | `ci.yml` (#8), `fork` job |
 | `build-app` | Installs, builds, and downloads the Electron binary: what `app-launch` needs, without lint or tests. `WISP_APP=editor` builds the Code - OSS development build in `editor/vscode/` instead of the fixture. | `screenshots.yml` (#4) |
 | `app-launch` | Prints Playwright `_electron.launch` options for the built app as one line of JSON. `WISP_APP=editor` selects the Code - OSS development build. | `screenshots.yml` (#4) |
 | `screenshots` | Captures every scenario in `ci/screenshots/` from the built app into a directory (see [Screenshots](#screenshots)) | `screenshots.yml` (#4), `capture` job |
@@ -18,7 +19,7 @@ Each script finds the repo root on its own, so it runs from any directory.
 ## Requirements
 
 - Rust: rustup. `rust-toolchain.toml` pins the toolchain and its components. In CI, run `rustup toolchain install` with no arguments as its own step before `check-rust`. It installs exactly what the file pins, and it does not rely on rustup's auto-install, which can be turned off. Locally, rustup installs the pin on first use.
-- Node: the exact version in the root `.nvmrc`. It always equals upstream's `.nvmrc` at the pinned Code - OSS release: `scripts/editor/upgrade` copies it, and `check-editor` fails if the two differ. In Actions, use `actions/setup-node` with `node-version-file: .nvmrc`. The scripts that run Node stop with an error when `node` has a different major version, so local runs use the same Node as CI.
+- Node: the exact version in the root `.nvmrc`. It always equals upstream's `.nvmrc` at the pinned Code - OSS release: `scripts/editor/upgrade` copies it, and `check-fork` fails if the two differ. In Actions, use `actions/setup-node` with `node-version-file: .nvmrc`. The scripts that run Node stop with an error when `node` has a different major version, so local runs use the same Node as CI.
 - macOS, for `build-app` and `app-launch`.
 
 ## app-launch
@@ -56,7 +57,7 @@ const window = await electronApp.firstWindow();
 {"executablePath":"<repo>/editor/vscode/.build/electron/Code - OSS.app/Contents/MacOS/Code - OSS","args":["<repo>/editor/vscode","--disable-extension=vscode.vscode-api-tests"],"env":{"NODE_ENV":"development","VSCODE_DEV":"1","VSCODE_CLI":"1","ELECTRON_ENABLE_STACK_DUMPING":"1","ELECTRON_ENABLE_LOGGING":"1"}}
 ```
 
-- Add arguments after the printed ones, and keep the source tree first. Add a folder or file to open. For repeatable screenshots, also add a fresh `--user-data-dir=<dir>` and `--extensions-dir=<dir>`, because the default profile is shared with any other Code - OSS development build on the machine.
+- Add arguments after the printed ones, and keep the source tree first, as the screenshot harness does. Add `--extensions-dir=<dir>` as well as a fresh `--user-data-dir` to keep a run apart from any other Code - OSS development build on the machine.
 
 ## Screenshots
 
@@ -100,12 +101,16 @@ scripts/ci/check-screenshots
 
 ## Switching to the real app
 
-#8 imported the fork. It added the development build to `build-app` and `app-launch` behind `WISP_APP=editor`, with the fixture still the default, made `check-editor` check the fork's pin and patches, and set the root `.nvmrc` to upstream's.
+#8 imported the fork:
+
+- It added the development build to `build-app` and `app-launch` behind `WISP_APP=editor`, with the fixture still the default.
+- It added `check-fork` and the `fork` job.
+- It set the root `.nvmrc` to upstream's.
 
 The fixture stays the default until #9 makes a cached fork build fast enough for every PR. Then #38:
 
 - Makes the editor the default in `build-app` and `app-launch`, or sets `WISP_APP_BUNDLE` to the packaged `wisp.app`.
-- Points `check-editor` and `package-app` at the fork's commands.
+- Points `check-editor` at the fork's commands. #43 does the same for `package-app`.
 - Deletes the fixture, as 0001 describes.
 
 ## package-app (added by #5)
@@ -120,7 +125,13 @@ The fixture has no packaging, so there is no `.app` for `release.yml` yet. #5 ad
 ## Notes for workflows
 
 - `check-editor` never downloads the Electron binary. Electron 44 fetches it on first use rather than at install, and `build-app` fetches it explicitly.
-- Worth caching: `~/.rustup/toolchains`, keyed on `rust-toolchain.toml`, because the runner's preinstalled stable never matches the pin; `~/.cargo/registry`, `~/.cargo/git`, and `target/`; `~/.npm`, keyed on `ci/fixtures/electron-smoke/package-lock.json` and `editor/upstream.json`; and `~/Library/Caches/electron` for the Electron download.
+- Worth caching: `~/.rustup/toolchains`, keyed on `rust-toolchain.toml`, because the runner's preinstalled stable never matches the pin; `~/.cargo/registry`, `~/.cargo/git`, and `target/`; `~/.npm`, keyed on `ci/fixtures/electron-smoke/package-lock.json` in the `editor` job and on `editor/upstream.json` in the `fork` job; and `~/Library/Caches/electron` for the Electron download.
 - Building the editor (`WISP_APP=editor`) is dominated by `npm ci`: 2 min 20 s cold and 2 min with a warm `~/.npm` on an M3 Pro. Most of that is native module builds and install scripts, so caching the installed `node_modules` directories saves more than caching `~/.npm`. #8's Progress comment has the full numbers for #9.
 - `npm run download-builtin-extensions` calls the GitHub REST API. Pass `GITHUB_TOKEN` so that it does not share the anonymous rate limit.
 - Upstream's lockfiles exist only after `scripts/editor/prepare` has run, so a cache step that runs before it, such as `actions/setup-node` with `cache: npm`, cannot key on them. Key editor caches on the committed `editor/upstream.json` and `editor/patches/**`, or run `prepare` before the cache step.
+- The `fork` job runs on Ubuntu because upstream's type-check needs about 6.4 GB, which swaps on the 7 GB macOS runner, and it does not depend on the platform.
+- A PR skips `check-fork` when its inputs already passed it:
+  - The inputs are `editor/upstream.json`, `editor/patches/`, `.nvmrc`, `.gitattributes`, `scripts/editor/`, `check-fork`, and `ci.yml`.
+  - Each pass saves an empty marker with `actions/cache`, keyed on the hash of those inputs. A PR can reuse a pass from `develop` or from an earlier push to the same PR.
+  - Unlike a diff against the previous push, a later docs-only push cannot turn a failed check green.
+  - The job always runs, so `ci` still gets its result. Pushes to `develop` and `main` always run the check.

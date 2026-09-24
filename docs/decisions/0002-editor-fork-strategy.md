@@ -61,8 +61,13 @@ Option 3: upstream Code - OSS at a pinned tag, plus a patch series applied by on
   - The committer and dates are fixed, and global git config is ignored, so the same pin and patches produce the same commits on any machine.
   - It refuses to overwrite uncommitted or unexported work in the tree.
 - Patches are commits, not plain `git apply` diffs as in VSCodium. That lets an upgrade use `git rebase`, with three-way merges and normal conflict tools, instead of `.rej` files. `scripts/editor/export-patches` writes the commits back in a canonical format, and `scripts/editor/upgrade <tag>` does the rebase, the pin, and the export. The GitLab Web IDE fork uses the same `format-patch` and `git am` pair.
-- The root `.nvmrc` equals upstream's `.nvmrc` (Node 24.18.0 for 1.139.0), because the CI scripts check Node against the root file. `upgrade` copies it, and `scripts/ci/check-editor` fails if the two differ.
-- `scripts/ci/check-editor` runs `prepare`, `export-patches --check`, and upstream's TypeScript type-check (`npm run typecheck-client`) on every PR. A patch that no longer applies, was edited by hand, or breaks the types fails CI. The full build and its caching are left to #9.
+- The root `.nvmrc` equals upstream's `.nvmrc` (Node 24.18.0 for 1.139.0), because the CI scripts check Node against the root file. `upgrade` copies it, and `scripts/ci/check-fork` fails if the two differ.
+- `scripts/ci/check-fork` runs in CI's `fork` job on Ubuntu:
+  - It tests the editor scripts.
+  - It runs `prepare` and `export-patches --check`.
+  - It runs upstream's TypeScript type-check (`npm run typecheck-client`), which covers `src/`.
+
+  A patch that no longer applies, was edited by hand, or breaks the types in `src/` therefore fails CI. A PR skips the check when the same inputs already passed it. The full build and its caching are left to #9.
 
 ### What is committed
 
@@ -109,7 +114,7 @@ Expect about 30 minutes per upgrade with a small series and no conflicts, mostly
 
 - Upgrades are reviewable: a pin change plus patch refreshes. Hunk changes in the patches show exactly where a conflict was resolved.
 - The series is the complete list of how wisp differs from upstream, and CI proves on every PR that it still applies.
-- wisp's repo stays small. `check-editor` fetches 62 MB of upstream on each run, which takes seconds.
+- wisp's repo stays small. `check-fork` fetches 62 MB of upstream when it runs, which takes seconds.
 - Editing the editor takes a round trip: `prepare`, then commit in `editor/vscode`, then `export-patches`, then commit the patch. Code navigation and IDE features need a prepared tree.
 - Changes to a patch are reviewed as diffs of diffs. If #12 or later work adds a lot of new code, move it into a wisp-owned directory or built-in extension that `prepare` copies in, instead of growing patches that add files.
 - When patches exist, the tree's HEAD is a local commit, not an upstream one. It is reproducible from the pin and the series. #9 decides which commit a packaged build reports, since upstream's build reads it from `.git`.

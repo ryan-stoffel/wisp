@@ -12,6 +12,7 @@ wisp's editor is upstream Code - OSS at the release pinned in `editor/upstream.j
 | `scripts/editor/prepare` | Creates or updates `editor/vscode/` from the pin and the patches | Yes |
 | `scripts/editor/export-patches` | Writes the commits in `editor/vscode/` back to `editor/patches/` | Yes |
 | `scripts/editor/upgrade <tag>` | Rebases the patches onto another upstream release and updates the pin | Yes |
+| `scripts/editor/test` | Tests the three scripts above against a local stand-in for upstream, without network access. Run it after changing them. CI runs it in `check-fork`. | Yes |
 
 `prepare` never overwrites work. It stops if `editor/vscode/` has uncommitted changes, untracked files, or commits that were not exported. `--force` discards them.
 
@@ -47,7 +48,7 @@ The times are from an M3 Pro. `scripts/ci/build-app` with `WISP_APP=editor` runs
    - For a new patch, make a new commit. The subject becomes the file name, so start it with the area (`branding:`, `strip:`, `chat:`). The body says why wisp needs the change.
    - To change an existing patch, commit with `git commit --fixup=<commit>`, then fold it in with `GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash <pinned commit>`. `git log` in `editor/vscode/` shows which commit is which patch.
 4. Run `scripts/editor/export-patches`. It rewrites `editor/patches/` from the commits.
-5. Commit `editor/patches/` in wisp. CI runs `export-patches --check`, which fails if the committed files differ from what an export would write, for example after a hand edit. It also type-checks the patched tree.
+5. Commit `editor/patches/` in wisp. CI runs `export-patches --check`, which fails if the committed files differ from what an export would write, for example after a hand edit. It also type-checks `src/` in the patched tree.
 
 Keep patches cheap to carry across upgrades. [0002](decisions/0002-editor-fork-strategy.md#rules-for-patches) has the rules. In short:
 
@@ -60,7 +61,7 @@ Keep patches cheap to carry across upgrades. [0002](decisions/0002-editor-fork-s
 
 Move to the newest stable release about every four weeks, and within a week when an upstream release fixes an Electron or Chromium security issue. Open an issue for the upgrade and work on its `chore/` branch.
 
-1. **Pick the release.** The first entry of `curl -s https://update.code.visualstudio.com/api/releases/stable` is the newest stable version, and its tag has the same name. Read its release notes at `https://code.visualstudio.com/updates/v1_<minor>`, and check the Electron version (`target` in upstream's `.npmrc`) and the Node version (`.nvmrc`).
+1. **Pick the release.** The first entry of `curl -s https://update.code.visualstudio.com/api/releases/stable` is the newest stable version, and its tag has the same name. Read its release notes at `https://code.visualstudio.com/updates/v1_<minor>`, and check its Electron and Node versions. The tag is not fetched yet, so read them from `https://raw.githubusercontent.com/microsoft/vscode/<tag>/.npmrc` (`target`) and `https://raw.githubusercontent.com/microsoft/vscode/<tag>/.nvmrc`.
 2. **Prepare the current pin.**
 
    ```sh
@@ -90,7 +91,7 @@ Move to the newest stable release about every four weeks, and within a week when
    scripts/editor/export-patches --check
    ```
 
-5. **Rebuild and smoke-test.** Run the build steps above, then launch the development build. Open a folder, open a file from the tree, edit and save it, and open a terminal. `npm ci` is needed because upstream's lockfile changes with almost every release. Once #13 lands, run its Playwright smoke tests too.
+5. **Rebuild and smoke-test.** Run `fnm use` or `nvm use` in the repo root first, because `upgrade` may have changed `.nvmrc`, and upstream's `npm ci` rejects an older Node. Then run the build steps above and launch the development build. Open a folder, open a file from the tree, edit and save it, and open a terminal. `npm ci` is needed because upstream's lockfile changes with almost every release. Once #13 lands, run its Playwright smoke tests too.
 6. **Review the diff.** In `git diff -- editor/patches`, changed line numbers and `index` lines are expected. Changed `+` or `-` lines are the conflicts you resolved, so check them again.
 7. **Commit and open the PR.** Commit `editor/upstream.json`, `editor/patches/`, and `.nvmrc` with a message such as `chore: upgrade Code - OSS to 1.140.0 (#<issue>)`. In the PR body, list the Electron and Node versions if they changed, and any patch that needed more than a mechanical rebase.
 
