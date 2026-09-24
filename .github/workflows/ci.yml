@@ -166,11 +166,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          df -h .
           bundle=$(scripts/editor/build-app "$ARCH")
           mkdir -p "$(dirname "$ZIP")"
           ditto -c -k --keepParent --norsrc --noextattr --noacl "$bundle" "$ZIP"
-          df -h .
 
       - name: Check the app
         run: scripts/ci/check-app "$ZIP" "$ARCH"
