@@ -90,6 +90,10 @@ case $("$repo/scripts/editor/prepare") in
   *'already prepared'*) ;;
   *) fail "a second prepare did the work again" ;;
 esac
+case $(cd "$repo" && scripts/editor/prepare) in
+  *'already prepared'*) ;;
+  *) fail "prepare run by a relative path did the work again" ;;
+esac
 "$repo/scripts/editor/export-patches" --check >/dev/null || fail "export-patches --check failed on the overlay alone"
 [ ! -e "$repo/editor/patches" ] || fail "the overlay was exported as a patch"
 

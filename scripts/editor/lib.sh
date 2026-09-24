@@ -85,7 +85,7 @@ inputs_stamp() {
   stamp_files=$(overlay_files) || exit 1
   {
     printf '%s\n' "$repository" "$tag" "$commit"
-    for input in "$patch_dir"/*.patch "$product_patch" "$(dirname "$0")"/*; do
+    for input in "$patch_dir"/*.patch "$product_patch" "$root"/scripts/editor/*; do
       [ -f "$input" ] || continue
       printf '%s\n' "${input#"$root"/}"
       cat "$input"
