@@ -1,0 +1,72 @@
+#!/bin/sh
+set -eu
+
+. "$(dirname "$0")/lib.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/editor/export-patches [--check]
+
+Writes the commits on top of the pinned upstream commit in editor/vscode to
+editor/patches, one patch per commit, replacing the patches there. Commit
+your changes in editor/vscode first: uncommitted work is not exported.
+
+  --check  write nothing; fail if editor/patches differs from what an export
+           would write
+EOF
+}
+
+check=false
+case "${1-}" in
+  '') ;;
+  --check) check=true ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
+
+read_pin
+[ -d "$tree/.git" ] || fail "$tree does not exist; run scripts/editor/prepare first"
+if operation_in_progress; then
+  fail "a rebase, am, merge, or cherry-pick is in progress in $tree; finish it first"
+fi
+[ -z "$(uncommitted_changes)" ] || fail "$tree has uncommitted changes or untracked files; commit them first"
+tree_git merge-base --is-ancestor "$commit" HEAD 2>/dev/null ||
+  fail "HEAD in $tree is not based on $tag ($commit), the pin in editor/upstream.json; use scripts/editor/upgrade to move to another release"
+[ -z "$(tree_git rev-list --merges "$commit..HEAD")" ] ||
+  fail "the commits after $tag in $tree include a merge; the series must be linear"
+
+out=$(mktemp -d "${TMPDIR:-/tmp}/wisp-patches.XXXXXX")
+trap 'rm -rf "$out"' EXIT
+
+tree_git format-patch --quiet --zero-commit --no-signature --no-numbered --no-stat \
+  --full-index --no-renames --unified=3 --diff-algorithm=myers \
+  --src-prefix=a/ --dst-prefix=b/ --output-directory "$out" "$commit..HEAD"
+count=$(find "$out" -name '*.patch' | wc -l | tr -d ' ')
+
+if $check; then
+  mkdir -p "$out/current"
+  for patch in "$patch_dir"/*.patch; do
+    [ -e "$patch" ] && cp "$patch" "$out/current/"
+  done
+  mkdir -p "$out/exported"
+  find "$out" -maxdepth 1 -name '*.patch' -exec mv {} "$out/exported/" \;
+  if ! diff -r "$out/current" "$out/exported" >"$out/diff"; then
+    sed -n 1,40p "$out/diff" >&2
+    fail "editor/patches does not match the commits in $tree; run scripts/editor/export-patches and commit the result"
+  fi
+  printf 'editor/patches matches editor/vscode: %s patch(es)\n' "$count"
+  exit 0
+fi
+
+mkdir -p "$patch_dir"
+find "$patch_dir" -maxdepth 1 -name '*.patch' -exec rm {} +
+find "$out" -maxdepth 1 -name '*.patch' -exec mv {} "$patch_dir/" \;
+rmdir "$patch_dir" 2>/dev/null || true
+tree_git update-ref refs/wisp/applied HEAD
+printf 'editor/patches now holds %s patch(es) on top of Code - OSS %s\n' "$count" "$tag"
