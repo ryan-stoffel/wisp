@@ -10,9 +10,10 @@
 //!
 //! `--data-dir` or [`DATA_DIR_ENV`] moves the whole folder. Every subcommand that reaches the
 //! socket must resolve the folder and the socket path with [`DataDir`], so that `serve` and
-//! `attach` always agree.
+//! `attach` always agree. Every process wispd starts is built with [`DataDir::command`], which
+//! passes the folder on, so a `wispd` that an agent runs reaches the same socket.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::io;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -101,6 +102,18 @@ impl DataDir {
         self.root.join("logs").join("wispd.log")
     }
 
+    /// A command for `program` with [`DATA_DIR_ENV`] set to this folder.
+    ///
+    /// Every process wispd starts is built with it, so a `wispd attach` or `wispd mcp` that an
+    /// agent starts reaches this wispd's socket even when `serve` was given `--data-dir`.
+    /// (Setting the variable on wispd's own environment instead is `unsafe` in Rust 2024.)
+    #[must_use]
+    pub fn command(&self, program: impl AsRef<OsStr>) -> Command {
+        let mut command = Command::new(program);
+        command.env(DATA_DIR_ENV, &self.root);
+        command
+    }
+
     /// Where the socket goes.
     ///
     /// That is `wispd.sock` in the data folder, unless that path is longer than
@@ -120,7 +133,9 @@ impl DataDir {
                 fallback: false,
             });
         }
-        let path = darwin_user_temp_dir()?.join(format!("wispd-{}.sock", self.hash()));
+        let path = self
+            .darwin_user_temp_dir()?
+            .join(format!("wispd-{}.sock", self.hash()));
         if !fits(&path) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -143,6 +158,24 @@ impl DataDir {
             hex
         })
     }
+
+    // No safe wrapper for confstr(_CS_DARWIN_USER_TEMP_DIR) exists, and the workspace denies
+    // unsafe code, so this asks getconf, as 0007 spells the rule. Only long home folders get
+    // here.
+    fn darwin_user_temp_dir(&self) -> io::Result<PathBuf> {
+        let output = self.command(GETCONF).arg("DARWIN_USER_TEMP_DIR").output()?;
+        let mut dir = output.stdout;
+        while dir.last() == Some(&b'\n') {
+            dir.pop();
+        }
+        if !output.status.success() || !dir.starts_with(b"/") {
+            return Err(io::Error::other(format!(
+                "`{GETCONF} DARWIN_USER_TEMP_DIR` failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(PathBuf::from(OsString::from_vec(dir)))
+    }
 }
 
 /// Where the socket goes, from [`DataDir::socket_path`].
@@ -157,23 +190,6 @@ pub struct SocketPath {
 
 fn fits(path: &Path) -> bool {
     path.as_os_str().len() <= MAX_SOCKET_PATH_BYTES
-}
-
-// No safe wrapper for confstr(_CS_DARWIN_USER_TEMP_DIR) exists, and the workspace denies
-// unsafe code, so this asks getconf, as 0007 spells the rule. Only long home folders get here.
-fn darwin_user_temp_dir() -> io::Result<PathBuf> {
-    let output = Command::new(GETCONF).arg("DARWIN_USER_TEMP_DIR").output()?;
-    let mut dir = output.stdout;
-    while dir.last() == Some(&b'\n') {
-        dir.pop();
-    }
-    if !output.status.success() || !dir.starts_with(b"/") {
-        return Err(io::Error::other(format!(
-            "`{GETCONF} DARWIN_USER_TEMP_DIR` failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    Ok(PathBuf::from(OsString::from_vec(dir)))
 }
 
 #[cfg(test)]
@@ -214,6 +230,18 @@ mod tests {
     }
 
     #[test]
+    fn commands_pass_the_data_folder_on() {
+        let dir = DataDir::new("/tmp/wispd-data/./x/").unwrap();
+        let output = dir.command("/usr/bin/env").output().unwrap();
+        let env = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            env.lines()
+                .any(|line| line == "WISPD_DATA_DIR=/tmp/wispd-data/x"),
+            "{env}"
+        );
+    }
+
+    #[test]
     fn the_hash_is_the_first_8_hex_digits_of_the_paths_sha256() {
         // printf '%s' /Users/me/Library/Application\ Support/wisp | shasum -a 256
         let dir = DataDir::new("/Users/me/Library/Application Support/wisp").unwrap();
@@ -239,7 +267,7 @@ mod tests {
         let dir = DataDir::new(format!("{home}/Library/Application Support/wisp")).unwrap();
         let socket = dir.socket_path().unwrap();
         assert!(socket.fallback);
-        let temp = super::darwin_user_temp_dir().unwrap();
+        let temp = dir.darwin_user_temp_dir().unwrap();
         assert_eq!(socket.path, temp.join(format!("wispd-{}.sock", dir.hash())));
         assert!(socket.path.as_os_str().len() <= MAX_SOCKET_PATH_BYTES);
     }
