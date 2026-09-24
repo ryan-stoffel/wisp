@@ -1,0 +1,76 @@
+name: screenshots
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: screenshots-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  screenshots:
+    name: screenshots
+    runs-on: macos-26
+    timeout-minutes: 120
+    steps:
+      - name: Skip pull requests from forks
+        id: source
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          if [ "$HEAD_REPO" = "$GITHUB_REPOSITORY" ]; then
+            echo "same-repo=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=Screenshots skipped::The head branch is in ${HEAD_REPO:-a deleted fork}, not $GITHUB_REPOSITORY. Pull requests from forks get a read-only GITHUB_TOKEN, so this job cannot push to ci-screenshots or comment on the pull request."
+          fi
+
+      - name: Check out the head commit
+        if: steps.source.outputs.same-repo == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Set up Node
+        if: steps.source.outputs.same-repo == 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: '**/package-lock.json'
+
+      - name: Cache the Electron download
+        if: steps.source.outputs.same-repo == 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/Library/Caches/electron
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: electron-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Build the app
+        id: build
+        if: steps.source.outputs.same-repo == 'true'
+        run: scripts/ci/build-app 2>&1 | tee "$RUNNER_TEMP/build.log"
+
+      - name: Capture the scenarios
+        id: capture
+        if: steps.source.outputs.same-repo == 'true'
+        run: scripts/ci/screenshots "$RUNNER_TEMP/screenshots" 2>&1 | tee "$RUNNER_TEMP/capture.log"
+
+      - name: Publish the screenshots
+        if: ${{ !cancelled() && steps.source.outputs.same-repo == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          STEPS_JSON: ${{ toJSON(steps) }}
+        run: scripts/ci/publish-screenshots "$RUNNER_TEMP/screenshots" --logs "$RUNNER_TEMP"
