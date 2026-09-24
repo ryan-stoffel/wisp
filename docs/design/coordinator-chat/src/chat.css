@@ -2,6 +2,9 @@
  * Coordinator chat view (wisp.coordinatorChat). Every color, size, and radius comes from a
  * VS Code theme or size token, so the view follows light, dark, and high contrast themes.
  * None of the tokens belong to upstream's chat contribution.
+ * This is a reference for the build, not a drop-in port. The .is-* state classes, the fixed
+ * progress width, and the fake caret exist only to draw static mocks; the spec's build notes
+ * list their replacements.
  */
 
 .wisp-coordinator-chat {
@@ -52,6 +55,8 @@
 
 .wisp-chat-context-button.is-hover {
 	background: var(--vscode-toolbar-hoverBackground);
+	outline: 1px dashed var(--vscode-toolbar-hoverOutline, transparent);
+	outline-offset: -1px;
 }
 
 .wisp-chat-project {
@@ -277,15 +282,13 @@
 	border-top: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, transparent));
 }
 
+.wisp-chat-nowrap {
+	white-space: nowrap;
+}
+
 .wisp-chat-task-number {
 	color: var(--vscode-descriptionForeground);
 	font-size: var(--vscode-fontSize-label1);
-}
-
-.wisp-chat-task-status {
-	display: flex;
-	align-items: center;
-	gap: var(--vscode-spacing-size60);
 }
 
 .wisp-chat-card-actions {
@@ -489,6 +492,12 @@
 .wisp-chat-agent-state {
 	flex: none;
 	color: var(--vscode-descriptionForeground);
+}
+
+/* Row actions show on hover and on keyboard focus; the row menu (Shift+F10) has them too. */
+.wisp-chat-row-action {
+	flex: none;
+	color: var(--vscode-textLink-foreground);
 }
 
 /* Banner above the composer: connection-level problems. */

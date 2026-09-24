@@ -106,6 +106,7 @@
 	--vscode-titleBar-activeBackground: #181818;
 	--vscode-titleBar-activeForeground: #cccccc;
 	--vscode-toolbar-hoverBackground: rgba(90, 93, 94, 0.31);
+	--vscode-toolbar-hoverOutline: initial;
 	--vscode-widget-border: #313131;
 }
 
@@ -213,6 +214,7 @@
 	--vscode-titleBar-activeBackground: #f8f8f8;
 	--vscode-titleBar-activeForeground: #1e1e1e;
 	--vscode-toolbar-hoverBackground: rgba(184, 184, 184, 0.31);
+	--vscode-toolbar-hoverOutline: initial;
 	--vscode-widget-border: #e5e5e5;
 }
 
@@ -320,6 +322,7 @@
 	--vscode-titleBar-activeBackground: #000000;
 	--vscode-titleBar-activeForeground: #ffffff;
 	--vscode-toolbar-hoverBackground: initial;
+	--vscode-toolbar-hoverOutline: #f38518;
 	--vscode-widget-border: #6fc3df;
 }
 
@@ -427,5 +430,6 @@
 	--vscode-titleBar-activeBackground: #ffffff;
 	--vscode-titleBar-activeForeground: #292929;
 	--vscode-toolbar-hoverBackground: initial;
+	--vscode-toolbar-hoverOutline: #006bbd;
 	--vscode-widget-border: #0f4a85;
 }

@@ -16,6 +16,7 @@ const pages = [
 	['workbench-light', 'page=workbench&theme=light-modern&stage=m4'],
 	['workbench-m0-dark', 'page=workbench&theme=dark-modern&stage=m0'],
 	['state-1-empty', 'page=state&state=empty'],
+	['state-1-empty-connected', 'page=state&state=empty-connected'],
 	['state-2-conversation', 'page=state&state=conversation'],
 	['state-3-running', 'page=state&state=running'],
 	['state-4-error', 'page=state&state=error'],

@@ -1,6 +1,6 @@
 // Builds each mock from URL parameters. See render.mjs for the list of pages.
 //   ?page=workbench&theme=dark-modern&stage=m4
-//   ?page=state&state=empty|conversation|running|error
+//   ?page=state&state=empty|empty-connected|conversation|running|error
 //   ?page=option-b&theme=dark-modern
 
 const params = new URLSearchParams(location.search);
@@ -71,21 +71,22 @@ function composer({ placeholder, disabled, focused, stop, account, draft }) {
 
 function agentsStrip({ open, summary, rows = [] }) {
 	const header = `<div class="wisp-chat-agents-header"><span class="wisp-chat-chevron${open ? ' is-open' : ''}"></span><strong>Agents</strong><span class="wisp-chat-meta">${summary}</span></div>`;
-	const body = open ? rows.map((r) => `<div class="wisp-chat-agent-row${r.hover ? ' is-hover' : ''}"><span class="wisp-chat-dot is-${r.state}"></span><span class="wisp-chat-agent-name">${r.name}</span><span class="wisp-chat-agent-task">${r.task}</span><span class="wisp-chat-agent-state">${r.status}</span></div>`).join('') : '';
+	const body = open ? rows.map((r) => {
+		const end = r.hover ? '<span class="wisp-chat-row-action">Stop agent</span>' : `<span class="wisp-chat-agent-state">${r.status}</span>`;
+		return `<div class="wisp-chat-agent-row${r.hover ? ' is-hover' : ''}"><span class="wisp-chat-dot is-${r.state}"></span><span class="wisp-chat-agent-name">${r.name}</span><span class="wisp-chat-agent-task">${r.task}</span>${end}</div>`;
+	}).join('') : '';
 	return `<div class="wisp-chat-agents">${header}${body}</div>`;
 }
 
-const planTasks = (states) => [
-	['Magic-link endpoint and token store', 'magic-link-api'],
-	['Email form and link landing page', 'login-ui'],
-	['Password flow behind <code>auth.passwordLogin</code>', 'password-flag'],
-].map(([title, agent], i) => {
-	const [state, label] = states[i];
-	return `<div class="wisp-chat-task"><span class="wisp-chat-task-number">${i + 1}</span><div><div>${title}</div><div class="wisp-chat-meta wisp-chat-task-status"><span class="wisp-chat-dot is-${state}"></span>${agent} · ${label}</div></div></div>`;
-}).join('');
+// The plan card records the approved plan: agent, host, and ordering. Live status is only in the agents strip.
+const planTasks = () => [
+	['Magic-link endpoint and token store', 'magic-link-api · mac-mini'],
+	['Email form and link landing page', 'login-ui · mac-mini'],
+	['Password flow behind <code>auth.passwordLogin</code>', 'password-flag · mac-mini · <span class="wisp-chat-nowrap">after 1 and 2</span>'],
+].map(([title, meta], i) => `<div class="wisp-chat-task"><span class="wisp-chat-task-number">${i + 1}</span><div><div>${title}</div><div class="wisp-chat-meta">${meta}</div></div></div>`).join('');
 
-function planCard(states, header, actions) {
-	return `<div class="wisp-chat-card"><div class="wisp-chat-card-header"><span>Plan</span><span class="wisp-chat-meta">${header}</span></div>${planTasks(states)}${actions ? `<div class="wisp-chat-card-actions">${actions}</div>` : ''}</div>`;
+function planCard(header, actions) {
+	return `<div class="wisp-chat-card"><div class="wisp-chat-card-header"><span>Plan</span><span class="wisp-chat-meta">${header}</span></div>${planTasks()}${actions ? `<div class="wisp-chat-card-actions">${actions}</div>` : ''}</div>`;
 }
 
 function chatView(state, { hover } = {}) {
@@ -110,7 +111,7 @@ function chatView(state, { hover } = {}) {
 			return `<div class="wisp-coordinator-chat">${contextBar({ project, host, hover: hover ? 'project' : undefined })}
 				<div class="wisp-chat-transcript is-scrolled">
 					${ask}
-					${message('coordinator', '10:03', planIntro + planCard([['review', 'needs review'], ['review', 'needs review'], ['queued', 'waits for 1 and 2']], 'approved 10:04'))}
+					${message('coordinator', '10:03', planIntro + planCard('Approved 10:04'))}
 					${go}
 					${message('coordinator', '10:41', `<p>Both agents finished and their tests pass. Review the changes, then I'll start task 3.</p>
 						<div class="wisp-chat-card">
@@ -124,7 +125,7 @@ function chatView(state, { hover } = {}) {
 			return `<div class="wisp-coordinator-chat"><div class="wisp-chat-progress" role="progressbar" aria-label="Coordinator is working"></div>${connected}
 				<div class="wisp-chat-transcript is-scrolled">
 					${ask}
-					${message('coordinator', '10:03', planIntro + planCard([['queued', 'ready'], ['queued', 'ready'], ['queued', 'waits for 1 and 2']], 'approved 10:04'))}
+					${message('coordinator', '10:03', planIntro + planCard('Approved 10:04'))}
 					${go}
 					${message('coordinator', '10:04', `<p>Starting two agents on mac-mini. I'll hold task 3 until both pass their tests.</p>
 						<div class="wisp-chat-event"><span class="wisp-chat-dot is-running"></span>Started <strong>magic-link-api</strong></div>
@@ -141,7 +142,7 @@ function chatView(state, { hover } = {}) {
 			return `<div class="wisp-coordinator-chat">${contextBar({ project, host, hostState: 'offline' })}
 				<div class="wisp-chat-transcript is-scrolled">
 					${ask}
-					${message('coordinator', '10:03', planIntro + planCard([['queued', 'ready'], ['queued', 'ready'], ['queued', 'waits for 1 and 2']], 'approved 10:04'))}
+					${message('coordinator', '10:03', planIntro + planCard('Approved 10:04'))}
 					${go}
 					${message('coordinator', '10:04', '<p>Starting two agents on mac-mini. I\'ll hold task 3 until</p><div class="wisp-chat-interrupted">Interrupted: lost connection to mac-mini</div>')}
 				</div>
@@ -159,7 +160,7 @@ function chatView(state, { hover } = {}) {
 			return `<div class="wisp-coordinator-chat is-wide">${connected}
 				<div class="wisp-chat-transcript">
 					${ask}
-					${message('coordinator', '10:03', planIntro + planCard([['queued', 'ready'], ['queued', 'ready'], ['queued', 'waits for 1 and 2']], 'approved 10:04'))}
+					${message('coordinator', '10:03', planIntro + planCard('Approved 10:04'))}
 					${go}
 					${message('coordinator', '10:04', `<p>Starting two agents on mac-mini. I'll hold task 3 until both pass their tests.</p>
 						<div class="wisp-chat-event"><span class="wisp-chat-dot is-running"></span>Started <strong>magic-link-api</strong></div>
@@ -383,12 +384,12 @@ function optionB() {
 // Markers are [number, side, top]: side 'l' or 'r' of the first frame, top in frame pixels.
 const boards = {
 	empty: {
-		title: 'Chat state 1 of 4: Empty',
-		sub: 'M0 ships the first two columns (#12). The third is the same state once a host is connected.',
+		title: 'Chat state 1 of 4: Empty, no host',
+		sub: 'What M0 ships (#12): the coordinator chat is visible at startup, even in an empty window.',
 		columns: [
-			['dark-modern', 'Dark Modern · no host (M0)', 'empty-m0'],
-			['light-modern', 'Light Modern · no host (M0)', 'empty-m0'],
-			['dark-modern', 'Dark Modern · connected, no messages', 'empty-ready'],
+			['dark-modern', 'Dark Modern', 'empty-m0'],
+			['light-modern', 'Light Modern', 'empty-m0'],
+			['hc-dark', 'Dark High Contrast', 'empty-m0'],
 		],
 		markers: [[1, 'l', 6], [2, 'l', 36], [3, 'r', 36], [4, 'l', 340], [5, 'l', 737], [6, 'r', 757]],
 		notes: [
@@ -399,7 +400,24 @@ const boards = {
 			['Composer, disabled', 'Placeholder <b>Not connected to a host</b>. The textarea is read-only with <code>aria-disabled="true"</code>, so it stays focusable and announces why.'],
 			['Send', 'A text button with the <code>button.*</code> tokens, at 0.4 opacity while disabled.'],
 		],
-		extra: '<h3>Connected, no messages</h3><div>Heading <b>Start with a goal</b>. Up to three suggestions fill the composer when clicked; they do not send. The composer takes focus when the view opens.</div>',
+		extra: '<h3>Sequencing</h3><div>The view opens at startup only once #10 keeps upstream Chat\'s container out of registration. The spec lists what #12 can do if it lands first.</div>',
+	},
+	'empty-connected': {
+		title: 'Chat state 1 of 4: Empty, connected',
+		sub: 'A host is connected, and the project has no messages yet.',
+		columns: [
+			['dark-modern', 'Dark Modern', 'empty-ready'],
+			['light-modern', 'Light Modern', 'empty-ready'],
+			['hc-dark', 'Dark High Contrast', 'empty-ready'],
+		],
+		markers: [[1, 'l', 36], [2, 'r', 36], [3, 'l', 254], [4, 'l', 408], [5, 'l', 737]],
+		notes: [
+			['Project', 'The project switcher: a Quick Pick of projects, then New project.'],
+			['Host', 'The connected host, with a <code>charts.green</code> dot. It opens the host menu: Reconnect, Switch host, Add host, and Show wispd log.'],
+			['Empty-state copy', 'Heading <b>Start with a goal</b>. Body: <b>Tell the coordinator what you want done. It plans the work, runs agents in their own worktrees on {host}, and brings the changes back for you to review.</b>'],
+			['Suggestions', 'Up to three secondary buttons. Clicking one fills the composer; it does not send.'],
+			['Composer', 'Takes focus when the view opens, shown by <code>focusBorder</code>. Placeholder <b>Message the coordinator</b>. The footer holds the account picker (M2).'],
+		],
 	},
 	conversation: {
 		title: 'Chat state 2 of 4: Conversation',
@@ -407,12 +425,12 @@ const boards = {
 		columns: [
 			['dark-modern', 'Dark Modern', 'conversation', { hover: true }],
 			['light-modern', 'Light Modern', 'conversation'],
-			['hc-dark', 'Dark High Contrast', 'conversation'],
+			['hc-dark', 'Dark High Contrast', 'conversation', { hover: true }],
 		],
 		markers: [[1, 'l', 36], [2, 'r', 250], [3, 'l', 410], [4, 'l', 474], [5, 'r', 572], [6, 'l', 674], [7, 'l', 737]],
 		notes: [
-			['Context bar', 'Project switcher (a Quick Pick of projects, then New project) and host status (the host menu). Shown hovered.'],
-			['Plan card', 'Numbered tasks with the agent and state of each. While a plan waits for approval, the card ends with Run plan and Change plan.'],
+			['Context bar', 'Project switcher (a Quick Pick of projects, then New project) and host status (the host menu). Shown hovered in the dark columns. High contrast has no hover fill, so hover draws a dashed <code>toolbar.hoverOutline</code>.'],
+			['Plan card', 'Numbered tasks, each with its agent, host, and any ordering, such as "after 1 and 2". It stops changing once approved, so live status is only in the agents strip. While a plan waits for approval, the card ends with Run plan and Change plan.'],
 			['Your messages', '<code>input.background</code> with <code>input.border</code>, so your words keep the look of the composer.'],
 			['Coordinator messages', 'Plain text on the view background. Links use <code>textLink.foreground</code>; inline code uses <code>textPreformat.*</code>.'],
 			['Result card', 'One row per finished agent, with its diff stat. Review changes opens that agent\'s worktree diff in the editor area.'],
@@ -433,7 +451,7 @@ const boards = {
 		notes: [
 			['Progress', 'A 2px <code>progressBar.background</code> bar at the top of the view while the coordinator\'s own turn runs. It follows reduced motion.'],
 			['Streaming message', 'Text streams in, and "Working" ends the message until the turn finishes. Agent starts are logged as events; live status is not repeated here.'],
-			['Agents strip, open', 'The one place with live status: state, name, current step, elapsed time. A row opens the agent\'s detail; hovering a row shows Stop agent.'],
+			['Agents strip, open', 'The one place with live status: state, name, current step, elapsed time. A row opens the agent\'s detail. The hovered row shows Stop agent; a focused row shows it too, and Shift+F10 opens the row menu.'],
 			['Stop', 'Replaces Send while the turn runs; also <code>Cmd+Esc</code>. It ends the coordinator\'s turn only, and agents keep running. Typing stays enabled: Enter queues the message and sends it when the turn ends.'],
 		],
 		extra: '<h3>Screen readers</h3><div>Streaming text is never announced token by token. A finished message, an agent start, and an agent finish are each announced once, politely.</div>',
