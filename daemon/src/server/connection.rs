@@ -64,7 +64,7 @@ pub(crate) async fn serve<S>(
         stop_reading,
         closing: closing.clone(),
     };
-    let writer = self::write(
+    let writer = run_writer(
         FramedWrite::new(write, FrameCodec::new()),
         queue,
         Arc::clone(&daemon.log),
@@ -299,7 +299,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-async fn write<W: AsyncWrite + Unpin>(
+async fn run_writer<W: AsyncWrite + Unpin>(
     sink: FramedWrite<W, FrameCodec>,
     queue: mpsc::Receiver<Reply>,
     log: Arc<EventLog>,
@@ -308,7 +308,7 @@ async fn write<W: AsyncWrite + Unpin>(
     tokio::select! {
         biased;
         () = closing.cancelled() => {}
-        written = write_all(sink, queue, &log) => {
+        written = write_loop(sink, queue, &log) => {
             if let Err(error) = written {
                 debug!(%error, "writing failed");
             }
@@ -317,7 +317,7 @@ async fn write<W: AsyncWrite + Unpin>(
     closing.cancel();
 }
 
-async fn write_all<W: AsyncWrite + Unpin>(
+async fn write_loop<W: AsyncWrite + Unpin>(
     mut sink: FramedWrite<W, FrameCodec>,
     mut queue: mpsc::Receiver<Reply>,
     log: &EventLog,
@@ -349,6 +349,7 @@ async fn write_all<W: AsyncWrite + Unpin>(
                 return Ok(());
             }
         }
+        // FramedWrite is a Sink for every serializable item, so flush and close name one.
         SinkExt::<Response>::flush(&mut sink).await?;
         tokio::select! {
             reply = queue.recv() => match reply {
