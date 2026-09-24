@@ -1,18 +1,22 @@
-import { appendFile, readFile } from 'node:fs/promises';
+import { appendFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { commitFiles, type BranchFile } from './branch.ts';
+import { readCapture, readLogTail, type Capture } from './artifact.ts';
+import { commitFiles } from './branch.ts';
 import { MARKER, renderComment, type FailedStep, type Images } from './comment.ts';
-import { readManifest, type Manifest } from './manifest.ts';
 
 const branch = 'ci-screenshots';
-const bot = { name: 'github-actions[bot]', email: '41898282+github-actions[bot]@users.noreply.github.com' };
+const bot = { login: 'github-actions[bot]', email: '41898282+github-actions[bot]@users.noreply.github.com' };
+const steps = [
+  { id: 'build', env: 'BUILD_OUTCOME' },
+  { id: 'capture', env: 'CAPTURE_OUTCOME' },
+] as const;
 
 interface Comment {
   id: number;
   body?: string;
   html_url: string;
-  user: { type: string } | null;
+  user: { login: string } | null;
 }
 
 const { values, positionals } = parseArgs({
@@ -31,16 +35,26 @@ const repository = dryRun ? (process.env.GITHUB_REPOSITORY ?? 'owner/repo') : re
 const prNumber = Number(dryRun ? (process.env.PR_NUMBER ?? '0') : required('PR_NUMBER'));
 const headSha = dryRun ? (process.env.HEAD_SHA ?? '0'.repeat(40)) : required('HEAD_SHA');
 const token = dryRun ? '' : required('GH_TOKEN');
+if (!/^[0-9a-f]{40}$/.test(headSha) || !Number.isSafeInteger(prNumber) || prNumber < 0) {
+  throw new Error('HEAD_SHA must be a full commit SHA and PR_NUMBER a pull request number');
+}
 const runUrl = `${serverUrl}/${repository}/actions/runs/${process.env.GITHUB_RUN_ID ?? '0'}`;
 const prefix = `pr-${String(prNumber)}/${headSha.slice(0, 7)}`;
 
-const manifest = await readManifest(dir);
+let capture: Capture | undefined;
+let artifactError: string | undefined;
+try {
+  capture = await readCapture(dir);
+} catch (error) {
+  artifactError = error instanceof Error ? error.message : String(error);
+  console.error(`rejected the capture results in ${dir}: ${artifactError}`);
+}
 const failedSteps = await readFailedSteps(values.logs);
-const files = manifest ? publishable(manifest) : [];
 
 let images: Images | undefined;
 let pushError: string | undefined;
-if (files.length > 0) {
+if (capture && capture.files.length > 0) {
+  const files = capture.files.map((file) => ({ path: `${prefix}/${file}`, source: join(dir, file) }));
   if (dryRun) {
     images = { base: `https://raw.githubusercontent.com/${repository}/<sha>/${prefix}`, tree: '<tree>' };
   } else {
@@ -69,10 +83,11 @@ const body = renderComment({
   prNumber,
   headSha,
   runUrl,
-  manifest,
+  manifest: capture?.manifest,
   images,
   failedSteps,
   ...(pushError === undefined ? {} : { pushError }),
+  ...(artifactError === undefined ? {} : { artifactError }),
 });
 
 if (dryRun) {
@@ -80,25 +95,18 @@ if (dryRun) {
 } else {
   await upsertComment(body);
 }
-if (pushError !== undefined) {
+if (pushError !== undefined || artifactError !== undefined) {
   process.exitCode = 1;
 }
 
-function publishable(manifest: Manifest): BranchFile[] {
-  return manifest.results.flatMap((result) =>
-    'file' in result && result.file ? [{ path: `${prefix}/${result.file}`, source: join(dir, result.file) }] : [],
-  );
-}
-
 async function readFailedSteps(logs: string | undefined): Promise<FailedStep[]> {
-  const steps = JSON.parse(process.env.STEPS_JSON ?? '{}') as Record<string, { outcome?: string }>;
   const failed: FailedStep[] = [];
-  for (const [id, step] of Object.entries(steps)) {
-    if (step.outcome !== 'failure') {
+  for (const step of steps) {
+    if (process.env[step.env] !== 'failure') {
       continue;
     }
-    const log = logs ? await readFile(join(logs, `${id}.log`), 'utf8').catch(() => undefined) : undefined;
-    failed.push(log === undefined ? { id } : { id, log });
+    const log = logs ? await readLogTail(logs, `${step.id}.log`) : undefined;
+    failed.push(log === undefined ? { id: step.id } : { id: step.id, log });
   }
   return failed;
 }
@@ -116,7 +124,7 @@ async function upsertComment(body: string): Promise<void> {
       'GET',
       `/repos/${repository}/issues/${String(prNumber)}/comments?per_page=100&page=${String(page)}`,
     );
-    existing = comments.find((comment) => comment.user?.type === 'Bot' && comment.body?.includes(MARKER));
+    existing = comments.find((comment) => comment.user?.login === bot.login && comment.body?.includes(MARKER));
     if (comments.length < 100) {
       break;
     }
@@ -160,9 +168,9 @@ function gitEnv(): NodeJS.ProcessEnv {
     GIT_CONFIG_COUNT: '1',
     GIT_CONFIG_KEY_0: `http.${serverUrl}/.extraheader`,
     GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${basic}`,
-    GIT_AUTHOR_NAME: bot.name,
+    GIT_AUTHOR_NAME: bot.login,
     GIT_AUTHOR_EMAIL: bot.email,
-    GIT_COMMITTER_NAME: bot.name,
+    GIT_COMMITTER_NAME: bot.login,
     GIT_COMMITTER_EMAIL: bot.email,
   };
 }

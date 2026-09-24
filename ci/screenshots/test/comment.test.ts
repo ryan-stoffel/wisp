@@ -49,7 +49,7 @@ test('a failed scenario shows its error and the screenshot taken when it failed'
     },
   });
 
-  assert.ok(body.includes('> [!CAUTION]\n> 1 of 3 scenarios failed, so this check fails.'));
+  assert.ok(body.includes('> [!CAUTION]\n> 1 of 3 scenarios failed.'));
   assert.ok(body.includes('Failed: `TimeoutError: locator.waitFor: Timeout 60000ms exceeded.`'));
   assert.ok(body.includes('```text\nTimeoutError: locator.waitFor'));
   assert.ok(body.includes(`![Coordinator chat when it failed](${base}/coordinator-chat.failed.png)`));
@@ -59,7 +59,7 @@ test('without a manifest it names the failed step and shows the end of its log',
   const log = Array.from({ length: 100 }, (_, index) => `\u001b[31mline ${String(index)}\u001b[0m`).join('\n');
   const body = render({ images: undefined, failedSteps: [{ id: 'build', log }] });
 
-  assert.ok(body.includes('> No screenshots: the `build` step failed before capture finished, so this check fails.'));
+  assert.ok(body.includes('> No screenshots: the `build` step failed.'));
   assert.ok(body.includes('line 99'));
   assert.ok(body.includes('line 60'));
   assert.ok(!body.includes('line 59\n'));
@@ -85,7 +85,7 @@ test('a timed out capture step counts the scenarios that did not run', () => {
     failedSteps: [{ id: 'capture', log: 'Error: The operation was canceled.' }],
   });
 
-  assert.ok(body.includes('> Capture stopped before 1 of 2 scenarios ran, so this check fails.'));
+  assert.ok(body.includes('> Capture stopped before 1 of 2 scenarios ran.'));
   assert.ok(body.includes("Last lines of the capture step's log"));
 });
 
@@ -94,6 +94,20 @@ test('a failed push keeps the results and says the images are missing', () => {
 
   assert.ok(body.includes('pushing them to the ci-screenshots branch failed'));
   assert.ok(body.includes('### Startup\n\nCaptured, but the image was not pushed.'));
+});
+
+test('rejected capture results are reported instead of rendered', () => {
+  const body = render({
+    manifest: undefined,
+    images: undefined,
+    artifactError: 'results[0].title must be one line\nof safe text',
+    failedSteps: [{ id: 'capture', log: 'capture log' }],
+  });
+
+  assert.ok(body.includes("> No screenshots: the capture job's results were rejected: `results[0].title must be one line`."));
+  assert.ok(body.includes('<details><summary>Why the results were rejected</summary>'));
+  assert.ok(body.includes('capture log'));
+  assert.ok(!body.includes('###'));
 });
 
 test('never mentions users or links issues, so it creates no notifications', () => {

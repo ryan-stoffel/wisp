@@ -22,6 +22,7 @@ export interface CommentInput {
   manifest: Manifest | undefined;
   images: Images | undefined;
   pushError?: string;
+  artifactError?: string;
   failedSteps: readonly FailedStep[];
 }
 
@@ -42,6 +43,9 @@ export function renderComment(input: CommentInput): string {
   const problem = problemOf(input);
   if (problem) {
     blocks.push(`> [!CAUTION]\n> ${problem}`);
+  }
+  if (input.artifactError !== undefined && hasMoreLines(input.artifactError)) {
+    blocks.push(details('Why the results were rejected', fence(clip(input.artifactError))));
   }
   if (!manifest || manifest.error !== undefined || results.some((result) => result.status === 'pending')) {
     for (const step of input.failedSteps) {
@@ -69,26 +73,27 @@ export function renderComment(input: CommentInput): string {
 
 function problemOf(input: CommentInput): string | undefined {
   const { manifest } = input;
+  if (input.artifactError !== undefined) {
+    return `No screenshots: the capture job's results were rejected: ${code(firstLine(input.artifactError))}.`;
+  }
   if (!manifest) {
     const steps = input.failedSteps.map((step) => code(step.id)).join(', ');
-    return steps
-      ? `No screenshots: the ${steps} step failed before capture finished, so this check fails.`
-      : 'No screenshots: capture did not run, so this check fails.';
+    return steps ? `No screenshots: the ${steps} step failed.` : 'No screenshots: capture did not run.';
   }
   if (manifest.error !== undefined) {
-    return `Capture stopped early: ${code(firstLine(manifest.error))}. This check fails.`;
+    return `Capture stopped early: ${code(firstLine(manifest.error))}.`;
   }
   const total = String(manifest.results.length);
   const failed = manifest.results.filter((result) => result.status === 'failed').length;
   if (failed > 0) {
-    return `${String(failed)} of ${total} scenarios failed, so this check fails.`;
+    return `${String(failed)} of ${total} scenarios failed.`;
   }
   const pending = manifest.results.filter((result) => result.status === 'pending').length;
   if (pending > 0) {
-    return `Capture stopped before ${String(pending)} of ${total} scenarios ran, so this check fails.`;
+    return `Capture stopped before ${String(pending)} of ${total} scenarios ran.`;
   }
   if (input.pushError !== undefined) {
-    return 'The screenshots were captured, but pushing them to the ci-screenshots branch failed. This check fails.';
+    return 'The screenshots were captured, but pushing them to the ci-screenshots branch failed.';
   }
   return undefined;
 }
