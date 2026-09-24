@@ -109,7 +109,7 @@ export async function ready(window: Page): Promise<void> {
     await window.locator(workbenchSelector).waitFor();
   }
   await window.evaluate(
-    async ({ quietMs, limitMs }) => {
+    async ({ quietMs, limitMs, fontsMs }) => {
       await new Promise<void>((resolve) => {
         let quiet: ReturnType<typeof setTimeout> | undefined;
         const observer = new MutationObserver(() => {
@@ -126,13 +126,14 @@ export async function ready(window: Page): Promise<void> {
         quiet = setTimeout(finish, quietMs);
         observer.observe(document, { childList: true, subtree: true, characterData: true });
       });
-      await document.fonts.ready;
+      const atMost = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+      await Promise.race([document.fonts.ready, atMost(fontsMs)]);
       await Promise.race([
         new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
-        new Promise((resolve) => setTimeout(resolve, 1_000)),
+        atMost(1_000),
       ]);
     },
-    { quietMs: 500, limitMs: 10_000 },
+    { quietMs: 500, limitMs: 10_000, fontsMs: 5_000 },
   );
 }
 
