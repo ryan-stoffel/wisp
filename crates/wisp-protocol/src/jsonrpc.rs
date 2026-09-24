@@ -246,9 +246,11 @@ impl Message {
                 }
             },
         };
+        // Ids belong to the side that sent the request, so an error reply may echo the id only
+        // of a request. Echoing a malformed response's id would answer the peer's own request.
         let known_id = match &id {
-            IdMember::Id(id) => Some(id.clone()),
-            IdMember::Absent | IdMember::Null => None,
+            IdMember::Id(id) if message.contains_key("method") => Some(id.clone()),
+            IdMember::Id(_) | IdMember::Absent | IdMember::Null => None,
         };
         if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
             return Err(MalformedMessage::invalid(
@@ -555,7 +557,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_shapes_are_invalid_requests_with_the_id_when_readable() {
+    fn wrong_shapes_are_invalid_requests_with_a_request_id_when_readable() {
         assert_eq!(invalid("[]"), (None, INVALID_REQUEST));
         assert_eq!(
             invalid(r#"[{"jsonrpc":"2.0","method":"a"}]"#),
@@ -592,11 +594,11 @@ mod tests {
         );
         assert_eq!(
             invalid(r#"{"jsonrpc":"2.0","id":4}"#),
-            (Some(4.into()), INVALID_REQUEST)
+            (None, INVALID_REQUEST)
         );
         assert_eq!(
             invalid(r#"{"jsonrpc":"2.0","id":5,"result":1,"error":{"code":1,"message":""}}"#),
-            (Some(5.into()), INVALID_REQUEST)
+            (None, INVALID_REQUEST)
         );
         assert_eq!(
             invalid(r#"{"jsonrpc":"2.0","result":1}"#),
@@ -604,8 +606,21 @@ mod tests {
         );
         assert_eq!(
             invalid(r#"{"jsonrpc":"2.0","id":6,"error":{"code":"x","message":""}}"#),
-            (Some(6.into()), INVALID_REQUEST)
+            (None, INVALID_REQUEST)
         );
+        assert_eq!(
+            invalid(r#"{"jsonrpc":"1.0","id":7,"result":1}"#),
+            (None, INVALID_REQUEST)
+        );
+    }
+
+    #[test]
+    fn a_malformed_response_is_not_answered_with_the_peers_own_id() {
+        let malformed =
+            parse(r#"{"jsonrpc":"2.0","id":6,"error":{"code":"x","message":""}}"#).unwrap_err();
+        let reply = serde_json::to_value(malformed.into_response()).unwrap();
+        assert_eq!(reply["id"], Value::Null);
+        assert_eq!(reply["error"]["code"], INVALID_REQUEST);
     }
 
     #[test]
