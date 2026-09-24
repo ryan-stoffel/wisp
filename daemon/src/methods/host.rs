@@ -13,6 +13,7 @@ use wisp_protocol::{
 
 use super::Context;
 use crate::VERSION;
+use crate::logging::untrusted;
 use crate::server::Daemon;
 
 const SYSTEM_VERSION: &str = "/System/Library/CoreServices/SystemVersion.plist";
@@ -47,11 +48,12 @@ pub(crate) fn initialize(
         capabilities,
         ..
     } = request.params()?;
+    let capability_names = capabilities.0.keys().cloned().collect::<Vec<_>>().join(",");
     info!(
-        client = %client.name,
-        client_version = %client.version,
+        client = ?untrusted(&client.name),
+        client_version = ?untrusted(&client.version),
         protocol = version,
-        capabilities = ?capabilities.0.keys().collect::<Vec<_>>(),
+        capabilities = ?untrusted(&capability_names),
         "initialized"
     );
     let result = InitializeResult {

@@ -12,12 +12,51 @@ use tracing_subscriber::filter::{LevelFilter, Targets};
 use tracing_subscriber::fmt as format;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+use wisp_protocol::jsonrpc::RequestId;
 
 /// The environment variable that sets the log level when `--log-level` is not given.
 pub const LOG_LEVEL_ENV: &str = "WISPD_LOG";
 
 /// The log level when neither `--log-level` nor [`LOG_LEVEL_ENV`] is set.
 pub const DEFAULT_LOG_LEVEL: &str = "info";
+
+const MAX_LOGGED_CHARS: usize = 64;
+
+/// Text from a client, ready for a log field with `?`.
+///
+/// It is quoted and escaped, so a newline in it can't start a forged log line. Past 64
+/// characters it is cut, with its full length in bytes after it, so a huge value can't make a
+/// huge line.
+pub(crate) fn untrusted(text: &str) -> impl fmt::Debug + '_ {
+    Untrusted(text)
+}
+
+/// A request id from a client, ready for a log field with `?`, cut like [`untrusted`] text.
+pub(crate) fn untrusted_id(id: &RequestId) -> impl fmt::Debug + '_ {
+    UntrustedId(id)
+}
+
+struct Untrusted<'a>(&'a str);
+
+impl fmt::Debug for Untrusted<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0.char_indices().nth(MAX_LOGGED_CHARS) {
+            None => write!(f, "{:?}", self.0),
+            Some((end, _)) => write!(f, "{:?}... ({} bytes)", &self.0[..end], self.0.len()),
+        }
+    }
+}
+
+struct UntrustedId<'a>(&'a RequestId);
+
+impl fmt::Debug for UntrustedId<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            RequestId::Number(id) => write!(f, "{id}"),
+            RequestId::String(id) => Untrusted(id).fmt(f),
+        }
+    }
+}
 
 /// Which log lines to keep.
 ///
@@ -104,8 +143,9 @@ pub fn init(path: &Path, filter: &LogFilter) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use tracing::Level;
+    use wisp_protocol::jsonrpc::RequestId;
 
-    use super::LogFilter;
+    use super::{LogFilter, untrusted, untrusted_id};
 
     fn allows(filter: &str, target: &str, level: Level) -> bool {
         filter
@@ -140,5 +180,35 @@ mod tests {
         for bad in ["", "verbose", "wispd=loud", "=debug", "info,"] {
             assert!(bad.parse::<LogFilter>().is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn client_text_is_escaped_so_it_cant_forge_a_line() {
+        let forged = "wisp\n2026-09-24T00:00:00.000000Z ERROR forged";
+        let logged = format!("{:?}", untrusted(forged));
+        assert!(!logged.contains('\n'), "{logged}");
+        assert!(logged.starts_with("\"wisp\\n2026"), "{logged}");
+        assert_eq!(format!("{:?}", untrusted("wisp")), "\"wisp\"");
+    }
+
+    #[test]
+    fn long_client_text_is_cut_to_64_characters_and_its_length() {
+        let huge = "\u{e9}".repeat(1_000_000);
+        let logged = format!("{:?}", untrusted(&huge));
+        assert_eq!(
+            logged,
+            format!("{:?}... (2000000 bytes)", "\u{e9}".repeat(64))
+        );
+        let exactly = "x".repeat(64);
+        assert_eq!(format!("{:?}", untrusted(&exactly)), format!("{exactly:?}"));
+    }
+
+    #[test]
+    fn request_ids_are_logged_like_client_text() {
+        assert_eq!(format!("{:?}", untrusted_id(&RequestId::Number(-7))), "-7");
+        let id = RequestId::String(format!("a\n{}", "b".repeat(100)));
+        let logged = format!("{:?}", untrusted_id(&id));
+        assert!(logged.starts_with("\"a\\nbbb"), "{logged}");
+        assert!(logged.ends_with("... (102 bytes)"), "{logged}");
     }
 }

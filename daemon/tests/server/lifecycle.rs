@@ -289,3 +289,53 @@ async fn logs_go_to_the_data_folder_at_the_level_from_the_flag_or_env() {
     let flag_wins = log_after_a_request(&["--log-level", "info"], &[("WISPD_LOG", "warn")]).await;
     assert!(flag_wins.contains("listening"), "{flag_wins}");
 }
+
+#[tokio::test]
+async fn client_text_cant_forge_or_bloat_log_lines() {
+    let dir = temp_dir();
+    let wispd = Wispd::start_with(dir.path(), &["--log-level", "debug"], &[]).await;
+    let forged = "2026-09-24T00:00:00.000000Z ERROR forged";
+    let huge = "x".repeat(1_000_000);
+    for (name, method) in [
+        (format!("wisp\n{forged}"), format!("a\n{forged}")),
+        (huge.clone(), huge),
+    ] {
+        let mut client = Client::connect(&wispd.socket).await;
+        client
+            .send_message(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocol": {"min": 1, "max": 1},
+                    "client": {"name": name, "version": "0"},
+                    "capabilities": {}
+                }
+            }))
+            .await;
+        assert!(client.response().await.result.is_ok());
+        client
+            .send_message(&serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": method}))
+            .await;
+        client.response().await;
+        client
+            .send_message(&serde_json::json!({"jsonrpc": "2.0", "method": method}))
+            .await;
+        client
+            .call::<HostHealth>(HostHealthParams {})
+            .await
+            .unwrap();
+    }
+    wispd.signal(Signal::TERM);
+    assert!(wispd.exit().await.0.success());
+
+    let log = fs::read_to_string(dir.path().join("logs/wispd.log")).unwrap();
+    assert!(
+        log.contains("ERROR forged"),
+        "the text is logged, escaped: {log}"
+    );
+    for line in log.lines() {
+        assert!(!line.starts_with(forged), "a forged line: {line}");
+        assert!(line.len() < 1_000, "a {}-byte line", line.len());
+    }
+}

@@ -37,6 +37,7 @@ use wisp_protocol::{ErrorKind, EventsEventParams};
 
 use super::Daemon;
 use crate::event_log::EventLog;
+use crate::logging::{untrusted, untrusted_id};
 use crate::methods::{self, Context, Cursors, Reply, Session};
 
 type InFlight = Arc<Mutex<HashMap<RequestId, CancellationToken>>>;
@@ -73,7 +74,11 @@ pub(crate) async fn serve<S>(
     debug!("connected");
     let (session, ()) = tokio::join!(reader.run(), writer);
     if let Some(session) = session {
-        info!(client = %session.client.name, protocol = session.protocol, "disconnected");
+        info!(
+            client = ?untrusted(&session.client.name),
+            protocol = session.protocol,
+            "disconnected"
+        );
     } else {
         debug!("disconnected before initialize");
     }
@@ -177,11 +182,17 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static> Reader<S> {
                 true
             }
             Ok(Message::Response(response)) => {
-                debug!(id = ?response.id, "ignored a response; wispd sends no requests");
+                debug!(
+                    id = ?response.id.as_ref().map(untrusted_id),
+                    "ignored a response; wispd sends no requests"
+                );
                 true
             }
             Err(malformed) => {
-                debug!(error = %malformed, "answered a malformed message");
+                debug!(
+                    error = ?untrusted(&malformed.error.message),
+                    "answered a malformed message"
+                );
                 self.reply(Reply::Response(malformed.into_response())).await
             }
         }
@@ -194,7 +205,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static> Reader<S> {
         if lock(&self.in_flight).contains_key(&request.id) {
             let error = ErrorObject::new(
                 INVALID_REQUEST,
-                format!("Invalid request: request {} is still in flight", request.id),
+                "Invalid request: a request with this id is still in flight",
             );
             let response = Response::error(Some(request.id), error);
             return self.reply(Reply::Response(response)).await;
@@ -215,7 +226,11 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static> Reader<S> {
         };
         let in_flight = Arc::clone(&self.in_flight);
         let replies = self.replies.clone();
-        let span = debug_span!("request", id = %request.id, method = %request.method);
+        let span = debug_span!(
+            "request",
+            id = ?untrusted_id(&request.id),
+            method = ?untrusted(&request.method)
+        );
         self.handlers.spawn(
             async move {
                 let id = request.id.clone();
@@ -262,19 +277,28 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static> Reader<S> {
 
     fn notification(&self, notification: &Notification) {
         if notification.method != CancelRequest::NAME {
-            debug!(method = %notification.method, "ignored a notification");
+            debug!(
+                method = ?untrusted(&notification.method),
+                "ignored a notification"
+            );
             return;
         }
         match notification.params::<<CancelRequest as NotificationMethod>::Params>() {
             Ok(CancelRequestParams { id }) => {
                 if let Some(cancel) = lock(&self.in_flight).get(&id) {
-                    debug!(%id, "cancelling a request");
+                    debug!(id = ?untrusted_id(&id), "cancelling a request");
                     cancel.cancel();
                 } else {
-                    debug!(%id, "ignored a cancel for a request that is not in flight");
+                    debug!(
+                        id = ?untrusted_id(&id),
+                        "ignored a cancel for a request that is not in flight"
+                    );
                 }
             }
-            Err(error) => debug!(%error, "ignored a malformed $/cancelRequest"),
+            Err(error) => debug!(
+                error = ?untrusted(&error.message),
+                "ignored a malformed $/cancelRequest"
+            ),
         }
     }
 
@@ -392,7 +416,10 @@ async fn send_response<W: AsyncWrite + Unpin>(
 ) -> Result<(), FrameError> {
     match sink.feed(&response).await {
         Err(FrameError::TooLarge { max_frame_bytes }) => {
-            warn!(id = ?response.id, "a response was larger than the frame limit");
+            warn!(
+                id = ?response.id.as_ref().map(untrusted_id),
+                "a response was larger than the frame limit"
+            );
             let error = ErrorObject::internal_error(format!(
                 "the result is larger than the {max_frame_bytes}-byte frame limit"
             ));
