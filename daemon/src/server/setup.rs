@@ -7,6 +7,7 @@ use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt,
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 
+use rustix::fs::OFlags;
 use tracing::{info, warn};
 
 use super::StartError;
@@ -70,12 +71,14 @@ impl InstanceLock {
         // here may no longer be the one at `path`. Locking until it is keeps a second instance
         // from holding a lock on a file nobody else can find.
         for _ in 0..LOCK_ATTEMPTS {
+            // O_NOFOLLOW: a symlink here fails the open instead of creating its target.
             let mut file = OpenOptions::new()
                 .read(true)
                 .write(true)
                 .create(true)
                 .truncate(false)
                 .mode(0o600)
+                .custom_flags(OFlags::NOFOLLOW.bits().cast_signed())
                 .open(path)
                 .map_err(io_error)?;
             match file.try_lock() {
@@ -109,10 +112,21 @@ impl InstanceLock {
         )))
     }
 
-    /// Removes the lock file, then lets go of the lock by closing it.
+    /// Removes the lock file, if it is still the one this instance locked, then lets go of the
+    /// lock by closing it.
     pub fn release(self) {
-        if let Err(error) = fs::remove_file(&self.path) {
-            warn!(path = %self.path.display(), %error, "could not remove the lock file");
+        let locked = self.file.metadata().map(|m| (m.dev(), m.ino()));
+        match (locked, fs::symlink_metadata(&self.path)) {
+            (Ok(locked), Ok(current)) if locked == (current.dev(), current.ino()) => {
+                if let Err(error) = fs::remove_file(&self.path) {
+                    warn!(path = %self.path.display(), %error, "could not remove the lock file");
+                }
+            }
+            (_, Err(error)) if error.kind() == io::ErrorKind::NotFound => {}
+            _ => warn!(
+                path = %self.path.display(),
+                "left the lock file alone: another file is there now"
+            ),
         }
         drop(self.file);
     }
@@ -273,6 +287,31 @@ mod tests {
             }
             other => panic!("expected DataDir, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_symlinked_lock_file_is_refused_and_its_target_not_created() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("wispd.lock");
+        let target = temp.path().join("elsewhere");
+        symlink(&target, &path).unwrap();
+        assert!(matches!(
+            InstanceLock::acquire(&path, temp.path()),
+            Err(StartError::Io { .. })
+        ));
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn releasing_leaves_a_lock_file_that_replaced_ours_alone() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("wispd.lock");
+        let lock = InstanceLock::acquire(&path, temp.path()).unwrap();
+        let other = temp.path().join("other");
+        fs::write(&other, "another instance's\n").unwrap();
+        fs::rename(&other, &path).unwrap();
+        lock.release();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "another instance's\n");
     }
 
     #[test]
