@@ -2,11 +2,13 @@
 'use strict';
 
 const { execFileSync } = require('node:child_process');
-const { existsSync, readFileSync } = require('node:fs');
+const { existsSync, readdirSync, readFileSync } = require('node:fs');
 const path = require('node:path');
 
 const fixtureDir = path.resolve(__dirname, '..', '..', 'ci', 'fixtures', 'electron-smoke');
+const editorDir = path.resolve(__dirname, '..', '..', 'editor', 'vscode');
 const buildHint = 'run scripts/ci/build-app first';
+const editorBuildHint = 'run WISP_APP=editor scripts/ci/build-app first';
 
 function fail(message) {
   process.stderr.write(`app-launch: ${message}\n`);
@@ -53,8 +55,40 @@ function fromBundle(bundle) {
   };
 }
 
+function fromEditor() {
+  const mainScript = path.join(editorDir, 'out', 'main.js');
+  if (!existsSync(mainScript)) {
+    fail(`${mainScript} does not exist; ${editorBuildHint}`);
+  }
+  const electronDir = path.join(editorDir, '.build', 'electron');
+  const appName = existsSync(electronDir) && readdirSync(electronDir).find((name) => name.endsWith('.app'));
+  if (!appName || !existsSync(path.join(electronDir, appName, 'Contents', 'Info.plist'))) {
+    fail(`${electronDir} contains no Electron app; ${editorBuildHint}`);
+  }
+  const { executablePath } = fromBundle(path.join(electronDir, appName));
+  if (!existsSync(executablePath)) {
+    fail(`${executablePath} does not exist; ${editorBuildHint}`);
+  }
+  return {
+    executablePath,
+    args: [editorDir, '--disable-extension=vscode.vscode-api-tests'],
+    env: {
+      NODE_ENV: 'development',
+      VSCODE_DEV: '1',
+      VSCODE_CLI: '1',
+      ELECTRON_ENABLE_STACK_DUMPING: '1',
+      ELECTRON_ENABLE_LOGGING: '1',
+    },
+  };
+}
+
+const launchers = { fixture: fromFixture, editor: fromEditor };
 const bundle = process.env.WISP_APP_BUNDLE;
-const options = bundle ? fromBundle(path.resolve(bundle)) : fromFixture();
+const app = process.env.WISP_APP || 'fixture';
+if (!bundle && !Object.hasOwn(launchers, app)) {
+  fail(`WISP_APP=${app} is not supported; use fixture or editor`);
+}
+const options = bundle ? fromBundle(path.resolve(bundle)) : launchers[app]();
 if (!existsSync(options.executablePath)) {
   fail(`${options.executablePath} does not exist; ${bundle ? 'rebuild the bundle' : buildHint}`);
 }
