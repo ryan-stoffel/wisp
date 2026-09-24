@@ -1,0 +1,580 @@
+/*
+ * Coordinator chat view (wisp.coordinatorChat). Every color, size, and radius comes from a
+ * VS Code theme or size token, so the view follows light, dark, and high contrast themes.
+ * None of the tokens belong to upstream's chat contribution.
+ */
+
+.wisp-coordinator-chat {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	position: relative;
+	background: var(--vscode-sideBar-background);
+	color: var(--vscode-sideBar-foreground, var(--vscode-foreground));
+	font-size: var(--vscode-fontSize-body1);
+	line-height: 20px;
+}
+
+/* Progress: shown only while the coordinator's own turn runs. */
+.wisp-chat-progress {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 38%;
+	height: 2px;
+	background: var(--vscode-progressBar-background);
+}
+
+/* Context bar: project switcher and host status. */
+.wisp-chat-context {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--vscode-spacing-size80);
+	height: 28px;
+	padding: 0 var(--vscode-spacing-size80);
+	flex: none;
+	border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.wisp-chat-context-button {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	min-width: 0;
+	height: 22px;
+	padding: 0 var(--vscode-spacing-size60);
+	border-radius: var(--vscode-cornerRadius-small);
+	color: inherit;
+	white-space: nowrap;
+}
+
+.wisp-chat-context-button.is-hover {
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+.wisp-chat-project {
+	font-weight: var(--vscode-fontWeight-semiBold);
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.wisp-chat-project.is-none,
+.wisp-chat-host.is-none {
+	color: var(--vscode-descriptionForeground);
+	font-weight: var(--vscode-fontWeight-regular);
+}
+
+.wisp-chat-caret {
+	flex: none;
+	width: 0;
+	height: 0;
+	border-left: 4px solid transparent;
+	border-right: 4px solid transparent;
+	border-top: 4px solid currentColor;
+	opacity: 0.8;
+}
+
+.wisp-chat-host {
+	flex: none;
+	color: var(--vscode-descriptionForeground);
+}
+
+.wisp-chat-host-state.is-offline {
+	color: var(--vscode-errorForeground);
+}
+
+/* Status dots. Always paired with a text label; never the only signal. */
+.wisp-chat-dot {
+	flex: none;
+	display: inline-block;
+	width: 8px;
+	height: 8px;
+	border-radius: var(--vscode-cornerRadius-circle);
+	background: var(--vscode-descriptionForeground);
+}
+
+.wisp-chat-dot.is-running { background: var(--vscode-progressBar-background); }
+.wisp-chat-dot.is-done,
+.wisp-chat-dot.is-connected { background: var(--vscode-charts-green); }
+.wisp-chat-dot.is-review,
+.wisp-chat-dot.is-connecting { background: var(--vscode-charts-yellow); }
+.wisp-chat-dot.is-failed,
+.wisp-chat-dot.is-offline { background: var(--vscode-errorForeground); }
+.wisp-chat-dot.is-queued,
+.wisp-chat-dot.is-none {
+	background: transparent;
+	box-shadow: inset 0 0 0 1.5px var(--vscode-descriptionForeground);
+}
+
+/* Transcript. Scrolls; the mock pins it to the newest message. */
+.wisp-chat-transcript {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow: hidden;
+	display: flex;
+	flex-direction: column;
+	justify-content: flex-end;
+	gap: var(--vscode-spacing-size160);
+	padding: var(--vscode-spacing-size120);
+}
+
+.wisp-chat-transcript.is-scrolled {
+	box-shadow: var(--vscode-scrollbar-shadow) 0 6px 6px -6px inset;
+}
+
+.wisp-chat-message {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size40);
+	flex: none;
+}
+
+.wisp-chat-author {
+	display: flex;
+	align-items: baseline;
+	gap: var(--vscode-spacing-size60);
+	font-size: var(--vscode-fontSize-label1);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	line-height: 18px;
+}
+
+.wisp-chat-time {
+	color: var(--vscode-descriptionForeground);
+	font-weight: var(--vscode-fontWeight-regular);
+}
+
+.wisp-chat-body p {
+	margin: 0 0 var(--vscode-spacing-size80);
+}
+
+.wisp-chat-body p:last-child {
+	margin-bottom: 0;
+}
+
+.wisp-chat-message.from-user .wisp-chat-body {
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size100);
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: var(--vscode-cornerRadius-medium);
+}
+
+.wisp-chat-body code {
+	padding: 1px 4px;
+	border-radius: var(--vscode-cornerRadius-xSmall);
+	background: var(--vscode-textPreformat-background);
+	color: var(--vscode-textPreformat-foreground);
+	font-family: var(--mock-mono);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.wisp-chat-body ul,
+.wisp-chat-body ol {
+	margin: 0 0 var(--vscode-spacing-size80);
+	padding-left: 20px;
+}
+
+.wisp-chat-body pre {
+	margin: var(--vscode-spacing-size80) 0;
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size100);
+	overflow-x: auto;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, transparent));
+	border-radius: var(--vscode-cornerRadius-medium);
+	background: var(--vscode-textCodeBlock-background);
+	font-family: var(--mock-mono);
+	font-size: var(--vscode-fontSize-label1);
+	line-height: 18px;
+}
+
+.wisp-chat-body pre code {
+	padding: 0;
+	background: none;
+}
+
+.wisp-chat-body a,
+.wisp-chat-link {
+	color: var(--vscode-textLink-foreground);
+	text-decoration: none;
+}
+
+.wisp-chat-body a:hover,
+.wisp-chat-link:hover {
+	color: var(--vscode-textLink-activeForeground);
+	text-decoration: underline;
+}
+
+.wisp-coordinator-chat :focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.wisp-chat-meta {
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+	line-height: 18px;
+}
+
+.wisp-chat-interrupted {
+	color: var(--vscode-errorForeground);
+	font-size: var(--vscode-fontSize-label1);
+	line-height: 18px;
+}
+
+.wisp-chat-working {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.wisp-chat-working i {
+	width: 4px;
+	height: 4px;
+	border-radius: var(--vscode-cornerRadius-circle);
+	background: currentColor;
+	opacity: 0.8;
+}
+
+.wisp-chat-working i + i { opacity: 0.55; }
+.wisp-chat-working i + i + i { opacity: 0.3; }
+
+/* Cards: the plan, agent events, and results. */
+.wisp-chat-card {
+	margin-top: var(--vscode-spacing-size40);
+	border: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, transparent));
+	border-radius: var(--vscode-cornerRadius-medium);
+	background: var(--vscode-surface-background);
+	color: var(--vscode-surface-foreground, var(--vscode-foreground));
+	overflow: hidden;
+}
+
+.wisp-chat-card-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size100);
+	font-size: var(--vscode-fontSize-label1);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, transparent));
+}
+
+.wisp-chat-card-header .wisp-chat-meta {
+	font-weight: var(--vscode-fontWeight-regular);
+}
+
+.wisp-chat-task {
+	display: grid;
+	grid-template-columns: 16px 1fr;
+	gap: 0 var(--vscode-spacing-size40);
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size100);
+}
+
+.wisp-chat-task + .wisp-chat-task {
+	border-top: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, transparent));
+}
+
+.wisp-chat-task-number {
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.wisp-chat-task-status {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+}
+
+.wisp-chat-card-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size100);
+	border-top: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, transparent));
+}
+
+.wisp-chat-event {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+	line-height: 18px;
+}
+
+.wisp-chat-event strong {
+	color: var(--vscode-foreground);
+	font-weight: var(--vscode-fontWeight-semiBold);
+}
+
+.wisp-chat-result {
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size100);
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size60);
+}
+
+.wisp-chat-result + .wisp-chat-result {
+	border-top: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, transparent));
+}
+
+.wisp-chat-result-title {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	font-weight: var(--vscode-fontWeight-semiBold);
+}
+
+.wisp-chat-result-title .wisp-chat-meta {
+	margin-left: auto;
+	font-weight: var(--vscode-fontWeight-regular);
+}
+
+.wisp-chat-added { color: var(--vscode-charts-green); }
+.wisp-chat-removed { color: var(--vscode-charts-red); }
+
+/* Buttons: VS Code's primary and secondary button tokens. Labels are text, not icons. */
+.wisp-chat-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	height: 24px;
+	padding: 0 var(--vscode-spacing-size100);
+	border-radius: var(--vscode-cornerRadius-small);
+	border: 1px solid var(--vscode-button-border, transparent);
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	font-size: var(--vscode-fontSize-label1);
+	white-space: nowrap;
+}
+
+.wisp-chat-button:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.wisp-chat-button.is-secondary {
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+	border-color: var(--vscode-button-secondaryBorder, var(--vscode-button-border, transparent));
+}
+
+.wisp-chat-button.is-secondary:hover {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.wisp-chat-button.is-disabled {
+	opacity: 0.4;
+}
+
+.wisp-chat-button.is-block {
+	justify-content: flex-start;
+	width: 100%;
+	height: 28px;
+}
+
+.wisp-chat-button.is-focused {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 2px;
+}
+
+/* Empty state. */
+.wisp-chat-empty {
+	flex: 1 1 auto;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: var(--vscode-spacing-size80);
+	padding: 0 var(--vscode-spacing-size160) 48px;
+	text-align: center;
+}
+
+.wisp-chat-empty h2 {
+	margin: 0;
+	font-size: var(--vscode-fontSize-heading3);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-foreground);
+}
+
+.wisp-chat-empty p {
+	margin: 0;
+	max-width: 250px;
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+	line-height: 18px;
+}
+
+.wisp-chat-suggestions {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size60);
+	width: 100%;
+	margin-top: var(--vscode-spacing-size80);
+}
+
+/* Agents strip: the live subagent list, above the composer (M3 and later). */
+.wisp-chat-agents {
+	flex: none;
+	margin: 0 var(--vscode-spacing-size120) var(--vscode-spacing-size80);
+	border: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, transparent));
+	border-radius: var(--vscode-cornerRadius-medium);
+	background: var(--vscode-surface-background);
+	overflow: hidden;
+}
+
+.wisp-chat-agents-header {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	height: 28px;
+	padding: 0 var(--vscode-spacing-size80) 0 var(--vscode-spacing-size100);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.wisp-chat-agents-header strong {
+	font-weight: var(--vscode-fontWeight-semiBold);
+}
+
+.wisp-chat-agents-header .wisp-chat-meta {
+	margin-left: auto;
+}
+
+.wisp-chat-chevron {
+	flex: none;
+	width: 6px;
+	height: 6px;
+	border-right: 1.5px solid var(--vscode-foreground);
+	border-bottom: 1.5px solid var(--vscode-foreground);
+	transform: rotate(-45deg);
+	margin: 0 4px 0 2px;
+	opacity: 0.8;
+}
+
+.wisp-chat-chevron.is-open {
+	transform: rotate(45deg);
+	margin-top: -3px;
+}
+
+.wisp-chat-agent-row {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	height: 24px;
+	padding: 0 var(--vscode-spacing-size100);
+	font-size: var(--vscode-fontSize-label1);
+	border-top: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, transparent));
+}
+
+.wisp-chat-agent-row.is-hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.wisp-chat-agent-name {
+	flex: none;
+	font-weight: var(--vscode-fontWeight-semiBold);
+}
+
+.wisp-chat-agent-task {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--vscode-descriptionForeground);
+}
+
+.wisp-chat-agent-state {
+	flex: none;
+	color: var(--vscode-descriptionForeground);
+}
+
+/* Banner above the composer: connection-level problems. */
+.wisp-chat-banner {
+	flex: none;
+	margin: 0 var(--vscode-spacing-size120) var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size100);
+	border-radius: var(--vscode-cornerRadius-medium);
+	font-size: var(--vscode-fontSize-label1);
+	line-height: 18px;
+}
+
+.wisp-chat-banner.is-error {
+	background: var(--vscode-inputValidation-errorBackground);
+	border: 1px solid var(--vscode-inputValidation-errorBorder);
+	color: var(--vscode-inputValidation-errorForeground, var(--vscode-foreground));
+}
+
+.wisp-chat-banner.is-warning {
+	background: var(--vscode-inputValidation-warningBackground);
+	border: 1px solid var(--vscode-inputValidation-warningBorder);
+	color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+}
+
+.wisp-chat-banner strong {
+	display: block;
+	font-weight: var(--vscode-fontWeight-semiBold);
+}
+
+.wisp-chat-banner-actions {
+	display: flex;
+	gap: var(--vscode-spacing-size80);
+	margin-top: var(--vscode-spacing-size80);
+}
+
+/* Composer. */
+.wisp-chat-composer {
+	flex: none;
+	margin: 0 var(--vscode-spacing-size120) var(--vscode-spacing-size120);
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size100) var(--vscode-spacing-size60);
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: var(--vscode-cornerRadius-large);
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+}
+
+.wisp-chat-composer.is-focused {
+	border-color: var(--vscode-focusBorder);
+}
+
+.wisp-chat-input {
+	min-height: 40px;
+	color: var(--vscode-input-foreground);
+}
+
+.wisp-chat-input .placeholder {
+	color: var(--vscode-input-placeholderForeground);
+}
+
+.wisp-chat-composer.is-disabled .wisp-chat-input .placeholder {
+	color: var(--vscode-disabledForeground);
+}
+
+.wisp-chat-caret-bar {
+	display: inline-block;
+	width: 1px;
+	height: 16px;
+	margin-right: 1px;
+	vertical-align: -3px;
+	background: var(--vscode-editorCursor-foreground, var(--vscode-foreground));
+}
+
+.wisp-chat-composer-footer {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--vscode-spacing-size80);
+	height: 24px;
+}
+
+.wisp-chat-account {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size40);
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+	white-space: nowrap;
+	overflow: hidden;
+}

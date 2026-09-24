@@ -1,0 +1,159 @@
+/* State boards: the chat view at 1:1 in several themes, with numbered notes. Presentation only. */
+
+.board {
+	--mock-annotation: #c026d3;
+	position: relative;
+	width: 1440px;
+	height: 900px;
+	overflow: hidden;
+	background: #e9e9ec;
+	color: #1f1f24;
+	font-family: var(--mock-font);
+}
+
+.board-header {
+	position: absolute;
+	left: 60px;
+	top: 18px;
+	right: 32px;
+	display: flex;
+	align-items: baseline;
+	gap: 14px;
+}
+
+.board-header h1 {
+	margin: 0;
+	font-size: 20px;
+	font-weight: 600;
+	letter-spacing: -0.2px;
+}
+
+.board-header .board-sub {
+	font-size: 14px;
+	color: #4b4b55;
+}
+
+.board-columns {
+	position: absolute;
+	left: 60px;
+	top: 60px;
+	display: flex;
+	gap: 20px;
+}
+
+.board-column {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.board-column:first-child {
+	margin-right: 28px;
+}
+
+.board-caption {
+	font-size: 12px;
+	font-weight: 600;
+	color: #4b4b55;
+	height: 16px;
+}
+
+.board-frame {
+	position: relative;
+	width: 292px;
+	height: 800px;
+	padding: 0;
+	background: var(--vscode-modernUI-shellBackground);
+	border-radius: 10px;
+	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12), 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+.board-frame .wb-auxbar {
+	position: absolute;
+	left: 0;
+	top: 0;
+	width: 292px;
+	height: 800px;
+}
+
+.board-notes {
+	position: absolute;
+	top: 82px;
+	right: 28px;
+	width: 380px;
+	display: flex;
+	flex-direction: column;
+	gap: 11px;
+	font-size: 13.5px;
+	line-height: 19px;
+	color: #26262c;
+}
+
+.board-notes h3 {
+	margin: 4px 0 0;
+	font-size: 12px;
+	text-transform: uppercase;
+	letter-spacing: 0.6px;
+	color: #6b6b75;
+}
+
+.board-note {
+	display: grid;
+	grid-template-columns: 22px 1fr;
+	gap: 8px;
+}
+
+.board-note b {
+	font-weight: 600;
+}
+
+.board-note code,
+.board-notes code {
+	font-family: var(--mock-mono);
+	font-size: 12px;
+	background: rgba(0, 0, 0, 0.06);
+	padding: 0 3px;
+	border-radius: 3px;
+}
+
+.marker {
+	width: 20px;
+	height: 20px;
+	border-radius: 50%;
+	background: var(--mock-annotation);
+	color: #fff;
+	font-size: 11px;
+	font-weight: 700;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	box-shadow: 0 0 0 2px #fff;
+	font-family: var(--mock-font);
+}
+
+.marker.is-pinned {
+	position: absolute;
+	z-index: 5;
+}
+
+.marker.is-pinned::after {
+	content: "";
+	position: absolute;
+	top: 9px;
+	width: 10px;
+	height: 2px;
+	background: var(--mock-annotation);
+}
+
+.marker.is-pinned.is-l::after {
+	left: 22px;
+}
+
+.marker.is-pinned.is-r::after {
+	right: 22px;
+}
+
+/* Option B workbench variant and full-page labels */
+.wb .marker.is-pinned {
+	box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9);
+}
