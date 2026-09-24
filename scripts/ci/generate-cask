@@ -1,0 +1,16 @@
+#!/usr/bin/env node
+'use strict';
+
+const { caskFromZips } = require('./release/cask.js');
+
+const [version, ...zips] = process.argv.slice(2);
+if (!version || zips.length === 0) {
+  process.stderr.write('generate-cask: usage: generate-cask <version> <wisp-<version>-<arch>.zip>...\n');
+  process.exit(1);
+}
+try {
+  process.stdout.write(caskFromZips(version, zips));
+} catch (error) {
+  process.stderr.write(`generate-cask: ${error.message}\n`);
+  process.exit(1);
+}
