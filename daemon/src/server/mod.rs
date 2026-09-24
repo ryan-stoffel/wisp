@@ -368,3 +368,61 @@ fn rebind(socket: &mut Socket, listener: &mut UnixListener) {
         }
     }
 }
+
+#[cfg(test)]
+impl Daemon {
+    /// A daemon with its store in `dir`, and default limits.
+    pub(crate) fn for_tests(dir: &Path, event_retention: usize) -> Arc<Self> {
+        Arc::new(Self {
+            started: Instant::now(),
+            log: Arc::new(EventLog::new(event_retention)),
+            store: StoreHandle::open(&dir.join("wispd.sqlite3")),
+            os: "test".to_owned(),
+            limits: Limits {
+                idle_timeout: Duration::from_secs(90),
+                max_requests_in_flight: 32,
+                outbound_queue: 32,
+            },
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::AsyncReadExt;
+    use tokio::net::UnixStream;
+    use tokio_util::sync::CancellationToken;
+    use tokio_util::task::TaskTracker;
+
+    use super::{Accepted, Daemon};
+
+    // A socketpair's peer is this process, so expecting another uid stands in for a client
+    // that runs as another user.
+    #[tokio::test]
+    async fn only_a_peer_running_as_this_user_is_served() {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon = Daemon::for_tests(dir.path(), 10);
+        let connections = TaskTracker::new();
+        let token = CancellationToken::new();
+        let accepted = Accepted {
+            daemon: &daemon,
+            connections: &connections,
+            stop_reading: &token,
+            abort: &token,
+        };
+        let euid = rustix::process::geteuid().as_raw();
+
+        let (server, mut client) = UnixStream::pair().unwrap();
+        accepted.spawn(server, 1, euid.wrapping_add(1));
+        assert!(connections.is_empty());
+        let mut byte = [0];
+        assert_eq!(client.read(&mut byte).await.unwrap(), 0, "closed at once");
+
+        let (server, _client) = UnixStream::pair().unwrap();
+        accepted.spawn(server, 2, euid);
+        assert_eq!(connections.len(), 1);
+        token.cancel();
+        connections.close();
+        connections.wait().await;
+    }
+}

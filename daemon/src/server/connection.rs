@@ -433,26 +433,14 @@ mod tests {
     use wisp_protocol::{Project, ProjectId, WispEvent};
 
     use super::serve;
-    use crate::event_log::EventLog;
-    use crate::server::{Daemon, Limits};
-    use crate::store::StoreHandle;
+    use crate::server::Daemon;
 
     const PATIENCE: Duration = Duration::from_secs(10);
 
     type Frames = FramedRead<ReadHalf<DuplexStream>, FrameCodec>;
 
     fn daemon(dir: &Path, retention: usize) -> Arc<Daemon> {
-        Arc::new(Daemon {
-            started: std::time::Instant::now(),
-            log: Arc::new(EventLog::new(retention)),
-            store: StoreHandle::open(&dir.join("wispd.sqlite3")),
-            os: "test".to_owned(),
-            limits: Limits {
-                idle_timeout: Duration::from_secs(90),
-                max_requests_in_flight: 32,
-                outbound_queue: 32,
-            },
-        })
+        Daemon::for_tests(dir, retention)
     }
 
     fn append(daemon: &Daemon, count: usize) {

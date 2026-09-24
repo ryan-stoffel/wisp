@@ -262,6 +262,20 @@ mod tests {
     }
 
     #[test]
+    fn a_data_folder_owned_by_another_user_is_refused() {
+        // `/` belongs to root. Running as root, the check would pass and chmod `/`, so skip.
+        if rustix::process::geteuid().is_root() {
+            return;
+        }
+        match prepare_data_dir(std::path::Path::new("/")) {
+            Err(StartError::DataDir { reason, .. }) => {
+                assert!(reason.starts_with("it belongs to uid 0"), "{reason}");
+            }
+            other => panic!("expected DataDir, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn a_second_lock_is_refused_with_the_holders_pid() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("wispd.lock");
