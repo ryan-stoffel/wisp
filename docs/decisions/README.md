@@ -7,6 +7,7 @@ A decision that affects more than one issue gets a record here. Records supersed
 | [0001](0001-ci-before-product-code.md) | CI is built before product code, against a stand-in Electron app |
 | [0003](0003-naming.md) | Wisp, `wisp`, and `wispd` |
 | [0005](0005-shared-context-folder.md) | Shared context is a daemon-owned folder outside the repo |
+| [0006](0006-release-versioning-and-packaging.md) | Versions come from release tags; releases are arm64-only and ad-hoc signed until #7; bundle id `io.github.ryan-stoffel.wisp` |
 
 Reserved: 0002 (#8), 0004 (#15).
 
