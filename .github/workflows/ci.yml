@@ -62,6 +62,66 @@ jobs:
       - name: Lint, type-check, build, and test
         run: scripts/ci/check-editor
 
+  # The Code - OSS type-check needs about 6.4 GB, which swaps on the 7 GB macOS runner, and does not depend on the platform.
+  fork:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # git ls-files -s lists each tracked file's mode, blob, and path, which hashFiles leaves out.
+      - name: Hash the inputs of the Code - OSS check
+        id: inputs
+        run: |
+          inputs=$(git ls-files -s -- editor .nvmrc .gitattributes scripts/editor scripts/ci/check-fork .github/workflows/ci.yml)
+          echo "key=fork-check-$(printf '%s\n' "$inputs" | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      # Each pass saves an empty marker under its inputs' hash, so a PR can reuse a pass from develop or from an earlier push.
+      - name: Look for an earlier pass with the same inputs
+        id: earlier
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .fork-check-passed
+          key: ${{ steps.inputs.outputs.key }}
+          lookup-only: true
+
+      - name: Decide whether to run the check
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          PASSED_BEFORE: ${{ steps.earlier.outputs.cache-hit }}
+        run: |
+          if [ "$EVENT" = pull_request ] && [ "$PASSED_BEFORE" = true ]; then
+            echo "Skipping: these inputs already passed the Code - OSS check."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: steps.decide.outputs.run == 'true'
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          # Upstream's lockfile exists only after scripts/editor/prepare runs, and the pin decides it.
+          cache-dependency-path: editor/upstream.json
+
+      - name: Check the pin and patches, and type-check the patched tree
+        if: steps.decide.outputs.run == 'true'
+        run: scripts/ci/check-fork
+
+      - name: Record the pass
+        if: steps.decide.outputs.run == 'true' && steps.earlier.outputs.cache-hit != 'true'
+        run: git rev-parse HEAD > .fork-check-passed
+
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.decide.outputs.run == 'true' && steps.earlier.outputs.cache-hit != 'true'
+        with:
+          path: .fork-check-passed
+          key: ${{ steps.inputs.outputs.key }}
+
   actionlint:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -96,7 +156,7 @@ jobs:
   # Branch protection requires this job's name, ci, as the only check (#6). Renaming it blocks every merge.
   ci:
     if: always()
-    needs: [rust, editor, actionlint]
+    needs: [rust, editor, fork, actionlint]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

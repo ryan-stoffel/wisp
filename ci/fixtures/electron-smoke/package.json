@@ -17,6 +17,7 @@
     "start": "npm run build && electron ."
   },
   "devDependencies": {
+    "@electron/packager": "^20.3.0",
     "@eslint/js": "^10.0.1",
     "@types/node": "^24.13.6",
     "electron": "^44.4.5",

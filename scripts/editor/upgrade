@@ -1,0 +1,73 @@
+#!/bin/sh
+set -eu
+
+. "$(dirname "$0")/lib.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/editor/upgrade <tag>
+
+Moves wisp's patches to another Code - OSS release: fetches <tag>, rebases the
+commits in editor/vscode onto it, then rewrites editor/upstream.json and
+editor/patches. Run scripts/editor/prepare first.
+
+If the rebase stops on a conflict, resolve it in editor/vscode, run
+git rebase --continue there until the rebase finishes, then rerun this
+command with the same tag. See docs/editor-upgrade.md.
+EOF
+}
+
+case "${1-}" in
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  '' | -*)
+    usage >&2
+    exit 2
+    ;;
+esac
+[ $# -eq 1 ] || {
+  usage >&2
+  exit 2
+}
+new_tag=$1
+
+read_pin
+[ -d "$tree/.git" ] || fail "$tree does not exist; run scripts/editor/prepare first"
+if operation_in_progress; then
+  fail "a rebase is in progress in $tree; resolve the conflicts, run git rebase --continue there, then rerun scripts/editor/upgrade $new_tag"
+fi
+[ -z "$(uncommitted_changes)" ] || fail "$tree has uncommitted changes or untracked files; commit and export them, or discard them, first"
+
+new_commit=$(fetch_tag "$new_tag")
+
+if tree_git merge-base --is-ancestor "$new_commit" HEAD 2>/dev/null; then
+  printf 'editor/vscode is already based on %s\n' "$new_tag"
+else
+  tree_git merge-base --is-ancestor "$commit" HEAD 2>/dev/null ||
+    fail "HEAD in $tree is not based on the pinned $tag; run scripts/editor/prepare first"
+  [ "$(tree_git rev-parse HEAD)" = "$(tree_git rev-parse -q --verify refs/wisp/applied || true)" ] ||
+    fail "$tree has commits that are not in editor/patches; run scripts/editor/export-patches first"
+  printf 'Rebasing %s commit(s) from %s onto %s\n' "$(tree_git rev-list --count "$commit..HEAD")" "$tag" "$new_tag"
+  if ! git -C "$tree" rebase --onto "$new_commit" "$commit"; then
+    cat >&2 <<EOF
+
+upgrade: a patch conflicts with $new_tag. In $tree:
+  1. Fix the files git lists as conflicted and git add them.
+  2. Run git rebase --continue, and repeat until the rebase finishes.
+Then rerun: scripts/editor/upgrade $new_tag
+To give up instead: git rebase --abort there, then scripts/editor/prepare --force.
+EOF
+    exit 1
+  fi
+fi
+
+write_pin "$new_tag" "$new_commit"
+cp "$tree/.nvmrc" "$root/.nvmrc"
+"$(dirname "$0")/export-patches"
+cat <<EOF
+editor/upstream.json now pins $new_tag ($new_commit).
+.nvmrc now pins Node $(cat "$root/.nvmrc"), the version $new_tag requires.
+Next: scripts/editor/prepare, then rebuild and test as docs/editor-upgrade.md describes.
+EOF
