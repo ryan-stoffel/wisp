@@ -93,6 +93,19 @@ impl Store {
         fields: &ProjectFields,
     ) -> Result<Project, StoreError> {
         let id_text = id.to_string();
+
+        // A retry that already matches doesn't need the write lock: if
+        // nothing else changes it, this snapshot is exactly what a full
+        // locked check-then-insert would also return. If another writer is
+        // mutating this row concurrently, that's true of any read anyway,
+        // and the locked path below is still the one that runs when this
+        // fast path can't already tell the answer.
+        if let Some(existing) = fetch_raw(&self.conn, &id_text)?
+            && existing.matches(fields)
+        {
+            return existing.into_project();
+        }
+
         let now = timestamp::now()?;
 
         let tx = self

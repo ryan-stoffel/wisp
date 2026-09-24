@@ -177,6 +177,47 @@ fn delete_removes_the_project_and_is_idempotent() {
     assert_eq!(store.get_project(id).expect("get"), None);
 }
 
+/// Regression test for a migration-runner race: several connections opening
+/// the same brand-new database at once must all succeed, and every
+/// migration must be applied exactly once even though each connection reads
+/// the "current version" before it holds any lock.
+#[test]
+fn concurrent_open_of_a_fresh_database_applies_migrations_exactly_once() {
+    let (_dir, path) = temp_db_path();
+
+    let handles: Vec<_> = (0..8)
+        .map(|_| {
+            let path = path.clone();
+            thread::spawn(move || Store::open(&path))
+        })
+        .collect();
+
+    let stores: Vec<Store> = handles
+        .into_iter()
+        .map(|handle| handle.join().expect("opening thread should not panic"))
+        .collect::<Result<_, StoreError>>()
+        .expect("every concurrent open should succeed");
+
+    for store in &stores {
+        assert_eq!(store.list_projects().expect("list"), Vec::new());
+    }
+
+    let conn = Connection::open(&path).expect("open verification connection");
+    let mut stmt = conn
+        .prepare("SELECT version, COUNT(*) AS n FROM schema_version GROUP BY version HAVING n > 1")
+        .expect("prepare duplicate check");
+    let duplicate_versions: Vec<i64> = stmt
+        .query_map([], |row| row.get(0))
+        .expect("query duplicates")
+        .collect::<Result<_, _>>()
+        .expect("collect duplicates");
+
+    assert!(
+        duplicate_versions.is_empty(),
+        "schema_version has duplicate rows for versions: {duplicate_versions:?}"
+    );
+}
+
 /// WAL mode's key property: a reader on its own connection sees a
 /// consistent snapshot and is never blocked by another connection's
 /// still-open write transaction.

@@ -48,11 +48,27 @@ pub(crate) fn run(conn: &mut Connection) -> Result<(), StoreError> {
 
     for migration in MIGRATIONS.iter().filter(|m| m.version > current) {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.execute_batch(migration.sql)?;
-        tx.execute(
-            "INSERT INTO schema_version (version, applied_at) VALUES (?1, ?2)",
-            params![migration.version, timestamp::now()?],
+
+        // `current` was read before this transaction acquired the write
+        // lock, so another connection may have applied this exact
+        // migration in the meantime (two `Store::open` calls racing to
+        // create the same brand-new database). Re-check under the lock,
+        // which now sees that connection's commit rather than our stale
+        // pre-lock snapshot, and skip re-applying it if so.
+        let already_applied: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_version WHERE version = ?1)",
+            params![migration.version],
+            |row| row.get(0),
         )?;
+
+        if !already_applied {
+            tx.execute_batch(migration.sql)?;
+            tx.execute(
+                "INSERT INTO schema_version (version, applied_at) VALUES (?1, ?2)",
+                params![migration.version, timestamp::now()?],
+            )?;
+        }
+
         tx.commit()?;
     }
 

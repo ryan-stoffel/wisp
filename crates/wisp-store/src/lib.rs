@@ -11,14 +11,16 @@ mod timestamp;
 
 use std::fs;
 use std::path::Path;
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
 
-use rusqlite::Connection;
+use rusqlite::{Connection, Error as SqliteError, ErrorCode};
 
 pub use error::StoreError;
 pub use project::{Project, ProjectFields};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const WAL_RETRY_INTERVAL: Duration = Duration::from_millis(20);
 
 /// A connection to a wisp project database.
 #[derive(Debug)]
@@ -50,20 +52,48 @@ impl Store {
     }
 }
 
-/// Sets the pragmas every connection needs: WAL journaling so readers never
-/// block on a writer, a busy timeout so a brief lock contention waits
-/// instead of failing immediately, and foreign key enforcement.
+/// Sets the pragmas every connection needs: a busy timeout so lock
+/// contention waits instead of failing immediately, WAL journaling so
+/// readers never block on a writer, and foreign key enforcement.
 fn configure(conn: &Connection) -> Result<(), StoreError> {
-    let mode: String =
-        conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))?;
-    if !mode.eq_ignore_ascii_case("wal") {
-        return Err(StoreError::JournalMode(mode));
-    }
-
     conn.busy_timeout(BUSY_TIMEOUT)?;
+    set_wal_mode(conn)?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
 
     Ok(())
+}
+
+/// Sets `journal_mode=WAL`, retrying on `SQLITE_BUSY` for up to
+/// `BUSY_TIMEOUT`.
+///
+/// This pragma needs its own retry loop: unlike ordinary reads and writes,
+/// changing the journal mode does not go through SQLite's busy-handler
+/// callback, so `Connection::busy_timeout` alone does not make it wait out
+/// lock contention. Confirmed empirically — two connections racing to open
+/// the same brand-new database made this pragma fail instantly with
+/// `SQLITE_BUSY` well under a millisecond in, never waiting anywhere near
+/// `BUSY_TIMEOUT` on its own.
+fn set_wal_mode(conn: &Connection) -> Result<(), StoreError> {
+    let deadline = Instant::now() + BUSY_TIMEOUT;
+    loop {
+        let attempt = conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0));
+        match attempt {
+            Ok(mode) => {
+                let mode: String = mode;
+                return if mode.eq_ignore_ascii_case("wal") {
+                    Ok(())
+                } else {
+                    Err(StoreError::JournalMode(mode))
+                };
+            }
+            Err(SqliteError::SqliteFailure(e, _))
+                if e.code == ErrorCode::DatabaseBusy && Instant::now() < deadline =>
+            {
+                thread::sleep(WAL_RETRY_INTERVAL);
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
 }
 
 #[cfg(test)]
