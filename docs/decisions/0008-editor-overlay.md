@@ -1,4 +1,4 @@
-# 0007: wisp's overlay on the editor tree
+# 0008: wisp's overlay on the editor tree
 
 - Status: accepted
 - Date: 2026-09-24

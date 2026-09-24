@@ -166,7 +166,7 @@ make_base() {
     GIT_COMMITTER_NAME=$prepare_name GIT_COMMITTER_EMAIL=$prepare_email GIT_COMMITTER_DATE=$date \
     tree_git commit-tree "$base_tree" -p "$1" \
     -m 'wisp: overlay editor/product.json and editor/overlay' \
-    -m 'scripts/editor/prepare generates this commit, and export-patches never exports it. See docs/decisions/0007-editor-overlay.md in wisp.'
+    -m 'scripts/editor/prepare generates this commit, and export-patches never exports it. See docs/decisions/0008-editor-overlay.md in wisp.'
 }
 
 # Prints the commit the patches in the tree sit on: refs/wisp/base, or the

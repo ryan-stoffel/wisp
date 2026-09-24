@@ -48,7 +48,7 @@ tree_git merge-base --is-ancestor "$base" HEAD 2>/dev/null ||
 [ -z "$(tree_git rev-list --merges "$base..HEAD")" ] ||
   fail "the commits after $tag in $tree include a merge; the series must be linear"
 
-# Keeps what the overlay owns out of the patches (docs/decisions/0007-editor-overlay.md).
+# Keeps what the overlay owns out of the patches (docs/decisions/0008-editor-overlay.md).
 owned=$(overlay_files) || exit 1
 owned="product.json
 $owned"
