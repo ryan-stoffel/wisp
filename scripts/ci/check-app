@@ -1,0 +1,105 @@
+#!/bin/sh
+set -eu
+
+usage="usage: ${0##*/} <Wisp.app or zip> <arm64|x64>"
+fail() {
+  echo "${0##*/}: $*" >&2
+  exit 1
+}
+
+[ $# -eq 2 ] || fail "$usage"
+arch=$2
+case $arch in
+  arm64) lipo_arch=arm64 ;;
+  x64) lipo_arch=x86_64 ;;
+  *) fail "arch must be arm64 or x64, got '$arch'" ;;
+esac
+[ "$(uname -s)" = Darwin ] || fail "checking the app needs macOS"
+root=$(cd "$(dirname "$0")/../.." && pwd)
+want=$(cut -d. -f1 "$root/.nvmrc")
+have=$(node -p 'process.versions.node.split(".")[0]')
+[ "$have" = "$want" ] || fail "Node $want is required (.nvmrc pins $(cat "$root/.nvmrc")), but node is $(node --version)"
+input=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+[ -e "$input" ] || fail "$1 does not exist"
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/wisp-check-app.XXXXXX")
+trap 'rm -rf "$work"' EXIT
+case $input in
+  *.zip)
+    ditto -x -k "$input" "$work"
+    set -- "$work"/*.app
+    [ $# -eq 1 ] && [ -d "$1" ] || fail "$input must hold exactly one .app"
+    bundle=$1
+    ;;
+  *.app) bundle=$input ;;
+  *) fail "$usage" ;;
+esac
+
+codesign --verify --deep --strict "$bundle" || fail "$bundle is not validly signed"
+
+plist="$bundle/Contents/Info.plist"
+plist_value() {
+  plutil -extract "$1" raw -o - "$plist"
+}
+executable="$bundle/Contents/MacOS/$(plist_value CFBundleExecutable)"
+archs=$(lipo -archs "$executable")
+[ "$archs" = "$lipo_arch" ] || fail "$executable is built for '$archs', expected $lipo_arch"
+
+# The app's product.json must carry every value in editor/product.json, and
+# none of the keys it deletes (docs/decisions/0008-editor-overlay.md).
+app_dir="$bundle/Contents/Resources/app"
+node -e '
+  const fs = require("fs");
+  const [overlayFile, productFile] = process.argv.slice(1);
+  const overlay = JSON.parse(fs.readFileSync(overlayFile, "utf8"));
+  const product = JSON.parse(fs.readFileSync(productFile, "utf8"));
+  const problems = [];
+  const walk = (want, got, path) => {
+    for (const [key, value] of Object.entries(want)) {
+      const where = path ? path + "." + key : key;
+      if (value === null) {
+        if (got !== undefined && got !== null && key in got) problems.push(where + " should be absent");
+      } else if (typeof value === "object" && !Array.isArray(value)) {
+        walk(value, got?.[key], where);
+      } else if (JSON.stringify(got?.[key]) !== JSON.stringify(value)) {
+        problems.push(where + " is " + JSON.stringify(got?.[key]) + ", expected " + JSON.stringify(value));
+      }
+    }
+  };
+  walk(overlay, product, "");
+  if (problems.length) {
+    console.error(problems.join("\n"));
+    process.exit(1);
+  }
+' "$root/editor/product.json" "$app_dir/product.json" || fail "the app's product.json does not match editor/product.json"
+
+product_value() {
+  node -p "require(process.argv[1])[process.argv[2]]" "$app_dir/product.json" "$1"
+}
+for pair in "CFBundleIdentifier=$(product_value darwinBundleIdentifier)" "CFBundleName=$(product_value nameShort)"; do
+  key=${pair%%=*}
+  actual=$(plist_value "$key")
+  [ "$actual" = "${pair#*=}" ] || fail "$key is '$actual' in $plist, expected '${pair#*=}'"
+done
+cmp -s "$bundle/Contents/Resources/$(plist_value CFBundleIconFile)" "$root/editor/overlay/resources/darwin/code.icns" ||
+  fail "the app icon is not editor/overlay/resources/darwin/code.icns"
+
+launcher="$app_dir/bin/$(product_value applicationName)"
+[ -x "$launcher" ] || fail "the launcher $launcher is missing"
+# The launcher runs the app's Electron as Node, so an x64 app needs Rosetta on Apple silicon.
+if [ "$lipo_arch" = "$(uname -m)" ] || { [ "$lipo_arch" = x86_64 ] && arch -x86_64 /usr/bin/true 2>/dev/null; }; then
+  version=$("$launcher" --version) || fail "$launcher --version failed"
+  echo "${0##*/}: $(basename "$launcher") --version: $(printf '%s' "$version" | tr '\n' ' ')" >&2
+else
+  echo "${0##*/}: skipped $(basename "$launcher") --version: this Mac cannot run $lipo_arch" >&2
+fi
+
+app_size=$(du -sh "$bundle" | cut -f1)
+summary="$(basename "$bundle") ($arch): $app_size"
+case $input in
+  *.zip) summary="$summary, zip $(du -h "$input" | cut -f1) ($(wc -c <"$input" | tr -d ' ') bytes)" ;;
+esac
+echo "${0##*/}: ok, $summary; minimum macOS $(plist_value LSMinimumSystemVersion)" >&2
+if [ -n "${GITHUB_STEP_SUMMARY-}" ]; then
+  echo "- $summary; minimum macOS $(plist_value LSMinimumSystemVersion)" >>"$GITHUB_STEP_SUMMARY"
+fi
