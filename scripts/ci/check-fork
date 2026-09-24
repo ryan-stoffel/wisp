@@ -18,6 +18,17 @@ if ! cmp -s "$root/.nvmrc" "$root/editor/vscode/.nvmrc"; then
   exit 1
 fi
 
+# An upgrade that renames an id in wisp's exclusion list would bring that feature back
+# without an error, so every listed id must still appear in upstream's source.
+exclusions=editor/overlay/src/vs/workbench/common/wisp/exclusions.ts
+missing=$(sed -n "s/^[[:space:]]*'\([^']*\)',.*/\1/p" "$root/$exclusions" | while read -r id; do
+  grep -rqF --include='*.ts' --exclude-dir=wisp "'$id'" "$root/editor/vscode/src/vs" || echo "$id"
+done)
+if [ -n "$missing" ]; then
+  echo "${0##*/}: $exclusions lists ids that Code - OSS no longer defines:" $missing >&2
+  exit 1
+fi
+
 cd "$root/editor/vscode"
 # Keeps an existing development install: npm ci --ignore-scripts would replace
 # its Electron-built native modules with an install that cannot run.
