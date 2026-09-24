@@ -44,6 +44,9 @@ function fromBundle(bundle) {
   } catch (error) {
     fail(`cannot read CFBundleExecutable from ${infoPlist}: ${error.message}`);
   }
+  if (!executable) {
+    fail(`CFBundleExecutable is empty in ${infoPlist}`);
+  }
   return {
     executablePath: path.join(bundle, 'Contents', 'MacOS', executable),
     args: [],
