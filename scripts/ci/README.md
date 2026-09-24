@@ -17,8 +17,8 @@ Each script finds the repo root on its own, so it runs from any directory.
 | `next-version` | Prints the version the next release gets, from tags and Conventional Commits (see [Releases](#releases)) | `release.yml` (#5) |
 | `generate-cask` | Prints the Homebrew cask for a version and its zips, from `release/wisp.rb.template` | `release.yml` (#5) |
 | `audit-cask` | Runs `brew style` and `brew audit` on a cask in a throwaway tap, then installs and uninstalls it | `release.yml` (#5) |
-| `publish-cask` | Commits the cask to `ryan-stoffel/homebrew-taps` with `TAP_GITHUB_TOKEN`; `--check` only tests the token | `release.yml` (#5) |
-| `check-release` | Unit tests for `next-version` and `generate-cask` | `release.yml` (#5) |
+| `publish-cask` | Commits the cask to `ryan-stoffel/homebrew-taps` with `TAP_GITHUB_TOKEN`, and refuses to replace a newer version; `--check` only tests the token | `release.yml` (#5) |
+| `check-release` | Unit tests for the release scripts | `release.yml` (#5) |
 
 ## Requirements
 
@@ -164,7 +164,7 @@ Left out:
 
 `audit-cask` uses a throwaway tap (`wisp-ci/dry-run`) and a throwaway download cache, and it never zaps. It skips the install check when a `wisp` cask is already installed, so running it on a dev Mac leaves Homebrew as it was.
 
-If `publish` fails after the release exists, re-run it. It reuses the tag and the release's zips, and `publish-cask` skips the commit when the tap already has the same cask. If a failed run left a draft release, delete the draft first.
+If `publish` fails after the release exists, re-run it, but only while no newer release has shipped. The re-run reuses the tag and the release's zips, and `publish-cask` skips the commit when the tap already has the same cask. Once the tap has a newer version, `publish-cask` refuses to replace it and exits 1, so re-running an old run cannot downgrade users. If a failed run left a draft release, delete the draft first.
 
 ## Notes for workflows
 

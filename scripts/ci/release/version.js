@@ -3,15 +3,19 @@
 const { execFileSync } = require('node:child_process');
 
 const FIRST_VERSION = '0.1.0';
-const RELEASE_TAG = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const HEADER = /^(\w+)(?:\([^()\r\n]*\))?(!)?: \S/;
 const BREAKING_FOOTER = /^BREAKING[ -]CHANGE: /m;
 const LEVELS = ['patch', 'minor', 'major'];
 const CHANGE_NAMES = { patch: 'fix or other', minor: 'feat', major: 'breaking' };
 
-function parseTag(tag) {
-  const match = RELEASE_TAG.exec(tag);
+function parseVersion(version) {
+  const match = VERSION.exec(version);
   return match ? match.slice(1, 4).map(Number) : null;
+}
+
+function parseTag(tag) {
+  return tag.startsWith('v') ? parseVersion(tag.slice(1)) : null;
 }
 
 function compareVersions(a, b) {
@@ -88,4 +92,13 @@ function computeVersion(repoDir, env = process.env) {
   };
 }
 
-module.exports = { FIRST_VERSION, bumpLevel, computeVersion, latestTag, nextVersion, parseTag };
+module.exports = {
+  FIRST_VERSION,
+  bumpLevel,
+  compareVersions,
+  computeVersion,
+  latestTag,
+  nextVersion,
+  parseTag,
+  parseVersion,
+};

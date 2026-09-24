@@ -2,6 +2,7 @@
 'use strict';
 
 const { readFileSync } = require('node:fs');
+const { planTapCommit } = require('./release/tap.js');
 
 const TAP = 'ryan-stoffel/homebrew-taps';
 const CASK_PATH = 'Casks/wisp.rb';
@@ -52,14 +53,13 @@ async function readTap(token) {
   };
 }
 
-function commitInput(tap, cask, version) {
-  const tag = `v${version}`;
+function commitInput(tap, cask, version, headline) {
   return {
     branch: { repositoryNameWithOwner: TAP, branchName: tap.branch },
     expectedHeadOid: tap.head,
     message: {
-      headline: tap.current === null ? `wisp ${version} (new cask)` : `wisp ${version}`,
-      body: `Release: https://github.com/ryan-stoffel/wisp/releases/tag/${tag}`,
+      headline,
+      body: `Release: https://github.com/ryan-stoffel/wisp/releases/tag/v${version}`,
     },
     fileChanges: { additions: [{ path: CASK_PATH, contents: Buffer.from(cask).toString('base64') }] },
   };
@@ -83,11 +83,15 @@ async function main(args) {
   const cask = readFileSync(caskFile, 'utf8');
   for (let attempt = 1; ; attempt += 1) {
     const tap = await readTap(token);
-    if (tap.current === cask) {
+    const plan = planTapCommit(tap.current, cask, version);
+    if (plan.action === 'skip') {
       console.log(`publish-cask: ${TAP}/${CASK_PATH} on ${tap.branch} already matches; nothing to commit`);
       return;
     }
-    const input = commitInput(tap, cask, version);
+    if (plan.action === 'refuse') {
+      throw new Error(`left ${TAP}/${CASK_PATH} on ${tap.branch} unchanged: ${plan.reason}`);
+    }
+    const input = commitInput(tap, cask, version, plan.headline);
     if (dryRun) {
       const shown = { ...input, fileChanges: { additions: [{ path: CASK_PATH, contents: '<base64 of the cask>' }] } };
       console.log(`publish-cask: would commit to ${TAP}:\n${JSON.stringify(shown, null, 2)}`);

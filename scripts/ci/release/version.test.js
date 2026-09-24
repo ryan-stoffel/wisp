@@ -6,7 +6,30 @@ const { mkdtempSync, rmSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
 const { after, describe, it } = require('node:test');
-const { bumpLevel, computeVersion, latestTag, nextVersion, parseTag } = require('./version.js');
+const {
+  bumpLevel,
+  compareVersions,
+  computeVersion,
+  latestTag,
+  nextVersion,
+  parseTag,
+  parseVersion,
+} = require('./version.js');
+
+describe('parseVersion and compareVersions', () => {
+  it('accepts only MAJOR.MINOR.PATCH without a v', () => {
+    assert.deepEqual(parseVersion('0.10.2'), [0, 10, 2]);
+    for (const version of ['v0.1.0', '0.1', '01.0.0', '0.1.0-rc.1', '0.1.0.1', '']) {
+      assert.equal(parseVersion(version), null, version);
+    }
+  });
+
+  it('orders versions by number', () => {
+    const sorted = ['1.0.0', '0.10.0', '0.9.9', '0.9.10', '0.1.0'].map(parseVersion).sort(compareVersions);
+    assert.deepEqual(sorted, [[0, 1, 0], [0, 9, 9], [0, 9, 10], [0, 10, 0], [1, 0, 0]]);
+    assert.equal(compareVersions([1, 2, 3], [1, 2, 3]), 0);
+  });
+});
 
 describe('parseTag and latestTag', () => {
   it('accepts only vMAJOR.MINOR.PATCH tags', () => {
