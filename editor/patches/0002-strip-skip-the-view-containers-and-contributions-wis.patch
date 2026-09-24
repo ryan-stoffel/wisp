@@ -1,0 +1,79 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ryan Stoffel <stoffel.thomas.ryan@gmail.com>
+Date: Thu, 24 Sep 2026 07:41:33 -0700
+Subject: [PATCH] strip: skip the view containers and contributions wisp leaves
+ out
+
+wisp removes some upstream features by keeping them out of registration
+instead of deleting or editing their code (0002, rule 4). The ids live in
+one wisp-owned list, src/vs/workbench/common/wisp/exclusions.ts, which
+the overlay provides. The view container registry returns an excluded
+container without registering it, the views registry drops the views
+registered into it, and the workbench contribution registry never
+instantiates an excluded contribution.
+
+The main case is upstream Chat. Its container, workbench.panel.chat, is
+the secondary side bar's default, and the side bar opens the first
+default container at startup even when it is empty. Hiding Chat leaves
+it the default, so wisp's coordinator view could never open first.
+Excluding the id also removes the view, its open command, and its
+Ctrl+Cmd+I binding. The list also covers Run and Debug, the Debug
+Console, Ports, chat setup, the Copilot status item, and the remote
+indicator, each with its reason.
+
+A filter in the registries also catches containers that register late,
+such as Ports, which a deregistration after import would miss.
+
+diff --git a/src/vs/workbench/common/contributions.ts b/src/vs/workbench/common/contributions.ts
+index 20b66d726fc2c2a0236334ed402c1c2f4e59bd69..1c3907e3890c1e9ec615247b87d662b40ea4eea4 100644
+--- a/src/vs/workbench/common/contributions.ts
++++ b/src/vs/workbench/common/contributions.ts
+@@ -13,6 +13,7 @@ import { IEnvironmentService } from '../../platform/environment/common/environme
+ import { getOrSet } from '../../base/common/map.js';
+ import { Disposable, DisposableStore, isDisposable } from '../../base/common/lifecycle.js';
+ import { IEditorPaneService } from '../services/editor/common/editorPaneService.js';
++import { isExcludedWorkbenchContribution } from './wisp/exclusions.js';
+ 
+ /**
+  * A workbench contribution that will be loaded when the workbench starts and disposed when the workbench shuts down.
+@@ -169,6 +170,10 @@ export class WorkbenchContributionsRegistry extends Disposable implements IWorkb
+ 	registerWorkbenchContribution2(id: string, ctor: IConstructorSignature<IWorkbenchContribution>, lazy: ILazyWorkbenchContributionInstantiation): void;
+ 	registerWorkbenchContribution2(id: string, ctor: IConstructorSignature<IWorkbenchContribution>, onEditor: IOnEditorWorkbenchContributionInstantiation): void;
+ 	registerWorkbenchContribution2(id: string | undefined, ctor: IConstructorSignature<IWorkbenchContribution>, instantiation: WorkbenchContributionInstantiation): void {
++		if (id !== undefined && isExcludedWorkbenchContribution(id)) {
++			return;
++		}
++
+ 		const contribution: IWorkbenchContributionRegistration = { id, ctor };
+ 
+ 		// Instantiate directly if we already have a matching instantiation condition
+diff --git a/src/vs/workbench/common/views.ts b/src/vs/workbench/common/views.ts
+index 236e55696b1aabafcf35870f98482c1d24326369..4b086eab71005877c83f5d147f39149c7deeed1f 100644
+--- a/src/vs/workbench/common/views.ts
++++ b/src/vs/workbench/common/views.ts
+@@ -26,6 +26,7 @@ import { registerIcon } from '../../platform/theme/common/iconRegistry.js';
+ import { CancellationToken } from '../../base/common/cancellation.js';
+ import { VSDataTransfer } from '../../base/common/dataTransfer.js';
+ import { ILocalizedString } from '../../platform/action/common/action.js';
++import { isExcludedViewContainer } from './wisp/exclusions.js';
+ 
+ export const VIEWS_LOG_ID = 'views';
+ export const VIEWS_LOG_NAME = localize('views log', "Views");
+@@ -235,6 +236,9 @@ class ViewContainersRegistryImpl extends Disposable implements IViewContainersRe
+ 		}
+ 
+ 		const viewContainer: RelaxedViewContainer = viewContainerDescriptor;
++		if (isExcludedViewContainer(viewContainer.id)) {
++			return viewContainer;
++		}
+ 		viewContainer.openCommandActionDescriptor = options?.doNotRegisterOpenCommand ? undefined : (viewContainer.openCommandActionDescriptor ?? { id: viewContainer.id });
+ 		const viewContainers = getOrSet(this.viewContainers, viewContainerLocation, []);
+ 		viewContainers.push(viewContainer);
+@@ -465,6 +469,7 @@ class ViewsRegistry extends Disposable implements IViewsRegistry {
+ 	}
+ 
+ 	registerViews2(views: { views: IViewDescriptor[]; viewContainer: ViewContainer }[]): void {
++		views = views.filter(({ viewContainer }) => !isExcludedViewContainer(viewContainer.id));
+ 		views.forEach(({ views, viewContainer }) => this.addViews(views, viewContainer));
+ 		this._onViewsRegistered.fire(views);
+ 	}
