@@ -5,6 +5,7 @@ use crate::ProtocolRange;
 
 /// Params of `host/health`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct HostHealthParams {}
 
 /// Result of `host/health`.
@@ -38,10 +39,12 @@ pub enum StoreState {
 
 /// Params of `host/version`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct HostVersionParams {}
 
 /// Result of `host/version`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct HostVersionResult {
     /// wispd's release version.
     pub wispd: String,

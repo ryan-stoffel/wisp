@@ -28,10 +28,12 @@ pub struct Project {
 
 /// Params of `project/list`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct ProjectListParams {}
 
 /// Result of `project/list`: a snapshot of every project.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct ProjectListResult {
     /// Every project, oldest first.
     pub projects: Vec<Project>,
@@ -56,6 +58,7 @@ pub struct ProjectCreateParams {
 
 /// Result of `project/create`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct ProjectCreateResult {
     /// The project, new or existing.
     pub project: Project,

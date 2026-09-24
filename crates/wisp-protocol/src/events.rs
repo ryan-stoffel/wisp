@@ -21,6 +21,7 @@ uuid_v7_id! {
 /// `events/event` notification. If those events are gone or too many to replay, it fails with
 /// `resyncRequired`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct EventsSubscribeParams {
     /// Replay the events whose `seq` is greater than this: usually the `seq` of a snapshot, such
     /// as `project/list`'s, or of the last event received. `seq` starts at 1.
@@ -34,6 +35,7 @@ pub struct EventsSubscribeParams {
 
 /// Result of `events/subscribe`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct EventsSubscribeResult {
     /// The new subscription, which its `events/event` notifications name.
     pub subscription: SubscriptionId,
@@ -41,6 +43,7 @@ pub struct EventsSubscribeResult {
 
 /// Params of `events/unsubscribe`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct EventsUnsubscribeParams {
     /// The subscription to end. Ending one that does not exist succeeds.
     pub subscription: SubscriptionId,
@@ -48,10 +51,12 @@ pub struct EventsUnsubscribeParams {
 
 /// Result of `events/unsubscribe`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct EventsUnsubscribeResult {}
 
 /// Params of `events/event`: one event from wispd's event log.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct EventsEventParams {
     /// The subscription it belongs to.
     pub subscription: SubscriptionId,

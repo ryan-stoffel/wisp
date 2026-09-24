@@ -293,6 +293,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn wire_names_are_camel_case() {
+        let code = without_comments_and_strings(&generate());
+        let snake: BTreeSet<&str> = code
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .filter(|word| word.contains('_') && word.chars().any(|c| c.is_ascii_lowercase()))
+            .collect();
+        assert!(
+            snake.is_empty(),
+            "add #[serde(rename_all = \"camelCase\")] to the types with {snake:?}"
+        );
+    }
+
     fn without_comments_and_strings(source: &str) -> String {
         let mut out = String::new();
         let mut rest = source;

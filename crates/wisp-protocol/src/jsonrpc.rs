@@ -370,6 +370,7 @@ impl Serialize for Message {
 
 /// A JSON-RPC error object.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ErrorObject {
     /// One of the codes in this module.
     pub code: i64,
@@ -478,6 +479,7 @@ impl Error for MalformedMessage {}
 
 /// Params of `$/cancelRequest`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct CancelRequestParams {
     /// The id of the request to cancel.
     pub id: RequestId,

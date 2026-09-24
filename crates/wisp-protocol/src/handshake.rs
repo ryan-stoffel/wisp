@@ -8,6 +8,7 @@ use crate::{LogId, PROTOCOL_VERSION};
 
 /// A range of protocol versions, both ends included. Its shape never changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct ProtocolRange {
     /// The oldest version.
     pub min: u32,
@@ -36,6 +37,7 @@ impl ProtocolRange {
 /// `protocol` and `capabilities` never change shape. To answer `incompatibleProtocol` even to a
 /// client whose other params changed, decode `InitializeProtocol` before these.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct InitializeParams {
     /// The protocol versions the client speaks.
     pub protocol: ProtocolRange,
@@ -47,6 +49,7 @@ pub struct InitializeParams {
 
 /// The part of `initialize`'s params that no protocol version changes: the client's range.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InitializeProtocol {
     /// The protocol versions the client speaks.
     pub protocol: ProtocolRange,

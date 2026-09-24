@@ -32,6 +32,7 @@ pub enum ErrorKind {
 
 /// The `data` of a wisp error (code -32000).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct ErrorData {
     /// What went wrong.
     pub kind: ErrorKind,
@@ -44,6 +45,7 @@ pub struct ErrorData {
 /// The `detail` of `incompatibleProtocol`. Its shape never changes, so every editor can read it
 /// from every wispd.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct IncompatibleProtocolDetail {
     /// The versions the client asked for.
     pub requested: ProtocolRange,
