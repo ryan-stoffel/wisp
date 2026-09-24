@@ -12,21 +12,30 @@ The editor and `wispd` need one protocol, whether `wispd` runs on this Mac or on
 
 ### Transport
 
-- **Local:** wispd listens only on the Unix socket `~/Library/Application Support/wisp/wispd.sock` (0006).
-  - The folder is 0700 and the socket 0600, and `getpeereid` must return wispd's own uid.
-  - A `flock` on `wispd.lock` allows one wispd per folder, and the lock holder removes a stale socket before binding.
+- **Local:** wispd listens only on a Unix socket, `wispd.sock` in its data folder `~/Library/Application Support/wisp` (0006).
+  - On every start, wispd checks the folder with `symlink_metadata`. It must be a directory, not a symlink, and owned by wispd's euid. wispd then sets it to 0700.
+  - A `flock` on `wispd.lock` allows one wispd per folder. Only the lock holder removes an old `wispd.sock`, and only if it is a socket.
+  - The socket is 0600, and `getpeereid` must return wispd's own uid.
+  - macOS caps socket paths at 103 bytes, which the default path exceeds when the home folder path is longer than 59 bytes.
+    - In that case, wispd and its clients (`attach`, `wispd mcp`) all use `$(getconf DARWIN_USER_TEMP_DIR)wispd-<hash>.sock`. `<hash>` is the first 8 hex digits of the SHA-256 of the data folder's path, and that folder is per user and 0700.
+    - macOS's daily `dirhelper` deletes files there that are older than three days, so wispd checks the socket every minute and binds it again if it is gone.
   - There is no TCP port, no token, and no system-wide daemon. Each macOS user runs their own wispd, so users of a shared Mac stay isolated.
+  - The trust boundary is the user. Any process running as that user can connect and call any method, including the agents wispd starts, which run shell commands. #11's plan approval is a UX step, not a boundary against a compromised agent.
 - **Editor:** it always talks over a child process's stdio.
   - Locally it runs the bundled `wispd attach` (#62). For a host it runs `ssh -T -o BatchMode=yes -o ConnectTimeout=10 -o ControlPath=none -- <destination> wispd attach`.
   - The editor rejects a destination that starts with `-` or contains whitespace or control characters, and `--` keeps ssh from reading it as an option. `wisp.host` is application-scoped, so a workspace's `.vscode/settings.json` can't set it.
   - `ControlPath=none` keeps a reconnect after sleep from reusing a stale shared connection. The cost is that hosts needing interactive 2FA are out of scope, because `BatchMode` could only reach them through a shared connection.
-  - `attach` (#60) bridges stdio to the socket byte for byte. It starts wispd if needed, through the LaunchAgent when #61 installed one.
+  - `attach` (#60) bridges stdio to the socket byte for byte. If wispd isn't running, `attach` starts it through the LaunchAgent when #61 installed one.
+    - Otherwise it starts `serve` in a new session (`setsid`), with stdio going to its log, so the ssh session can close.
+    - #60's "no orphaned processes" applies to `attach`, not to that `serve`, so a disconnect never stops agents.
+    - On a host, the LaunchAgent is the recommended setup, since a process started from SSH may not reach the Keychain (0004).
 - **Credentials:** wisp stores none and never sees any.
   - The user's `ssh` applies their config, keys, agent, `known_hosts`, and jump hosts.
   - `BatchMode=yes` turns prompts into errors. The user accepts a new host key or unlocks a key once, with `ssh <destination>` in the integrated terminal.
 - **Reconnect:**
-  - The editor sends `host/health` every 30 s and on wake. After 10 s with no answer, it kills the child and reconnects, backing off from 1 s to 10 s (#11). This covers both sleep and network changes.
-  - wispd drops a connection that has been silent for 90 s.
+  - The editor sends `host/health` every 30 s and on wake. If 10 s then pass with no bytes received, it kills the child and reconnects, backing off from 1 s to 10 s (#11). This covers both sleep and network changes.
+  - Any received bytes, such as a replay in progress, reset that timer.
+  - wispd writes responses ahead of queued events, and drops a connection that has been silent for 90 s.
 
 ### Framing
 
@@ -37,20 +46,20 @@ The editor and `wispd` need one protocol, whether `wispd` runs on this Mac or on
   - Diffs, logs, and files come through paged methods.
 - **Conventions:** fields are camelCase, ids are UUIDv7 strings, times are RFC 3339 UTC, and integers stay below 2^53.
 - **Rust:** `serde_json` and `tokio_util`'s `LinesCodec::new_with_max_length`, with no RPC framework.
-- **TypeScript:** Code - OSS's own `JsonRpcProtocol` (`vs/base/common/jsonRpcProtocol.ts`, which upstream's MCP client uses) over `StreamSplitter('\n')`.
-  - That needs no new npm dependency.
-  - `vscode-jsonrpc` is only a transitive dependency in 1.139.0, through `@github/copilot-sdk` and the dev-tunnels packages.
+- **TypeScript:** Code - OSS's own `JsonRpcProtocol` (`vs/base/common/jsonRpcProtocol.ts`, which upstream's MCP client uses) over `StreamSplitter('\n')`, so no npm dependency is added.
 - **Debugging:** `printf '%s\n' '<request>' | ssh <destination> wispd attach | jq`, which works because `attach` half-closes.
 
 ### Handshake and versioning
 
 - **`initialize` comes first**, and anything sent before it fails with `notInitialized`.
-  - It sends `protocol: {min, max}`, `client`, and `capabilities`.
+  - It sends `protocol: {min, max}`, `client: {name, version, machineId?}`, and `capabilities`.
   - It returns `protocol`, `wispd` (the release version), `logId`, `capabilities`, and `maxFrameBytes`.
-  - Its version fields and the `incompatibleProtocol` error never change shape.
+  - `capabilities` is an object map such as `{"agents": {}}`, as in LSP and MCP.
+  - The map, the version fields, and the `incompatibleProtocol` error never change shape.
 - **`protocol` is an integer, starting at 1.**
   - Additions keep it: methods, notifications, event kinds, optional fields, and enum values. Receivers ignore anything unknown, and every enum Rust receives has an `#[serde(other)]` fallback.
-  - Removals, renames, and type changes bump it.
+  - An older wispd would silently ignore a new option. So an option whose loss changes behavior, such as a sandbox setting, is sent only when wispd advertises a capability for it.
+  - Removals, renames, and type changes bump it. After a bump, the previous version stays in range for at least one release, so an editor and its host can upgrade at different times.
   - Capabilities (`agents`, `coordinator`, `localRunner`, `triggers`) gate later features, so a newer editor still works with an older host.
 - **On a mismatch**, wispd answers `incompatibleProtocol`, with both ranges and its release version.
   - The editor enters #63's incompatible state and stops retrying until the user clicks Retry.
@@ -62,7 +71,8 @@ The editor and `wispd` need one protocol, whether `wispd` runs on this Mac or on
   - From M3 the log is stored in SQLite (#58).
   - `logId` changes only when the log starts over, such as after a wiped data folder or after an M1 restart that loses an in-memory log.
 - **Subscribing:** snapshot methods such as `project/list` return the `seq` they reflect. `events/subscribe {after, project?}` replays newer events, then streams live `events/event` notifications: `{subscription, seq, time, project?, event: {kind, ...}}`. Without `project`, it gets host-level events such as `project.created`.
-- **Resuming:** after a reconnect, the editor resubscribes from its last `seq`. It reloads its snapshots instead if `logId` changed, or if wispd answers `resyncRequired` because the history is gone or too long to replay.
+- **Several clients:** any number of connections may attach, each with its own subscriptions, and wispd broadcasts every change to all of them.
+- **Resuming:** after a reconnect, the editor resubscribes from its last `seq`. It reloads its snapshots instead if `logId` changed, or if wispd answers `resyncRequired` because the history is gone or too long to replay. From M3, `agent/output` rebuilds a running agent's transcript after a resync.
 - **Backpressure:** each connection has a bounded outbound queue.
   - A subscriber that falls behind the live buffer reads from the log until it catches up, so agents never wait on an editor and memory stays bounded.
   - Output is coalesced to one `agent.output` per run every 50 ms.
@@ -83,8 +93,12 @@ The editor and `wispd` need one protocol, whether `wispd` runs on this Mac or on
 ### Types
 
 - **Source of truth:** the `wisp-protocol` crate (#57), which holds the serde types and one method table.
-- **Generated TypeScript:** ts-rs 12 generates it with `Config::with_large_int("number")`. It is committed in the editor's wisp-owned source, so the fork builds without Rust.
-- **Staleness check:** a `wisp-protocol` test regenerates the TypeScript in memory and fails if it differs from the committed copy. `check-rust` already runs `cargo test`, and Codex's app-server crate uses the same check.
+- **Generated TypeScript:** an explicit generator command runs ts-rs 12 with `Config::with_large_int("number")`.
+  - It doesn't use `#[ts(export)]`, whose generated tests write files during `cargo test`.
+  - The output is committed under `editor/`, which the fork job's input hash covers, so a type change also reruns the fork type-check. The fork still builds without Rust.
+- **Tests (#57):** `check-rust` already runs `cargo test`, which runs both of these.
+  - A staleness test regenerates the TypeScript in memory and fails if it differs from the committed copy. Codex's app-server crate uses the same check.
+  - Sample messages for each protocol version are committed, and a test asserts that they all still deserialize. This enforces the additive rule.
 
 ### Methods
 
@@ -103,10 +117,12 @@ Later milestones add methods and events behind a capability, with no version bum
 
 | Capability | Methods | Events |
 | --- | --- | --- |
-| M3 `agents` | `agent/start {runId, ...}`, `agent/stop`, `agent/list`, `agent/diff` (paged), `context/read`, `context/write` | `agent.started`, `agent.output`, `agent.finished`, `agent.diffReady`, `context.changed` |
-| M4 `coordinator` | `coordinator/send {turnId, ...}`, `coordinator/stop`, `plan/approve`; the coordinator's MCP tools (0004) connect through `wispd mcp`, a second stdio bridge | `coordinator.output`, `coordinator.turnFinished`, `plan.proposed`; parallel agents are just more `runId`s |
-| M5 `localRunner` | `runner/start {runId, ...}`, `runner/stop`, and the shared context mirror sync (0005), which the host sends over the connection the MacBook opened | `runner.output`, `runner.finished` |
+| M3 `agents` | `agent/start {runId, ...}`, `agent/stop`, `agent/list`, `agent/output {runId, after}` (paged, returns `seq`), `agent/diff` (paged), `context/list`, `context/read`, `context/write` | `agent.started`, `agent.output`, `agent.finished`, `agent.diffReady`, `context.changed` |
+| M4 `coordinator` | `coordinator/send {turnId, ...}`, `coordinator/stop`, `plan/approve {planId}`, which fails with `planReplaced` if #11's flow replaced that plan | `coordinator.output`, `coordinator.turnFinished`, `plan.proposed`; parallel agents are just more `runId`s |
+| M5 `localRunner` | `runner/start {runId, ...}`, `runner/stop`, and the shared context mirror sync (0005), which the host sends over the connection the MacBook opened. `client.machineId` tells two machines apart. | `runner.output`, `runner.finished` |
 | M6 `triggers` | `trigger/list`, `trigger/create {id, ...}` | `trigger.fired` |
+
+`wispd mcp` (M4) is an MCP server on stdio and a normal wisp client on the socket. It sends `initialize` and heartbeats like any other client, and exposes only its project's coordinator tools (0004), never `plan/approve`.
 
 ## Alternatives
 
@@ -122,7 +138,5 @@ Later milestones add methods and events behind a capability, with no version bum
 ## Consequences
 
 - **One client:** #63 and #64 share one client that spawns a process and exchanges lines, and #63 gets auto-start from `attach`.
-- **Additive changes:** the protocol reaches M6 without a version bump only while changes stay additive. Reviews of `wisp-protocol` enforce that.
-- **Remote `PATH`:** a non-interactive SSH `PATH` lacks `/opt/homebrew/bin` by default, so #64 retries with the full path when the remote shell exits 127.
-- **Noisy shells:** until `initialize` answers, the editor skips and logs any non-JSON lines printed by the host's shell startup files.
+- **Additive changes:** the protocol reaches M6 without a version bump only while changes stay additive. The sample-message tests and reviews of `wisp-protocol` enforce that.
 - **Upgrades:** after an upgrade, the old wispd keeps running until it restarts (#71).
