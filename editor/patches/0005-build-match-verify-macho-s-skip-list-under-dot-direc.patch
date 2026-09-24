@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ryan Stoffel <stoffel.thomas.ryan@gmail.com>
+Date: Thu, 24 Sep 2026 07:40:13 -0700
+Subject: [PATCH] build: match verify-macho's skip list under dot directories
+
+build/darwin/verify-macho.ts matches each Mach-O file's real path
+against a skip list of files that are expected to carry another
+architecture, such as the per-arch Copilot SDK packages. minimatch's **
+does not cross a directory whose name starts with a dot, so when the
+checkout lives under one, as wisp's agent worktrees do under
+.claude/worktrees, nothing is skipped and every x64 build fails the
+check. Match with dot: true.
+
+diff --git a/build/darwin/verify-macho.ts b/build/darwin/verify-macho.ts
+index 7a96e0e62f2231c7a6c91a8ef3485599fb9b25a3..f6365fc84fd44967a30bda5ea26f83ec3186fcd7 100644
+--- a/build/darwin/verify-macho.ts
++++ b/build/darwin/verify-macho.ts
+@@ -60,7 +60,7 @@ const FILES_TO_SKIP = [
+ 
+ 
+ function isFileSkipped(file: string): boolean {
+-	return FILES_TO_SKIP.some(pattern => minimatch(file, pattern));
++	return FILES_TO_SKIP.some(pattern => minimatch(file, pattern, { dot: true }));
+ }
+ 
+ async function read(file: string, buf: Buffer, offset: number, length: number, position: number) {
