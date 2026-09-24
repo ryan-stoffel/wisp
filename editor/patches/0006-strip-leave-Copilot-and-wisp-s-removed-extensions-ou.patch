@@ -30,7 +30,7 @@ The development build still loads every folder in extensions/, because
 upstream scans the folder when running from source.
 
 diff --git a/build/gulpfile.vscode.ts b/build/gulpfile.vscode.ts
-index 8d648346d5c9a6787ad5658ec57d8bbfaea37187..7166b607e9dbec0e9b2c7d5c62f0a5c6c124843d 100644
+index a2ef8d1211c37c928fbda85295c05c2083a3dca9..9a7ba645ed60ea53018973f5358b492d35470b01 100644
 --- a/build/gulpfile.vscode.ts
 +++ b/build/gulpfile.vscode.ts
 @@ -24,9 +24,9 @@ import { getProductionDependencies } from './lib/dependencies.ts';
