@@ -8,9 +8,10 @@ usage() {
 Usage: scripts/editor/prepare [--force]
 
 Fetches Code - OSS at the tag and commit pinned in editor/upstream.json into
-editor/vscode, then applies editor/patches/*.patch in order as one commit per
-patch on the branch "wisp". Build the result with the steps in
-docs/editor-upgrade.md.
+editor/vscode. On top of it, commits wisp's overlay (editor/product.json merged
+into product.json, and the files in editor/overlay), then applies
+editor/patches/*.patch in order as one commit per patch on the branch "wisp".
+Build the result with the steps in docs/editor-upgrade.md.
 
 Stops if editor/vscode has uncommitted changes, untracked files, or commits
 that scripts/editor/export-patches has not written back to editor/patches.
@@ -35,16 +36,7 @@ esac
 
 read_pin
 
-stamp=$(
-  {
-    printf '%s\n' "$repository" "$tag" "$commit"
-    for patch in "$patch_dir"/*.patch; do
-      [ -e "$patch" ] || continue
-      printf '%s\n' "${patch##*/}"
-      cat "$patch"
-    done
-  } | git hash-object --stdin
-)
+stamp=$(inputs_stamp)
 
 if [ -d "$tree/.git" ]; then
   if operation_in_progress; then
@@ -78,12 +70,16 @@ tree_git remote set-url origin "$repository"
 resolved=$(fetch_tag "$tag")
 [ "$resolved" = "$commit" ] || fail "tag $tag resolves to $resolved, but $pin_file pins $commit"
 
-tree_git checkout --quiet --force -B wisp "$commit"
+base=$(make_base "$commit")
+tree_git checkout --quiet --force -B wisp "$base"
+tree_git update-ref refs/wisp/base "$base"
+overlay='no overlay'
+[ "$base" = "$commit" ] || overlay='the overlay'
 
 set -- "$patch_dir"/*.patch
 [ -e "$1" ] || shift
 if [ $# -gt 0 ]; then
-  if ! GIT_COMMITTER_NAME='wisp prepare' GIT_COMMITTER_EMAIL='prepare@wisp.invalid' \
+  if ! GIT_COMMITTER_NAME=$prepare_name GIT_COMMITTER_EMAIL=$prepare_email \
     tree_git -c advice.mergeConflict=false -c advice.amWorkDir=false \
       am --quiet --keep-non-patch --keep-cr --quoted-cr=nowarn --committer-date-is-author-date "$@"; then
     tree_git am --abort
@@ -95,5 +91,5 @@ fi
 
 tree_git update-ref refs/wisp/applied HEAD
 tree_git config wisp.stamp "$stamp"
-printf 'editor/vscode: Code - OSS %s (%s) with %d patch(es) applied, HEAD %s\n' \
-  "$tag" "$(tree_git rev-parse --short "$commit")" $# "$(tree_git rev-parse --short HEAD)"
+printf 'editor/vscode: Code - OSS %s (%s) with %s and %d patch(es) applied, HEAD %s\n' \
+  "$tag" "$(tree_git rev-parse --short "$commit")" "$overlay" $# "$(tree_git rev-parse --short HEAD)"

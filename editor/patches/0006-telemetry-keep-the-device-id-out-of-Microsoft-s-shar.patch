@@ -1,0 +1,68 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ryan Stoffel <stoffel.thomas.ryan@gmail.com>
+Date: Thu, 24 Sep 2026 08:00:47 -0700
+Subject: [PATCH] telemetry: keep the device id out of Microsoft's shared
+ folder
+
+getDevDeviceId used @vscode/deviceid, which reads, and creates if
+missing, ~/Library/Application Support/Microsoft/DeveloperTools/deviceid:
+one id that VS Code and other Microsoft developer tools share on
+purpose. At every start, validateDevDeviceId copied that id into the
+app's state. wisp would then carry the same device id as the user's
+VS Code, for telemetry and for extensions (vscode.env.devDeviceId), and
+would write into a folder that belongs to Microsoft's tools.
+
+Return a new random id instead. resolveDevDeviceId stores it in wisp's
+own state on first start, so it stays stable per install, and
+validateDevDeviceId no longer replaces it with the shared one.
+
+diff --git a/src/vs/base/node/id.ts b/src/vs/base/node/id.ts
+index 025b1487665e46d31bfc60642e97a793e6f9dd34..1dcff6b2f948b9c8c4d80f14a3b953ae433e1260 100644
+--- a/src/vs/base/node/id.ts
++++ b/src/vs/base/node/id.ts
+@@ -8,7 +8,6 @@ import { TernarySearchTree } from '../common/ternarySearchTree.js';
+ import * as uuid from '../common/uuid.js';
+ import { getMac } from './macAddress.js';
+ import { isWindows } from '../common/platform.js';
+-import { stripUTF8BOM } from '../common/strings.js';
+ 
+ // http://www.techrepublic.com/blog/data-center/mac-address-scorecard-for-common-virtual-machine-platforms/
+ // VMware ESX 3, Server, Workstation, Player	00-50-56, 00-0C-29, 00-05-69
+@@ -117,12 +116,5 @@ export async function getSqmMachineId(errorLogger: (error: Error) => void): Prom
+ }
+ 
+ export async function getDevDeviceId(errorLogger: (error: Error) => void): Promise<string> {
+-	try {
+-		const deviceIdPackage = await import('@vscode/deviceid');
+-		const id = await deviceIdPackage.getDeviceId();
+-		return stripUTF8BOM(id);
+-	} catch (err) {
+-		errorLogger(err);
+-		return uuid.generateUuid();
+-	}
++	return uuid.generateUuid();
+ }
+diff --git a/src/vs/platform/telemetry/electron-main/telemetryUtils.ts b/src/vs/platform/telemetry/electron-main/telemetryUtils.ts
+index a77b2186ed7fb26e07a02df80a7114f9bb0ac473..0273de2a92c3a21f8a32bbd460cba22b8524a594 100644
+--- a/src/vs/platform/telemetry/electron-main/telemetryUtils.ts
++++ b/src/vs/platform/telemetry/electron-main/telemetryUtils.ts
+@@ -3,7 +3,6 @@
+  *  Licensed under the MIT License. See License.txt in the project root for license information.
+  *--------------------------------------------------------------------------------------------*/
+ 
+-import { getDevDeviceId } from '../../../base/node/id.js';
+ import { ILogService } from '../../log/common/log.js';
+ import { IStateService } from '../../state/node/state.js';
+ import { machineIdKey, sqmIdKey, devDeviceIdKey } from '../common/telemetry.js';
+@@ -33,10 +32,4 @@ export async function resolveDevDeviceId(stateService: IStateService, logService
+ 	return devDeviceId;
+ }
+ 
+-export async function validateDevDeviceId(stateService: IStateService, logService: ILogService): Promise<void> {
+-	const actualDeviceId = await getDevDeviceId(logService.error.bind(logService));
+-	const currentDeviceId = await resolveNodeDevDeviceId(stateService, logService);
+-	if (actualDeviceId !== currentDeviceId) {
+-		stateService.setItem(devDeviceIdKey, actualDeviceId);
+-	}
+-}
++export async function validateDevDeviceId(stateService: IStateService, logService: ILogService): Promise<void> { }
