@@ -38,6 +38,8 @@ The naming convention has no exceptions, including for small fixes.
 
 GitHub issues are the single place work is tracked. Plans, reasoning, decisions, progress, blockers, and questions go in issue comments; nothing important lives only in a local file or chat.
 
+When something comes up mid-work (a bug, a follow-up, a question, out-of-scope work, a flaky test), open an issue for it right away with labels, milestone, and a link back to where it came up. Keep the current PR on its own issue.
+
 - Labels: `type:*` (feature, bug, chore, docs), `area:*` (editor, daemon, subscriptions, ci, design), `priority:*` (high, medium, low), `blocked`.
 - Milestones M0 to M7 match the plan. Each milestone has an epic issue whose checklist lists its task issues.
 - A task issue is small enough for one PR and contains: problem statement, acceptance criteria as a checklist, assigned role, dependencies.
