@@ -2,6 +2,9 @@
 'use strict';
 
 const { caskFromZips } = require('./release/cask.js');
+const { requirePinnedNode } = require('./release/node-version.js');
+
+requirePinnedNode('generate-cask');
 
 const [version, ...zips] = process.argv.slice(2);
 if (!version || zips.length === 0) {

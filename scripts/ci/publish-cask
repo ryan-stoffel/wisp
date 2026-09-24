@@ -2,7 +2,10 @@
 'use strict';
 
 const { readFileSync } = require('node:fs');
+const { requirePinnedNode } = require('./release/node-version.js');
 const { planTapCommit } = require('./release/tap.js');
+
+requirePinnedNode('publish-cask');
 
 const TAP = 'ryan-stoffel/homebrew-taps';
 const CASK_PATH = 'Casks/wisp.rb';
