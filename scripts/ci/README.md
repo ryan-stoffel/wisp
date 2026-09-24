@@ -14,13 +14,20 @@ Each script finds the repo root on its own, so it runs from any directory.
 | `screenshots` | Captures every scenario in `ci/screenshots/` from the built app into a directory (see [Screenshots](#screenshots)) | `screenshots.yml` (#4), `capture` job |
 | `publish-screenshots` | Checks a capture directory, commits its PNGs to the `ci-screenshots` branch, and creates or updates the PR comment. It needs Actions' environment; locally, `--dry-run` prints the comment | `screenshots.yml` (#4), `publish` job |
 | `check-screenshots` | `npm ci`, then lint, type-check, and test `ci/screenshots/` | Not yet: #39 adds it to `ci.yml` |
-| `package-app` | Not yet written: #5 adds it (see [package-app](#package-app-added-by-5)) | `release.yml` (#5) |
+| `package-app` | Builds `wisp.app` with a version stamped in, ad-hoc signs it, zips it, and prints the bundle path (see [package-app](#package-app)) | `release.yml` (#5), `build` job |
+| `next-version` | Prints the version the next release gets, from tags and Conventional Commits (see [Releases](#releases)) | `release.yml` (#5), `build` job |
+| `generate-cask` | Prints the Homebrew cask for a version and its zips, from `release/wisp.rb.template` | `release.yml` (#5), `build` job |
+| `audit-cask` | Runs `brew style` and `brew audit` on a cask in a throwaway tap, then installs and uninstalls it | `release.yml` (#5), `build` job |
+| `check-release-artifact` | Checks that a downloaded release artifact holds exactly the expected zips and a `wisp.rb` that matches them | `release.yml` (#5), `release` job |
+| `publish-cask` | Commits the cask to `ryan-stoffel/homebrew-taps` with `TAP_GITHUB_TOKEN`, and refuses to replace a newer version; `--check` only tests the token | `release.yml` (#5), `release` job |
+| `check-release` | Unit tests for the release scripts | `release.yml` (#5), `build` job |
 
 ## Requirements
 
 - Rust: rustup. `rust-toolchain.toml` pins the toolchain and its components. In CI, run `rustup toolchain install` with no arguments as its own step before `check-rust`. It installs exactly what the file pins, and it does not rely on rustup's auto-install, which can be turned off. Locally, rustup installs the pin on first use.
 - Node: the exact version in the root `.nvmrc`. It always equals upstream's `.nvmrc` at the pinned Code - OSS release: `scripts/editor/upgrade` copies it, and `check-fork` fails if the two differ. In Actions, use `actions/setup-node` with `node-version-file: .nvmrc`. The scripts that run Node stop with an error when `node` has a different major version, so local runs use the same Node as CI.
-- macOS, for `build-app` and `app-launch`.
+- macOS, for `build-app`, `app-launch`, and `package-app`.
+- Homebrew, for `audit-cask`. GitHub's macOS runners have it.
 
 ## app-launch
 
@@ -113,14 +120,73 @@ The fixture stays the default until #9 makes a cached fork build fast enough for
 - Points `check-editor` at the fork's commands. #43 does the same for `package-app`.
 - Deletes the fixture, as 0001 describes.
 
-## package-app (added by #5)
+## package-app
 
-The fixture has no packaging, so there is no `.app` for `release.yml` yet. #5 adds `scripts/ci/package-app` with this contract, and #9 later points it at the fork:
+`scripts/ci/package-app <version> [arm64|x64]` packages for this Mac's architecture unless you name one. It prints the bundle's absolute path as the only line on stdout, for `WISP_APP_BUNDLE`, and sends everything else to stderr. Steps:
 
-- `scripts/ci/package-app <version>` builds `wisp.app` with `<version>` stamped in and prints the bundle's absolute path as the only line on stdout. That path goes straight into the zip step, and into `WISP_APP_BUNDLE` for a launch check.
-- The version is stamped in the CI checkout only and never committed, so publishing never pushes to `main`.
-- Stamping the fixture: run `npm version <version> --no-git-tag-version` in `ci/fixtures/electron-smoke/`. It updates `package.json` and `package-lock.json` together, so `npm ci` keeps working.
-- Stamping `wispd`: after setting `version` in `[workspace.package]` in `Cargo.toml`, run `cargo update --workspace --offline`. Otherwise `Cargo.lock` keeps the old version, and every `--locked` build, `check-rust` included, fails with "cannot update the lock file".
+1. Stamp `<version>` into the fixture with `npm version <version> --no-git-tag-version --allow-same-version`, which updates `package.json` and `package-lock.json` together, and set `productName` to `wisp`, so the app keeps its data in `~/Library/Application Support/wisp` ([0003](../../docs/decisions/0003-naming.md)). Both files are restored on exit, so the version is never committed and publishing never pushes to `main`.
+2. Run `build-app`, then `@electron/packager`, into `dist/wisp-darwin-<arch>/wisp.app` with the bundle id `io.github.ryan-stoffel.wisp`.
+3. Ad-hoc sign the whole bundle and check its signature, version, and bundle id. Packager keeps Electron's per-binary signatures, which no longer match the renamed bundle. Gatekeeper then reports the app as damaged and offers no Open Anyway. #7 replaces this step with Developer ID signing and notarization.
+4. Zip the bundle with `ditto` to `dist/wisp-<version>-<arch>.zip`, the name the cask's `url` expects.
+
+When #9 points it at the fork, only steps 1 and 2 change. Once `wispd` ships inside the bundle, stamp it too: after setting `version` in `[workspace.package]` in `Cargo.toml`, run `cargo update --workspace --offline`. Otherwise `Cargo.lock` keeps the old version, and every `--locked` build, `check-rust` included, fails with "cannot update the lock file".
+
+## Releases
+
+`release.yml` runs only for PRs whose head is `develop` and whose base is `main`. A hotfix PR into `main` publishes nothing; it ships with the next develop-into-main release. Background: [0006](../../docs/decisions/0006-release-versioning-and-packaging.md).
+
+It has two jobs, split the way `screenshots.yml` is:
+
+- **`build`** runs on `macos-26` with `contents: read` and no secrets. It runs the steps below, writes the version, the zip's sha256, and the cask to the job summary, and uploads the zips and `wisp.rb` as an artifact:
+  - While the PR is open, that is the whole dry run, and the artifact is `wisp-<version>-dry-run`. Nothing is published.
+  - When Ryan merges the PR, `build` runs on the merge commit and uploads `wisp-<version>`. First, it stops unless the PR was merged with a merge commit, whose second parent is the PR's head. A squash merge would make the version count the wrong commits. It also refuses a `v<version>` tag that sits on another commit. If `v<version>` is already released, it reuses the published zips instead of building new ones.
+- **`release`** runs on `ubuntu-24.04` and only after a merge. It is the only job with `contents: write` and `TAP_GITHUB_TOKEN`, and it installs and builds nothing. It checks out only `scripts/ci/`. The scripts it runs use only Node built-ins, which `release/builtins.test.js` enforces. Before anything is tagged, it does the following:
+  1. Stops if the secret is missing, or if `publish-cask --check` cannot read the tap with it (#28).
+  2. Checks the artifact with `check-release-artifact`: exactly the zips for `RELEASE_ARCHES` plus a `wisp.rb` that matches the cask generated from them.
+  3. Stops if an earlier run left a draft release. If `v<version>` is already published, it checks that the artifact's zips match the ones attached to it.
+
+  Then it runs `gh release create v<version> --target <merge commit> --generate-notes` with the zips, which also creates the tag, and runs `publish-cask` to commit `Casks/wisp.rb` to the tap's default branch. If that push fails, the job prints what to fix and says to use **Re-run failed jobs**, which keeps the `build` artifact.
+
+Merged runs never cancel one another, so two merges cannot compute the same version. A concurrency group holds only one waiting run, though. If a third merge arrives while one run is in progress and another is waiting, the waiting run is cancelled, and its changes ship in the third run's release.
+
+The same steps run locally:
+
+```sh
+scripts/ci/check-release
+version=$(scripts/ci/next-version)
+scripts/ci/package-app "$version"
+scripts/ci/generate-cask "$version" dist/wisp-"$version"-*.zip > dist/wisp.rb
+scripts/ci/audit-cask dist/wisp.rb dist/wisp-"$version"-*.zip
+```
+
+`next-version` rules:
+
+- With no `vX.Y.Z` tag merged into HEAD, the version is `0.1.0`.
+- Otherwise, the commits since the last tag decide the bump:
+  - A breaking change (`type!:` or a `BREAKING CHANGE:` footer) is a major bump from 1.0 on, and a minor bump before 1.0.
+  - `feat` is a minor bump.
+  - Anything else is a patch bump.
+- A tag already on HEAD is reused, so re-running a release is safe.
+- A shallow clone is refused, because older tags may be missing from it.
+
+`audit-cask` runs these checks on Homebrew 7.0.6:
+
+| Check | Why |
+| --- | --- |
+| `brew style --cask` | `brew audit` does not run RuboCop on casks, so the `desc` rules, stanza order, and `depends_on` style are only checked here. |
+| `brew audit --cask --strict --arch=all` | Every offline audit, including the strict-only ones, for both architectures. |
+| `brew audit --cask --online --only=min_os,artifact_case,rosetta`, per zip | The zip is copied into Homebrew's download cache first. That lets these audits check the real artifact without a network download, although the release asset does not exist yet. They cover `depends_on macos` against the bundle's `LSMinimumSystemVersion`, the case of the `app` name, and the arm64 binary. |
+| `brew install --cask`, then `brew uninstall --cask` | Proves the cask installs `wisp.app` at the right version and that Homebrew quarantines it, as users get it. |
+
+Left out:
+
+- `--new`: its signing check fails by design for an app without a Developer ID, and its notability checks are for homebrew/cask.
+- A plain `--online`: the release URL returns 404 until the release exists.
+- `--signing`: disabled in Homebrew 7.
+
+`audit-cask` uses a throwaway tap (`wisp-ci/dry-run`) and a throwaway download cache, and it never zaps. It skips the install check when a `wisp` cask is already installed, so running it on a dev Mac leaves Homebrew as it was.
+
+If a run fails after the release exists, re-run it, but only while no newer release has shipped. The re-run reuses the tag and the release's zips, and `publish-cask` skips the commit when the tap already has the same cask. Once the tap has a newer version, `publish-cask` refuses to replace it and exits 1, so re-running an old run cannot downgrade users. If a failed run left a draft release, delete the draft first; the `release` job says so.
 
 ## Notes for workflows
 

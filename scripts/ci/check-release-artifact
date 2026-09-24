@@ -1,0 +1,22 @@
+#!/usr/bin/env node
+'use strict';
+
+const { checkArtifact } = require('./release/artifact.js');
+const { requirePinnedNode } = require('./release/node-version.js');
+
+requirePinnedNode('check-release-artifact');
+
+const [dir, version, ...arches] = process.argv.slice(2);
+if (!dir || !version || arches.length === 0) {
+  process.stderr.write('check-release-artifact: usage: check-release-artifact <dir> <version> <arch>...\n');
+  process.exit(1);
+}
+try {
+  for (const line of checkArtifact(dir, version, arches)) {
+    process.stdout.write(`${line}\n`);
+  }
+  process.stdout.write(`check-release-artifact: ${dir} holds exactly the ${arches.join(' and ')} zips and a wisp.rb that matches them\n`);
+} catch (error) {
+  process.stderr.write(`check-release-artifact: ${error.message}\n`);
+  process.exit(1);
+}
