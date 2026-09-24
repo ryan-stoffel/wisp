@@ -27,7 +27,7 @@ wisp's editor is upstream Code - OSS at the release pinned in `editor/upstream.j
 - Python 3, for `node-gyp`.
 - git 2.34 or later.
 - Node as pinned in the root `.nvmrc`, which always equals upstream's `editor/vscode/.nvmrc` (24.18.0 for 1.139.0). Upstream's `npm ci` refuses an older Node or another major version. With fnm or nvm, run `fnm use` or `nvm use` in the repo root.
-- About 10 GB of free disk: 7.5 GB for `editor/vscode/` after a build, plus about 1.6 GB in the npm, node-gyp, Electron, and Playwright caches.
+- About 10 GB of free disk: 7.5 GB for `editor/vscode/` after a build, plus about 1.6 GB in the npm, node-gyp, Electron, and Playwright caches. A packaged build adds about 1.3 GB per architecture for the app and its zip.
 
 ## Build and run
 
@@ -57,9 +57,12 @@ scripts/editor/build-app          # this Mac's architecture, or: build-app arm64
 
 - **Launcher**: `Wisp.app/Contents/Resources/app/bin/wisp`. `wisp <folder>` opens the folder in the app. The command palette's **Shell Command: Install 'wisp' command in PATH** links `/usr/local/bin/wisp` to it.
 - **x64** builds on Apple silicon, as in upstream's pipeline: `npm_config_arch=x64` makes npm build the native modules for x64. Switching architectures reinstalls `node_modules`, which takes about 2 minutes.
-- **Time on an M3 Pro**: `npm ci` 2 min, gulp 3 min 20 s, signing and checks about 1 min.
-- **Size**: 921 MB for the arm64 app, 321 MB zipped.
-- **State**: user data in `~/Library/Application Support/Wisp`, extensions and `argv.json` in `~/.wisp`, and macOS files keyed on the bundle id `io.github.ryan-stoffel.wisp`. None of it is shared with VS Code or Code - OSS.
+- **Time**: on an M3 Pro, `npm ci` 2 min, gulp 3 min 30 s, and signing and checks about 1 min. On a `macos-26` runner, each architecture takes about 20 minutes (see [scripts/ci/README.md](../scripts/ci/README.md#the-app-job)).
+- **Size**: `du -sh` reports 921M for the arm64 app and 979M for x64. Their zips are 321 MB and 346 MB.
+- **State**:
+  - User data goes to `~/Library/Application Support/Wisp`, extensions and `argv.json` to `~/.wisp`, and shared storage to `~/.wisp-shared`.
+  - macOS keeps its own files under the bundle id `io.github.ryan-stoffel.wisp`.
+  - None of this is shared with VS Code or Code - OSS. That includes the device id that Microsoft's developer tools share: patch 0006 keeps wisp out of it.
 
 ## Change product.json or the overlay
 

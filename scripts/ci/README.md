@@ -117,6 +117,8 @@ scripts/ci/check-screenshots
 4. On a hit or a build, it runs `check-app` on the zip.
 5. After a build, it saves the zip under the key.
 
+A rebuild takes about 20 minutes per architecture on `macos-26`: `npm ci` 5 min, gulp 9 min, signing and the Mach-O check 3 min, and the zip and checks 1 to 2 min. The two architectures build in parallel. On #73, the whole `ci.yml` run took 21 minutes when both rebuilt. A plain macOS job per architecture beats compiling on `ubuntu-24.04` and packaging on macOS. Ubuntu compiles in 4 minutes instead of 8, but the macOS job still needs its own 5-minute `npm ci` for the native modules, and it cannot start until the Ubuntu job has uploaded a 766 MB artifact. #9's Progress comment has the numbers.
+
 Caches follow the same scopes as the `fork` job's markers. A PR can restore a build that `develop` saved, or one from an earlier push to the same PR. `develop` builds its own copy the first time its inputs change, because a PR's cache is not visible there. The key leaves out the runner image, as the `fork` job's does, so an image update does not rebuild the app until an input changes.
 
 A build needs `GITHUB_TOKEN`: upstream's install and build download from GitHub (ripgrep, the built-in extensions, Electron), and anonymous API calls from shared runners hit the rate limit. The job gives it the workflow's `contents: read` token.
