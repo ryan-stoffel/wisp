@@ -236,7 +236,7 @@ If a run fails after the release exists, re-run it, but only while no newer rele
 - Installing the editor is dominated by `npm ci`: 2 min 20 s cold and 2 min with a warm `~/.npm` on an M3 Pro. Most of that is native module builds and install scripts, so a warm `~/.npm` saves little. #8's Progress comment has the full numbers.
 - `npm run download-builtin-extensions` calls the GitHub REST API. Pass `GITHUB_TOKEN` so that it does not share the anonymous rate limit.
 - Upstream's lockfiles exist only after `scripts/editor/prepare` has run, so a cache step that runs before it, such as `actions/setup-node` with `cache: npm`, cannot key on them. Key editor caches on the committed `editor/upstream.json` and `editor/patches/**`, or run `prepare` before the cache step.
-- The `fork` job runs on Ubuntu because upstream's type-check needs about 6.4 GB, which swaps on the 7 GB macOS runner, and it does not depend on the platform.
+- The `fork` job runs on Ubuntu because upstream's type-check needs about 6.4 GB, which swaps on the 7 GB macOS runner, and it does not depend on the platform. Its check step usually takes about a minute and times out after 10. Once, on #89, it hung without output until the job's 30-minute limit.
 - A PR skips `check-fork` when its inputs already passed it:
   - The inputs are every tracked file under `editor/` (the pin, the patches, and anything #9 adds; `editor/vscode/` is never tracked), plus `.nvmrc`, `.gitattributes`, `scripts/editor/`, `check-fork`, and `ci.yml`.
   - The key is a SHA-256 of `git ls-files -s` over those paths, so each file's mode and path count as well as its content. With `hashFiles`, a `chmod -x` or a renamed patch would have kept an old pass.
