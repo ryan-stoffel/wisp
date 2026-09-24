@@ -1,0 +1,27 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocol": { "min": 1, "max": 1 },
+      "client": {
+        "name": "wisp",
+        "version": "0.1.0",
+        "machineId": "5c1b2c8e-2d6f-4f8a-9b1e-3a7d9c0e4f21"
+      },
+      "capabilities": {}
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "protocol": 1,
+      "wispd": "0.1.0",
+      "logId": "01a0d312-7f80-7b7c-8d9e-afc0d1e2f304",
+      "capabilities": {},
+      "maxFrameBytes": 8388608
+    }
+  }
+]

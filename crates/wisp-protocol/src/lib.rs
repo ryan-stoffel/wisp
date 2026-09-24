@@ -14,6 +14,18 @@
 //! Changes must be additive: new methods, notifications, event kinds, optional fields, and enum
 //! values keep [`PROTOCOL_VERSION`]. Receivers ignore anything unknown, and every enum that Rust
 //! receives has a fallback variant for values it does not know.
+//!
+//! The committed samples in `samples/v<N>/`, one directory per protocol version, enforce this in
+//! `cargo test`. Each file is one scenario: a JSON array of the messages on the wire, in order.
+//!
+//! - Samples are append-only. Never edit or delete one; add a new file instead.
+//! - Every message must decode into its typed form and encode back to exactly the same JSON. So
+//!   renaming, removing, or retyping a field fails a test, and a field added later has to be
+//!   optional and left out when absent, which is what an older peer sends anyway.
+//! - Files in `lenient/` hold messages from a newer peer, with fields, methods, and values this
+//!   version does not know. They only have to decode.
+//! - Together, the exact samples must use every method, error code, error kind, event kind, and
+//!   store state, so a new one needs a sample.
 
 #![warn(missing_docs)]
 
@@ -27,6 +39,9 @@ pub mod jsonrpc;
 pub mod methods;
 mod project;
 pub mod typescript;
+
+#[cfg(test)]
+mod samples;
 
 pub use error::{ErrorData, ErrorKind, IncompatibleProtocolDetail};
 pub use events::{
