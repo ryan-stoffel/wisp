@@ -189,6 +189,9 @@ export type HostHealthResult = {
 
 /**
  * The state of wispd's project store.
+ *
+ * A newer wispd may send states that are not listed here. Treat those as unknown, so a `switch`
+ * over this type must not end in an exhaustiveness assertion.
  */
 export type StoreState = "ok" | "unavailable";
 
@@ -395,6 +398,9 @@ export type EventsEventParams = {
 
 /**
  * What happened, by `kind`.
+ *
+ * A newer wispd may send kinds that are not listed here. Skip those events but still count their
+ * `seq` as received, and don't end a `switch` over this type in an exhaustiveness assertion.
  */
 export type WispEvent = { "kind": "project.created",
 	/**
@@ -419,6 +425,9 @@ export type ErrorData = {
 
 /**
  * What went wrong, in a wisp error's `data.kind`. Receivers match on it, never on the message.
+ *
+ * A newer wispd may send kinds that are not listed here. Treat those as unknown errors, so a
+ * `switch` over this type must not end in an exhaustiveness assertion.
  */
 export type ErrorKind = "notInitialized" | "incompatibleProtocol" | "resyncRequired" | "projectNotFound" | "idConflict";
 

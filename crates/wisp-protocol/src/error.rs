@@ -6,6 +6,9 @@ use crate::ProtocolRange;
 use crate::jsonrpc::{ErrorObject, WISP_ERROR};
 
 /// What went wrong, in a wisp error's `data.kind`. Receivers match on it, never on the message.
+///
+/// A newer wispd may send kinds that are not listed here. Treat those as unknown errors, so a
+/// `switch` over this type must not end in an exhaustiveness assertion.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum ErrorKind {

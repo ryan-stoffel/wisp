@@ -20,6 +20,9 @@ pub struct HostHealthResult {
 }
 
 /// The state of wispd's project store.
+///
+/// A newer wispd may send states that are not listed here. Treat those as unknown, so a `switch`
+/// over this type must not end in an exhaustiveness assertion.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum StoreState {

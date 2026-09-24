@@ -69,6 +69,9 @@ pub struct EventsEventParams {
 }
 
 /// What happened, by `kind`.
+///
+/// A newer wispd may send kinds that are not listed here. Skip those events but still count their
+/// `seq` as received, and don't end a `switch` over this type in an exhaustiveness assertion.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all_fields = "camelCase")]
 pub enum WispEvent {
