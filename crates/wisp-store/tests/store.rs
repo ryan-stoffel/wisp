@@ -269,3 +269,90 @@ fn concurrent_read_succeeds_while_another_connection_is_writing() {
         "a fresh read after commit must see the committed row"
     );
 }
+
+/// Regression test for the ordering bug fixed by storing a fixed-width
+/// fraction: two projects created in the same second must come back from
+/// `list_projects` in creation order. `time`'s RFC 3339 formatting trimmed
+/// trailing zeros and dropped an all-zero fraction, so a later, "rounder"
+/// timestamp could sort before an earlier one as TEXT.
+#[test]
+fn projects_created_in_the_same_second_list_oldest_first() {
+    let (_dir, path) = temp_db_path();
+    let store = Store::open(&path).expect("open");
+
+    // Oldest to newest, same whole second, fixed-width fractions: the exact
+    // shape `wisp-store` now writes.
+    let oldest_first = [
+        (Uuid::now_v7(), "2026-06-01T12:00:00.000000000Z"),
+        (Uuid::now_v7(), "2026-06-01T12:00:00.100000000Z"),
+        (Uuid::now_v7(), "2026-06-01T12:00:00.500000000Z"),
+        (Uuid::now_v7(), "2026-06-01T12:00:00.500010000Z"),
+    ];
+
+    // Inserted out of order, so a passing test can only be explained by
+    // `list_projects` sorting on value, not on insertion order.
+    let conn = Connection::open(&path).expect("open raw connection");
+    for (id, created_at) in [
+        oldest_first[2],
+        oldest_first[0],
+        oldest_first[3],
+        oldest_first[1],
+    ] {
+        conn.execute(
+            &format!(
+                "INSERT INTO projects (id, name, repo_path, host, created_at, updated_at)
+                 VALUES ('{id}', 'n', '/r', 'h', '{created_at}', '{created_at}')"
+            ),
+            [],
+        )
+        .expect("insert row with a same-second fixed-width timestamp");
+    }
+    drop(conn);
+
+    let listed_ids: Vec<Uuid> = store
+        .list_projects()
+        .expect("list")
+        .into_iter()
+        .map(|p| p.id)
+        .collect();
+    let expected_ids: Vec<Uuid> = oldest_first.iter().map(|(id, _)| *id).collect();
+    assert_eq!(
+        listed_ids, expected_ids,
+        "same-second projects must list oldest first"
+    );
+}
+
+/// Regression test: a database written by the old `time`-based store (RFC
+/// 3339 with a variable-width fraction, or none at all when it was zero)
+/// must still open and read correctly. jiff's parser accepts any fraction
+/// width.
+#[test]
+fn reads_timestamps_written_in_the_old_variable_width_format() {
+    let (_dir, path) = temp_db_path();
+    Store::open(&path).expect("open should create the schema");
+
+    let id = Uuid::now_v7();
+    let conn = Connection::open(&path).expect("open raw connection");
+    conn.execute(
+        &format!(
+            "INSERT INTO projects (id, name, repo_path, host, created_at, updated_at)
+             VALUES ('{id}', 'legacy', '/r', 'h', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00.5Z')"
+        ),
+        [],
+    )
+    .expect("insert a row shaped like time's old output");
+    drop(conn);
+
+    let store = Store::open(&path).expect("reopen an existing database");
+    let project = store
+        .get_project(id)
+        .expect("get should parse the legacy timestamps")
+        .expect("row should exist");
+
+    assert_eq!(project.created_at, "2026-01-01T00:00:00Z".parse().unwrap());
+    assert_eq!(
+        project.updated_at,
+        "2026-01-01T00:00:00.5Z".parse().unwrap()
+    );
+    assert_eq!(store.list_projects().expect("list").len(), 1);
+}

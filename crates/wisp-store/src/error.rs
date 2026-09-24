@@ -40,11 +40,7 @@ pub enum StoreError {
 
     /// A stored timestamp is not valid RFC 3339.
     #[error("stored timestamp is invalid: {0}")]
-    InvalidTimestamp(#[from] time::error::Parse),
-
-    /// The current time could not be formatted as RFC 3339.
-    #[error("failed to format timestamp: {0}")]
-    TimestampFormat(#[from] time::error::Format),
+    InvalidTimestamp(#[from] jiff::Error),
 
     /// Failed to prepare the database's parent directory.
     #[error("failed to prepare database directory: {0}")]
