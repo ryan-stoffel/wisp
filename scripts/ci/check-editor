@@ -20,6 +20,7 @@ cd "$root/editor/vscode"
 # Keeps an existing development install: npm ci --ignore-scripts would replace
 # its Electron-built native modules with an install that cannot run.
 [ -d node_modules ] || npm ci --ignore-scripts --no-audit --no-fund
+node build/npm/electronTypes.ts
 npm run typecheck-client
 
 cd "$root/ci/fixtures/electron-smoke"
