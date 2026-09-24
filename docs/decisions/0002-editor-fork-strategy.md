@@ -83,7 +83,7 @@ Option 3: upstream Code - OSS at a pinned tag, plus a patch series applied by on
 These keep the series cheap to carry. They come from what broke for the forks above.
 
 1. Prefer, in order: configuration (`product.json`, default settings), new files or a wisp-owned built-in extension, and only then small edits to upstream files.
-2. Change `product.json` with a merge step in `prepare`, not a patch. Upstream edits it often, and VSCodium's branding patch had to be regenerated in 11 of 12 updates. #9 adds the merge step.
+2. Change `product.json` with a merge step in `prepare`, not a patch. Upstream edits it often, and VSCodium's branding patch had to be regenerated in 11 of 12 updates. [0007](0007-editor-overlay.md) describes the merge step, `editor/product.json`.
 3. Do not patch `package.json` or lockfiles unless there is no other way.
 4. Strip features by excluding them from the build or from registration, not by deleting upstream files. A deletion patch carries every deleted line and conflicts with every upstream edit to those files.
 5. Keep wisp's features out of upstream's fastest-moving code: chat, sessions, the agent host, and Copilot. The coordinator chat (#12) should be its own contribution, not an edit to upstream's chat.
@@ -116,6 +116,6 @@ Expect about 30 minutes per upgrade with a small series and no conflicts, mostly
 - The series is the complete list of how wisp differs from upstream, and CI proves on every PR that it still applies.
 - wisp's repo stays small. `check-fork` fetches 62 MB of upstream when it runs, which takes seconds.
 - Editing the editor takes a round trip: `prepare`, then commit in `editor/vscode`, then `export-patches`, then commit the patch. Code navigation and IDE features need a prepared tree.
-- Changes to a patch are reviewed as diffs of diffs. If #12 or later work adds a lot of new code, move it into a wisp-owned directory or built-in extension that `prepare` copies in, instead of growing patches that add files.
-- When patches exist, the tree's HEAD is a local commit, not an upstream one. It is reproducible from the pin and the series. #9 decides which commit a packaged build reports, since upstream's build reads it from `.git`.
+- Changes to a patch are reviewed as diffs of diffs. If #12 or later work adds a lot of new code, move it into a wisp-owned directory or built-in extension that `prepare` copies in, instead of growing patches that add files. `editor/overlay/` is that directory ([0007](0007-editor-overlay.md)).
+- When patches exist, the tree's HEAD is a local commit, not an upstream one. It is reproducible from the pin, the overlay, and the series. A packaged build reports it as its commit ([0007](0007-editor-overlay.md)).
 - The built-in extension download (`npm run download-builtin-extensions`) calls the GitHub REST API, which counts against the caller's budget. CI should pass its own `GITHUB_TOKEN`.
