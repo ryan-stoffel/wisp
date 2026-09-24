@@ -10,6 +10,7 @@ export interface Capture {
 const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const maxManifestBytes = 1024 * 1024;
 const maxPngBytes = 10 * 1024 * 1024;
+const maxTotalBytes = 25 * 1024 * 1024;
 const logTailBytes = 64 * 1024;
 
 export async function readCapture(dir: string): Promise<Capture | undefined> {
@@ -40,6 +41,7 @@ export async function readCapture(dir: string): Promise<Capture | undefined> {
   const manifest = parseManifest(json);
 
   const files: string[] = [];
+  let totalBytes = 0;
   for (const result of manifest.results) {
     if (!('file' in result)) {
       continue;
@@ -52,12 +54,23 @@ export async function readCapture(dir: string): Promise<Capture | undefined> {
     if (size > maxPngBytes) {
       throw new Error(`${result.file} is larger than ${String(maxPngBytes)} bytes`);
     }
+    totalBytes += size;
+    if (totalBytes > maxTotalBytes) {
+      throw new Error(`the capture totals more than ${String(maxTotalBytes)} bytes`);
+    }
     if (!(await readBytes(path, 0, pngSignature.length)).equals(pngSignature)) {
       throw new Error(`${result.file} is not a PNG`);
     }
     files.push(result.file);
   }
   return { manifest, files };
+}
+
+export function missingArtifactError(capture: Capture | undefined, captureOutcome: string | undefined): string | undefined {
+  if (capture !== undefined || captureOutcome !== 'success') {
+    return undefined;
+  }
+  return 'the capture job succeeded, but its results were not downloaded';
 }
 
 export async function readLogTail(dir: string, file: string): Promise<string | undefined> {
