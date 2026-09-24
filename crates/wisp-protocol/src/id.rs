@@ -3,7 +3,8 @@ use std::fmt;
 
 use uuid::{Uuid, Variant, Version};
 
-/// A string that is not a lowercase, hyphenated version 7 UUID, the only form ids take.
+/// A string or UUID that is not an id. Ids are version 7 UUIDs, written in lowercase with
+/// hyphens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InvalidId;
 
@@ -20,7 +21,10 @@ pub(crate) fn parse_v7(s: &str) -> Result<Uuid, InvalidId> {
     if s.len() != 36 || s.bytes().any(|b| b.is_ascii_uppercase()) {
         return Err(InvalidId);
     }
-    let uuid = Uuid::try_parse(s).map_err(|_| InvalidId)?;
+    check_v7(Uuid::try_parse(s).map_err(|_| InvalidId)?)
+}
+
+pub(crate) fn check_v7(uuid: Uuid) -> Result<Uuid, InvalidId> {
     if uuid.get_version() == Some(Version::SortRand) && uuid.get_variant() == Variant::RFC4122 {
         Ok(uuid)
     } else {
@@ -56,6 +60,21 @@ macro_rules! uuid_v7_id {
             }
         }
 
+        impl From<$name> for uuid::Uuid {
+            fn from(id: $name) -> Self {
+                id.0
+            }
+        }
+
+        impl TryFrom<uuid::Uuid> for $name {
+            type Error = $crate::id::InvalidId;
+
+            /// Fails unless `uuid` is a version 7 UUID.
+            fn try_from(uuid: uuid::Uuid) -> Result<Self, Self::Error> {
+                $crate::id::check_v7(uuid).map(Self)
+            }
+        }
+
         impl serde::Serialize for $name {
             fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
                 serializer.collect_str(&self.0.hyphenated())
@@ -88,8 +107,10 @@ pub(crate) use uuid_v7_id;
 
 #[cfg(test)]
 mod tests {
+    use uuid::Uuid;
+
     use super::{InvalidId, parse_v7};
-    use crate::ProjectId;
+    use crate::{LogId, ProjectId, SubscriptionId};
 
     const V7: &str = "01997c3a-5b2c-7d4e-9f10-2a3b4c5d6e7f";
 
@@ -129,5 +150,22 @@ mod tests {
         let id = ProjectId::generate();
         assert_eq!(id.to_string().parse::<ProjectId>(), Ok(id));
         assert_ne!(ProjectId::generate(), id);
+    }
+
+    #[test]
+    fn ids_convert_to_and_from_version_7_uuids_only() {
+        let id: ProjectId = V7.parse().unwrap();
+        let uuid = Uuid::from(id);
+        assert_eq!(uuid.to_string(), V7);
+        assert_eq!(ProjectId::try_from(uuid), Ok(id));
+        assert!(LogId::try_from(Uuid::now_v7()).is_ok());
+        for other in [
+            Uuid::nil(),
+            Uuid::max(),
+            Uuid::try_parse("3f2b9a1e-8c4d-4e5f-9a6b-7c8d9e0f1a2b").unwrap(),
+            Uuid::try_parse("01997c3a-5b2c-7d4e-cf10-2a3b4c5d6e7f").unwrap(),
+        ] {
+            assert_eq!(SubscriptionId::try_from(other), Err(InvalidId), "{other}");
+        }
     }
 }
