@@ -130,17 +130,48 @@ impl<T: Serialize> Encoder<T> for FrameCodec {
 
     fn encode(&mut self, message: T, buf: &mut BytesMut) -> Result<(), FrameError> {
         let start = buf.len();
-        if let Err(error) = serde_json::to_writer(buf.writer(), &message) {
+        let mut frame = LimitedWriter {
+            buf: &mut *buf,
+            remaining: self.max_frame_bytes,
+            too_large: false,
+        };
+        let result = serde_json::to_writer(&mut frame, &message);
+        let too_large = frame.too_large;
+        if let Err(error) = result {
             buf.truncate(start);
-            return Err(FrameError::Serialize(error));
-        }
-        if buf.len() - start > self.max_frame_bytes {
-            buf.truncate(start);
-            return Err(FrameError::TooLarge {
-                max_frame_bytes: self.max_frame_bytes,
+            return Err(if too_large {
+                FrameError::TooLarge {
+                    max_frame_bytes: self.max_frame_bytes,
+                }
+            } else {
+                FrameError::Serialize(error)
             });
         }
         buf.put_u8(b'\n');
+        Ok(())
+    }
+}
+
+// Fails the first write that would take the frame past the limit, which stops serde_json there,
+// so an oversized message is never written out in full.
+struct LimitedWriter<'a> {
+    buf: &'a mut BytesMut,
+    remaining: usize,
+    too_large: bool,
+}
+
+impl io::Write for LimitedWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > self.remaining {
+            self.too_large = true;
+            return Err(io::Error::other("frame too large"));
+        }
+        self.remaining -= bytes.len();
+        self.buf.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
 }
@@ -189,8 +220,12 @@ impl From<io::Error> for FrameError {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use bytes::{Bytes, BytesMut};
     use futures_util::{SinkExt, StreamExt, stream};
+    use serde::ser::SerializeSeq;
+    use serde::{Serialize, Serializer};
     use serde_json::json;
     use tokio_util::codec::{Decoder, Encoder, FramedRead, FramedWrite};
     use tokio_util::io::StreamReader;
@@ -365,6 +400,34 @@ mod tests {
         assert_eq!(&buf[..], b"{}\n");
         codec.encode("123456", &mut buf).unwrap();
         assert_eq!(&buf[..], b"{}\n\"123456\"\n");
+    }
+
+    #[test]
+    fn encoding_stops_as_soon_as_a_frame_passes_the_limit() {
+        struct Endless<'a>(&'a Cell<usize>);
+
+        impl Serialize for Endless<'_> {
+            fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                let mut sequence = serializer.serialize_seq(None)?;
+                for _ in 0..1_000_000 {
+                    self.0.set(self.0.get() + 1);
+                    sequence.serialize_element("x")?;
+                }
+                sequence.end()
+            }
+        }
+
+        let serialized = Cell::new(0);
+        let mut codec = FrameCodec::with_max_frame_bytes(64);
+        let mut buf = BytesMut::new();
+        assert!(matches!(
+            codec.encode(Endless(&serialized), &mut buf),
+            Err(FrameError::TooLarge {
+                max_frame_bytes: 64
+            })
+        ));
+        assert!(buf.is_empty());
+        assert!(serialized.get() < 32, "{} elements", serialized.get());
     }
 
     #[test]
