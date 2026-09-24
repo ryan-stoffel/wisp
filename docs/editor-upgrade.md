@@ -106,7 +106,7 @@ Move to the newest stable release about every four weeks, and within a week when
    scripts/editor/upgrade 1.140.0
    ```
 
-   The script fetches the tag and rebases the commits in `editor/vscode/` onto it. Then it rewrites `editor/upstream.json`, copies upstream's `.nvmrc` to the root `.nvmrc`, and exports the patches.
+   The script fetches the tag, makes wisp's overlay commit on it, and rebases the patch commits in `editor/vscode/` onto that overlay commit. Then it rewrites `editor/upstream.json`, copies upstream's `.nvmrc` to the root `.nvmrc`, and exports the patches.
 
    If a patch conflicts, the rebase stops. In `editor/vscode/`:
 
