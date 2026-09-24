@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { isAbsolute } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { isAbsolute, join } from 'node:path';
 import { test } from 'node:test';
+import { LIMITS, nameProblem, textProblem } from '../src/manifest.ts';
 import { scenarios } from '../src/scenarios.ts';
 
 test('ships the startup, editor, and coordinator chat scenarios', () => {
@@ -10,18 +12,13 @@ test('ships the startup, editor, and coordinator chat scenarios', () => {
   assert.deepEqual(names.slice(0, 3), ['startup', 'editor-file-open', 'coordinator-chat']);
 });
 
-test('names are unique and safe as file names', () => {
+test('names are unique and titles are text the comment accepts', () => {
   const names = scenarios.map((scenario) => scenario.name);
 
   assert.equal(new Set(names).size, names.length);
-  for (const name of names) {
-    assert.match(name, /^[a-z0-9]+(-[a-z0-9]+)*$/);
-  }
-});
-
-test('titles fit in Markdown headings and image alt text', () => {
-  for (const { title } of scenarios) {
-    assert.match(title, /^[^[\]\n]+$/);
+  for (const { name, title } of scenarios) {
+    assert.equal(nameProblem(name), undefined, name);
+    assert.equal(textProblem(title, LIMITS.title), undefined, title);
   }
 });
 
@@ -31,6 +28,19 @@ test('absolute paths in launch arguments exist', () => {
       if (isAbsolute(arg)) {
         assert.ok(existsSync(arg), `${scenario.name}: ${arg} does not exist`);
       }
+    }
+  }
+});
+
+test('the publish job imports only Node built-ins, so it runs without npm install', async () => {
+  const publishPath = ['publish.ts', 'artifact.ts', 'branch.ts', 'comment.ts', 'manifest.ts'];
+  for (const file of publishPath) {
+    const source = await readFile(join(import.meta.dirname, '..', 'src', file), 'utf8');
+    for (const [, specifier = ''] of source.matchAll(/^import[^'"]*['"]([^'"]+)['"]/gm)) {
+      assert.ok(
+        specifier.startsWith('node:') || publishPath.includes(specifier.replace(/^\.\//, '')),
+        `${file} imports ${specifier}`,
+      );
     }
   }
 });

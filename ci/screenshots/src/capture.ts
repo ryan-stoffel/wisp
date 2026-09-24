@@ -10,10 +10,21 @@ import {
   type Scenario,
   type Session,
 } from './harness.ts';
-import { MANIFEST_FILE, writeManifest, type Manifest, type Result } from './manifest.ts';
+import {
+  capturedFile,
+  failedFile,
+  LIMITS,
+  MANIFEST_FILE,
+  nameProblem,
+  textProblem,
+  writeManifest,
+  type Manifest,
+  type Result,
+} from './manifest.ts';
 import { scenarios } from './scenarios.ts';
 
 const scenarioTimeoutMs = 180_000;
+const failureShotTimeoutMs = 10_000;
 
 const outDir = resolve(process.argv[2] ?? join(import.meta.dirname, '..', 'out'));
 await mkdir(outDir, { recursive: true });
@@ -23,12 +34,12 @@ for (const entry of await readdir(outDir)) {
   }
 }
 
-const manifest: Manifest = {
-  results: scenarios.map(({ name, title }) => ({ name, title, status: 'pending' })),
-};
-await writeManifest(outDir, manifest);
+const manifest: Manifest = { results: [] };
 
 try {
+  checkScenarios(scenarios);
+  manifest.results = scenarios.map(({ name, title }) => ({ name, title, status: 'pending' }));
+  await writeManifest(outDir, manifest);
   const options = await appLaunchOptions();
   for (const [index, scenario] of scenarios.entries()) {
     console.log(`${scenario.name}: running`);
@@ -48,25 +59,47 @@ if (manifest.error !== undefined || manifest.results.some((result) => result.sta
   process.exitCode = 1;
 }
 
+function checkScenarios(list: readonly Scenario[]): void {
+  const seen = new Set<string>();
+  for (const { name, title } of list) {
+    const problem = nameProblem(name) ?? textProblem(title, LIMITS.title);
+    if (problem) {
+      throw new Error(`scenario ${JSON.stringify(name)} is invalid: its name or title ${problem}`);
+    }
+    if (seen.has(name)) {
+      throw new Error(`scenario ${name} appears twice`);
+    }
+    seen.add(name);
+  }
+}
+
 async function capture(scenario: Scenario, options: LaunchOptions): Promise<Result> {
   const { name, title } = scenario;
   let session: Session | undefined;
   try {
     session = await launch(options, scenario.args ?? []);
-    await ready(session.window);
-    const shot = await withTimeout(scenario.run(session), scenarioTimeoutMs);
+    const context = session;
+    const shot = await withTimeout(
+      (async () => {
+        await ready(context);
+        return scenario.run(context);
+      })(),
+      scenarioTimeoutMs,
+    );
     if (isNotAvailable(shot)) {
+      const problem = textProblem(shot.notAvailable, LIMITS.reason);
+      if (problem) {
+        throw new Error(`notAvailable reason ${problem}: ${shot.notAvailable}`);
+      }
       return { name, title, status: 'not-available', reason: shot.notAvailable };
     }
-    const file = `${name}.png`;
-    await writeFile(join(outDir, file), shot);
-    return { name, title, status: 'captured', file };
+    await writeFile(join(outDir, capturedFile(name)), shot);
+    return { name, title, status: 'captured', file: capturedFile(name) };
   } catch (error) {
-    const failed = session ? await screenshot(session.window).catch(() => undefined) : undefined;
+    const failed = session ? await screenshot(session.window, failureShotTimeoutMs).catch(() => undefined) : undefined;
     if (failed) {
-      const file = `${name}.failed.png`;
-      await writeFile(join(outDir, file), failed);
-      return { name, title, status: 'failed', error: messageOf(error), file };
+      await writeFile(join(outDir, failedFile(name)), failed);
+      return { name, title, status: 'failed', error: messageOf(error), file: failedFile(name) };
     }
     return { name, title, status: 'failed', error: messageOf(error) };
   } finally {
@@ -102,5 +135,6 @@ function describe(result: Result): string {
 }
 
 function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  const message = error instanceof Error ? error.message : String(error);
+  return message.length > LIMITS.error ? `${message.slice(0, LIMITS.error - 6)} [cut]` : message;
 }

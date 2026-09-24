@@ -29,6 +29,7 @@ export interface Session extends ScenarioContext {
 }
 
 export const TIMEOUT_MS = 60_000;
+export const WINDOW_SIZE = { width: 1024, height: 640 };
 
 const repoRoot = join(import.meta.dirname, '..', '..', '..');
 const workbenchSelector = '.monaco-workbench';
@@ -43,8 +44,8 @@ export function isNotAvailable(value: Buffer | NotAvailable): value is NotAvaila
   return !Buffer.isBuffer(value);
 }
 
-export function screenshot(window: Page): Promise<Buffer> {
-  return window.screenshot({ animations: 'disabled', caret: 'hide' });
+export function screenshot(window: Page, timeout = TIMEOUT_MS): Promise<Buffer> {
+  return window.screenshot({ animations: 'disabled', caret: 'hide', timeout });
 }
 
 export async function hasWorkbench(window: Page): Promise<boolean> {
@@ -103,8 +104,9 @@ export async function launch(options: LaunchOptions, extraArgs: readonly string[
   }
 }
 
-export async function ready(window: Page): Promise<void> {
+export async function ready({ app, window }: ScenarioContext): Promise<void> {
   await window.waitForURL((url) => url.protocol !== 'about:');
+  await fitWindow(app, window);
   if (window.url().startsWith('vscode-file:')) {
     await window.locator(workbenchSelector).waitFor();
   }
@@ -135,6 +137,29 @@ export async function ready(window: Page): Promise<void> {
     },
     { quietMs: 500, limitMs: 10_000, fontsMs: 5_000 },
   );
+}
+
+async function fitWindow(app: ElectronApplication, window: Page): Promise<void> {
+  const browserWindow = await app.browserWindow(window);
+  await browserWindow.evaluate(
+    (win: { setContentSize(width: number, height: number): void }, size) => {
+      win.setContentSize(size.width, size.height);
+    },
+    WINDOW_SIZE,
+  );
+  try {
+    await window.waitForFunction(
+      ({ width, height }) => innerWidth === width && innerHeight === height,
+      WINDOW_SIZE,
+      { timeout: 5_000 },
+    );
+  } catch (error) {
+    if (!(error instanceof errors.TimeoutError)) {
+      throw error;
+    }
+    const actual = await window.evaluate(() => `${String(innerWidth)}x${String(innerHeight)}`);
+    console.log(`window content is ${actual}, not ${String(WINDOW_SIZE.width)}x${String(WINDOW_SIZE.height)}`);
+  }
 }
 
 function inheritedEnv(): Record<string, string> {
