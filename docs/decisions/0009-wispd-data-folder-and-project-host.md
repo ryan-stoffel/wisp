@@ -18,7 +18,8 @@ The editor shares the data folder, `~/Library/Application Support/wisp` (0006), 
 
 - `wispd.sock`, or the fallback path from 0007 when that path would be longer than 103 bytes. The fallback's `<hash>` is taken over the data folder's absolute path, with `.` components and trailing slashes dropped and symlinks left unresolved.
 - `wispd.lock`, which `serve` holds with `flock`. It contains that process's pid.
-  - At shutdown, `serve` removes the file before it lets go of the lock.
+  - `serve` opens it with `O_NOFOLLOW`, so a symlink there stops startup instead of creating its target.
+  - At shutdown, `serve` removes the file before it lets go of the lock, and only if it is still the file it locked.
   - After locking, a starting `serve` checks that the file it locked is still the one at the path, so the removal can't let two instances in.
 - `wispd.sqlite3`, the store, with SQLite's `-wal` and `-shm` files.
 - `logs/wispd.log`, which `serve` appends to. It isn't rotated yet (#85).
@@ -27,12 +28,14 @@ The editor shares the data folder, `~/Library/Application Support/wisp` (0006), 
 
 - The data folder is `--data-dir`, then `WISPD_DATA_DIR`, then the default.
 - Every subcommand that reaches the socket resolves the folder and the socket path with `wispd::paths::DataDir`, so `serve` and `attach` always agree.
+- Processes that `serve` starts get `WISPD_DATA_DIR` set to its folder: every spawn goes through `DataDir::command`. So a `wispd mcp` (M4) that an agent's CLI starts reaches this `serve`'s socket, even when `serve` was given `--data-dir`.
 - Tests use the override to stay out of the real folder.
 
 ### Logging
 
 - The level is `--log-level`, then `WISPD_LOG`, then `info`. It is a level, or `target=level` pairs with an optional default, such as `wispd=debug,warn`. A word that isn't a level is an error.
 - Lines go to `logs/wispd.log`, and also to stderr when stderr is a terminal. So `attach` and the LaunchAgent can send `serve`'s stdout and stderr to the same file, which catches a panic without writing every line twice.
+- Text that a client sent, such as its name or a method, is logged escaped and cut to 64 characters, so it can't forge a line or make a huge one.
 
 ### Exit codes of `serve`
 
@@ -43,11 +46,13 @@ The editor shares the data folder, `~/Library/Application Support/wisp` (0006), 
 | 2 | A usage error |
 | 3 | Another `serve` already runs for this data folder |
 
-When two `attach` processes race to start `serve`, the one that gets 3 can just connect.
+Exit 3 means another `serve` holds the lock, not that its socket is up. During that instance's shutdown, its socket is already gone, and on the fallback path `dirhelper` may have deleted the socket up to a minute before the next check binds it again. So `attach` retries the connect with backoff, and starts `serve` again once the lock is free.
 
 ### Shutdown
 
 SIGTERM and SIGINT stop accepting, remove the socket, and let in-flight requests finish for up to 10 s before cancelling them. A second signal stops waiting.
+
+A write that makes no progress gives up after 90 s, or 1 s once a shutdown has started, and closes its connection. A client that stops reading therefore can't hold its connection open, or make a shutdown wait out the grace.
 
 ### A missing store
 
@@ -56,6 +61,8 @@ If the store can't be opened, for example after a downgrade across a schema chan
 ### M1's event log
 
 The log is in memory, as 0007 allows for M1: a new `logId` on every start, and the last 10,000 events kept for replay.
+
+`project/create` refuses a `name` over 256 bytes, a `repoPath` over 1024 (macOS's `PATH_MAX`), and a NUL in either, which bounds each `project.created` event and the log's memory. An event too large for a frame closes its connection with an error rather than being skipped, so no subscriber goes on with a gap it can't see.
 
 ### Projects have no host field
 
@@ -69,7 +76,8 @@ Each wispd serves one user on one machine (0007), so every project in its store 
 
 ## Consequences
 
-- #60's `attach` finds the socket with `DataDir::resolve(...)?.socket_path()`, and starts `serve` with its stdio on `logs/wispd.log`.
+- #60's `attach` finds the socket with `DataDir::resolve(...)?.socket_path()`, starts `serve` with its stdio on `logs/wispd.log`, and after an exit 3 keeps retrying the connect with backoff.
+- M3's code that starts agents builds every process with `DataDir::command`.
 - #61's LaunchAgent points `StandardOutPath` and `StandardErrorPath` at `logs/wispd.log`.
 - #66's end-to-end tests set `WISPD_DATA_DIR` to a short temporary folder, which keeps the socket path under 103 bytes.
 - If a project ever needs to name another machine, it gets a new field with that meaning. M5's local runner is chosen per run, not per project.
