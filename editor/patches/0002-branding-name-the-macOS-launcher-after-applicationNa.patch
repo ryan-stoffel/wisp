@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ryan Stoffel <stoffel.thomas.ryan@gmail.com>
+Date: Thu, 24 Sep 2026 03:52:11 -0700
+Subject: [PATCH] branding: name the macOS launcher after applicationName
+
+Upstream's darwin packaging always names the command-line launcher
+bin/code, whatever product.json says, while Linux and Windows already
+use applicationName. wisp's launcher is `wisp`
+(Wisp.app/Contents/Resources/app/bin/wisp), so name it after
+applicationName, and point "Install 'wisp' command in PATH" and the
+CLI path lookup at the same file. VSCodium carries the same change as
+00-binary-fix-name.patch.
+
+diff --git a/build/gulpfile.vscode.ts b/build/gulpfile.vscode.ts
+index 8d648346d5c9a6787ad5658ec57d8bbfaea37187..a2ef8d1211c37c928fbda85295c05c2083a3dca9 100644
+--- a/build/gulpfile.vscode.ts
++++ b/build/gulpfile.vscode.ts
+@@ -352,7 +352,7 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
+ 			const shortcut = gulp.src('resources/darwin/bin/code.sh')
+ 				.pipe(replace('@@APPNAME@@', product.applicationName))
+ 				.pipe(replace('@@NAME@@', product.nameShort))
+-				.pipe(rename('bin/code'));
++				.pipe(rename('bin/' + product.applicationName));
+ 			const policyDest = gulp.src('.build/policies/darwin/**', { base: '.build/policies/darwin' })
+ 				.pipe(rename(f => f.dirname = `policies/${f.dirname}`));
+ 			all = es.merge(all, shortcut, policyDest);
+diff --git a/src/vs/platform/native/electron-main/nativeHostMainService.ts b/src/vs/platform/native/electron-main/nativeHostMainService.ts
+index d0a6c5d44176b049d3d0964346b2000b8c3243e4..9badd9f442f3961368f4aa6834bb08a71ffe4aab 100644
+--- a/src/vs/platform/native/electron-main/nativeHostMainService.ts
++++ b/src/vs/platform/native/electron-main/nativeHostMainService.ts
+@@ -566,7 +566,7 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
+ 	}
+ 
+ 	private async getShellCommandLink(): Promise<{ readonly source: string; readonly target: string }> {
+-		const target = resolve(this.environmentMainService.appRoot, 'bin', 'code');
++		const target = resolve(this.environmentMainService.appRoot, 'bin', this.productService.applicationName);
+ 		const source = `/usr/local/bin/${this.productService.applicationName}`;
+ 
+ 		// Ensure source exists
+@@ -851,7 +851,7 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
+ 
+ 		// macOS
+ 		if (this.environmentMainService.isBuilt) {
+-			return join(this.environmentMainService.appRoot, 'bin', 'code');
++			return join(this.environmentMainService.appRoot, 'bin', this.productService.applicationName);
+ 		}
+ 
+ 		return join(this.environmentMainService.appRoot, 'scripts', 'code-cli.sh');

@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ryan Stoffel <stoffel.thomas.ryan@gmail.com>
+Date: Thu, 24 Sep 2026 07:18:02 -0700
+Subject: [PATCH] telemetry: default the telemetry level to off
+
+wisp's product.json sets enableTelemetry to false and has no telemetry
+keys, so a built app never creates a telemetry appender, and extensions
+see vscode.env.isTelemetryEnabled as false. The telemetry.telemetryLevel
+setting still defaulted to "all", which is what Settings showed.
+
+Default it to "off", so the setting says what the app does, and so
+telemetry stays off by default even if a later product.json enabled it.
+VSCodium makes the same change in 00-telemetry-disable.patch.
+
+diff --git a/src/vs/platform/telemetry/common/telemetryService.ts b/src/vs/platform/telemetry/common/telemetryService.ts
+index 18f60022ff32e28b8126096127f62d935d77f39e..a2263601b7bf44c44b40483c5907b1f5cfe00f15 100644
+--- a/src/vs/platform/telemetry/common/telemetryService.ts
++++ b/src/vs/platform/telemetry/common/telemetryService.ts
+@@ -328,7 +328,7 @@ configurationRegistry.registerConfiguration({
+ 				localize('telemetry.telemetryLevel.off', "Disables all product telemetry.")
+ 			],
+ 			'markdownDescription': getTelemetryLevelSettingDescription(),
+-			'default': TelemetryConfiguration.ON,
++			'default': TelemetryConfiguration.OFF,
+ 			'restricted': true,
+ 			'scope': ConfigurationScope.APPLICATION,
+ 			'tags': ['usesOnlineServices', 'telemetry'],

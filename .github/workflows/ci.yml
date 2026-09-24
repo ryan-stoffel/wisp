@@ -122,6 +122,64 @@ jobs:
           path: .fork-check-passed
           key: ${{ steps.inputs.outputs.key }}
 
+  # Builds the packaged Wisp.app, or restores the build of the same inputs from an earlier run (scripts/ci/README.md).
+  app:
+    runs-on: macos-26
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+    env:
+      ARCH: ${{ matrix.arch }}
+      ZIP: dist/editor/wisp-darwin-${{ matrix.arch }}.zip
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The inputs are what scripts/editor/build-app reads, plus this job's own definition.
+      - name: Hash the inputs of the app build
+        id: inputs
+        run: |
+          inputs=$(git ls-files -s -- editor .nvmrc .gitattributes scripts/editor)
+          job=$(yq -o=json '.jobs.app' .github/workflows/ci.yml)
+          hash=$(printf '%s\n%s\n' "$inputs" "$job" | shasum -a 256 | cut -d' ' -f1)
+          echo "key=wisp-app-darwin-$ARCH-$hash" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the app built from the same inputs
+        id: cached
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.ZIP }}
+          key: ${{ steps.inputs.outputs.key }}
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: ${{ steps.cached.outputs.cache-hit != 'true' && 'npm' || '' }}
+          # Upstream's lockfiles exist only after scripts/editor/prepare runs, and the pin decides them.
+          cache-dependency-path: editor/upstream.json
+
+      - name: Build the app
+        if: steps.cached.outputs.cache-hit != 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          bundle=$(scripts/editor/build-app "$ARCH")
+          mkdir -p "$(dirname "$ZIP")"
+          ditto -c -k --keepParent --norsrc --noextattr --noacl "$bundle" "$ZIP"
+
+      - name: Check the app
+        run: scripts/ci/check-app "$ZIP" "$ARCH"
+
+      - name: Save the app for runs with the same inputs
+        if: steps.cached.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.ZIP }}
+          key: ${{ steps.inputs.outputs.key }}
+
   actionlint:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -156,7 +214,7 @@ jobs:
   # Branch protection requires this job's name, ci, as the only check (#6). Renaming it blocks every merge.
   ci:
     if: always()
-    needs: [rust, editor, fork, actionlint]
+    needs: [rust, editor, fork, app, actionlint]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

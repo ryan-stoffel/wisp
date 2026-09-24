@@ -9,7 +9,8 @@ Each script finds the repo root on its own, so it runs from any directory.
 | `check-rust` | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo build`, and `cargo test` on the workspace, with `--locked`. The tests include the [protocol type](#protocol-types) checks. | `ci.yml` (#3) |
 | `check-editor` | `npm ci`, then lint, type-check (`tsc --noEmit`), build, and test the editor, currently `ci/fixtures/electron-smoke/` | `ci.yml` (#3), `editor` job |
 | `check-fork` | Runs `scripts/editor/test`, then checks that the Code - OSS pin and patches apply (`scripts/editor/prepare`, then `scripts/editor/export-patches --check`) and that the root `.nvmrc` equals upstream's. Then it type-checks `src/` in the patched tree with upstream's `npm run typecheck-client`, after `npm ci --ignore-scripts` when `node_modules` is missing and upstream's `node build/npm/electronTypes.ts`, which downloads the checksum-verified `electron.d.ts` | `ci.yml` (#8), `fork` job |
-| `build-app` | Installs, builds, and downloads the Electron binary: what `app-launch` needs, without lint or tests. `WISP_APP=editor` builds the Code - OSS development build in `editor/vscode/` instead of the fixture. | `screenshots.yml` (#4) |
+| `build-app` | Installs, builds, and downloads the Electron binary: what `app-launch` needs, without lint or tests. `WISP_APP=editor` builds the Code - OSS development build in `editor/vscode/` instead of the fixture. The packaged `Wisp.app` comes from `scripts/editor/build-app` instead (see [The app job](#the-app-job)). | `screenshots.yml` (#4) |
+| `check-app` | Checks a packaged `Wisp.app`, or a zip of one, for an architecture: its signature, its main binary's architecture, its `product.json` against `editor/product.json`, its bundle id, icon, and `wisp` launcher, and `wisp --version` | `ci.yml` (#9), `app` job |
 | `app-launch` | Prints Playwright `_electron.launch` options for the built app as one line of JSON. `WISP_APP=editor` selects the Code - OSS development build. | `screenshots.yml` (#4) |
 | `screenshots` | Captures every scenario in `ci/screenshots/` from the built app into a directory (see [Screenshots](#screenshots)) | `screenshots.yml` (#4), `capture` job |
 | `publish-screenshots` | Checks a capture directory, commits its PNGs to the `ci-screenshots` branch, and creates or updates the PR comment. It needs Actions' environment; locally, `--dry-run` prints the comment | `screenshots.yml` (#4), `publish` job |
@@ -68,7 +69,7 @@ const window = await electronApp.firstWindow();
 `WISP_APP=editor` prints the development build in `editor/vscode/` ([0002](../../docs/decisions/0002-editor-fork-strategy.md)). Build it with `WISP_APP=editor scripts/ci/build-app`. The executable is the Electron app that upstream downloads into `.build/electron/`. The source tree is its first argument, and `env` holds the variables that upstream's `scripts/code.sh` sets:
 
 ```json
-{"executablePath":"<repo>/editor/vscode/.build/electron/Code - OSS.app/Contents/MacOS/Code - OSS","args":["<repo>/editor/vscode","--disable-extension=vscode.vscode-api-tests"],"env":{"NODE_ENV":"development","VSCODE_DEV":"1","VSCODE_CLI":"1","ELECTRON_ENABLE_STACK_DUMPING":"1","ELECTRON_ENABLE_LOGGING":"1"}}
+{"executablePath":"<repo>/editor/vscode/.build/electron/Wisp.app/Contents/MacOS/Wisp","args":["<repo>/editor/vscode","--disable-extension=vscode.vscode-api-tests"],"env":{"NODE_ENV":"development","VSCODE_DEV":"1","VSCODE_CLI":"1","ELECTRON_ENABLE_STACK_DUMPING":"1","ELECTRON_ENABLE_LOGGING":"1"}}
 ```
 
 - Add arguments after the printed ones, and keep the source tree first, as the screenshot harness does. Add `--extensions-dir=<dir>` as well as a fresh `--user-data-dir` to keep a run apart from any other Code - OSS development build on the machine.
@@ -113,6 +114,26 @@ scripts/ci/check-screenshots
 
 `screenshots` writes to `ci/screenshots/out/`, and `publish-screenshots --dry-run` checks that directory the way the `publish` job does and prints the comment it would post. Add `--logs <dir>` with `BUILD_OUTCOME=failure` or `CAPTURE_OUTCOME=failure` to include a failed step's `build.log` or `capture.log`.
 
+## The app job
+
+`ci.yml`'s `app` job builds the packaged `Wisp.app` for arm64 and x64 on `macos-26`, one matrix leg each. A leg rebuilds only when its inputs changed since a run that saved a build:
+
+1. It hashes its inputs: `git ls-files -s` over `editor/`, `.nvmrc`, `.gitattributes`, and `scripts/editor/`, plus the job's own definition (`yq '.jobs.app'`). The cache key is `wisp-app-darwin-<arch>-<hash>`. Edits to other jobs, the docs, or `scripts/ci/` do not rebuild the app.
+2. It restores `dist/editor/wisp-darwin-<arch>.zip` from the cache under that key.
+3. On a miss, it runs `scripts/editor/build-app <arch>` and zips the bundle with `ditto`, the way `package-app` does. x64 cross-builds on the arm64 runner.
+4. On a hit or a build, it runs `check-app` on the zip.
+5. After a build, it saves the zip under the key.
+
+A rebuild takes about 20 minutes per architecture on `macos-26`: `npm ci` 5 min, gulp 9 min, signing and the Mach-O check 3 min, and the zip and checks 1 to 2 min. The two architectures build in parallel. On #73, the whole `ci.yml` run took 21 to 24 minutes when both rebuilt. A cache hit takes under 2 minutes: about 10 s to restore and 20 s to check arm64. x64 takes 80 s to check, because `wisp --version` runs under Rosetta. The whole run then takes about 2 minutes. Each build stores two zips, about 670 MB. When the repository's caches pass 10 GB, GitHub evicts the least recently used entries, and a PR whose build was evicted pays one rebuild. A plain macOS job per architecture beats compiling on `ubuntu-24.04` and packaging on macOS. Ubuntu compiles in 4 minutes instead of 8, but the macOS job still needs its own 5-minute `npm ci` for the native modules, and it cannot start until the Ubuntu job has uploaded a 766 MB artifact. #9's Progress comment has the numbers.
+
+Caches follow the same scopes as the `fork` job's markers. A PR can restore a build that `develop` saved, or one from an earlier push to the same PR. `develop` builds its own copy the first time its inputs change, because a PR's cache is not visible there. The key leaves out the runner image, as the `fork` job's does, so an image update does not rebuild the app until an input changes.
+
+A build needs `GITHUB_TOKEN`: upstream's install and build download from GitHub (ripgrep, the built-in extensions, Electron), and anonymous API calls from shared runners hit the rate limit. The job gives it the workflow's `contents: read` token.
+
+To use the cached app for checks elsewhere, such as screenshots (#38), compute the same key, restore the zip with `actions/cache/restore`, and unzip it with `ditto -x -k`. On a PR that changes an input, the key misses until this job has saved the new build.
+
+Never ship the cached app. `release.yml` builds the release app from source and never restores this cache. A cache entry has no provenance: any job in a `develop` run can write one under this predictable key, npm install scripts and cargo build scripts included. `check-app` checks the branding, not where the zip came from.
+
 ## Switching to the real app
 
 #8 imported the fork:
@@ -121,7 +142,7 @@ scripts/ci/check-screenshots
 - It added `check-fork` and the `fork` job.
 - It set the root `.nvmrc` to upstream's.
 
-The fixture stays the default until #9 makes a cached fork build fast enough for every PR. Then #38:
+#9 added the packaged `Wisp.app` and its cached build, the `app` job. The fixture stays the default until #38:
 
 - Makes the editor the default in `build-app` and `app-launch`, or sets `WISP_APP_BUNDLE` to the packaged `wisp.app`.
 - Points `check-editor` at the fork's commands. #43 does the same for `package-app`.
@@ -136,7 +157,7 @@ The fixture stays the default until #9 makes a cached fork build fast enough for
 3. Ad-hoc sign the whole bundle and check its signature, version, and bundle id. Packager keeps Electron's per-binary signatures, which no longer match the renamed bundle. Gatekeeper then reports the app as damaged and offers no Open Anyway. #7 replaces this step with Developer ID signing and notarization.
 4. Zip the bundle with `ditto` to `dist/wisp-<version>-<arch>.zip`, the name the cask's `url` expects.
 
-When #9 points it at the fork, only steps 1 and 2 change. Once `wispd` ships inside the bundle, stamp it too: after setting `version` in `[workspace.package]` in `Cargo.toml`, run `cargo update --workspace --offline`. Otherwise `Cargo.lock` keeps the old version, and every `--locked` build, `check-rust` included, fails with "cannot update the lock file".
+When #43 points it at the fork, only steps 1 and 2 change: stamp the version into `editor/vscode` and run `scripts/editor/build-app` instead of `@electron/packager`. Once `wispd` ships inside the bundle, stamp it too: after setting `version` in `[workspace.package]` in `Cargo.toml`, run `cargo update --workspace --offline`. Otherwise `Cargo.lock` keeps the old version, and every `--locked` build, `check-rust` included, fails with "cannot update the lock file".
 
 ## Releases
 
