@@ -1,0 +1,27 @@
+{
+  "name": "wisp-electron-smoke",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Stand-in Electron app that CI lints, builds, tests, and launches until the Code - OSS fork lands",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "out/main.js",
+  "engines": {
+    "node": "^24.16.0"
+  },
+  "scripts": {
+    "lint": "eslint --max-warnings=0 .",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --project tsconfig.build.json",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "start": "npm run build && electron ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.13.6",
+    "electron": "^44.4.5",
+    "eslint": "^10.11.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.70.1"
+  }
+}
