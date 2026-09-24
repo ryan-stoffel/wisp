@@ -60,7 +60,7 @@ It uses your own ssh config, keys, and agent (0007). For that command to work, t
 
    - Or run `wispd` by its full path, `/opt/homebrew/bin/wispd attach`. The editor retries with that path when the host's shell exits 127, meaning it didn't find `wispd` (#64).
 
-   `ssh -o SetEnv=PATH=...` from the laptop doesn't help on its own. The host's sshd accepts only the variables its `AcceptEnv` lists, which on macOS are `LANG` and `LC_*`, so it drops `PATH`.
+   `SetEnv PATH=...` for the host in the laptop's `~/.ssh/config`, or `ssh -o SetEnv=...`, works only if the host's sshd lists `PATH` in `AcceptEnv`. macOS's sshd accepts only `LANG` and `LC_*`, so it drops `PATH`. Changing that means editing the host's sshd configuration, which affects every login, so prefer one of the fixes above.
 
    To check, run `ssh <host> 'command -v wispd'`.
 3. **Quiet shell startup files.** Over SSH, stdout carries the protocol, so anything the host's shell prints while it starts a non-interactive command gets mixed into it. For zsh, that output comes from `~/.zshenv`.
