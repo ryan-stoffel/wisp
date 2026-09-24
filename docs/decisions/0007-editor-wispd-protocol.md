@@ -17,7 +17,9 @@ The editor and `wispd` need one protocol, whether `wispd` runs on this Mac or on
   - A `flock` on `wispd.lock` allows one wispd per folder, and the lock holder removes a stale socket before binding.
   - There is no TCP port, no token, and no system-wide daemon. Each macOS user runs their own wispd, so users of a shared Mac stay isolated.
 - **Editor:** it always talks over a child process's stdio.
-  - Locally it runs the bundled `wispd attach` (#62). For a host it runs `ssh -T -o BatchMode=yes -o ConnectTimeout=10 <destination> wispd attach`.
+  - Locally it runs the bundled `wispd attach` (#62). For a host it runs `ssh -T -o BatchMode=yes -o ConnectTimeout=10 -o ControlPath=none -- <destination> wispd attach`.
+  - The editor rejects a destination that starts with `-` or contains whitespace or control characters, and `--` keeps ssh from reading it as an option. `wisp.host` is application-scoped, so a workspace's `.vscode/settings.json` can't set it.
+  - `ControlPath=none` keeps a reconnect after sleep from reusing a stale shared connection. The cost is that hosts needing interactive 2FA are out of scope, because `BatchMode` could only reach them through a shared connection.
   - `attach` (#60) bridges stdio to the socket byte for byte. It starts wispd if needed, through the LaunchAgent when #61 installed one.
 - **Credentials:** wisp stores none and never sees any.
   - The user's `ssh` applies their config, keys, agent, `known_hosts`, and jump hosts.
