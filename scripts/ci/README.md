@@ -15,7 +15,7 @@ Each script finds the repo root on its own, so it runs from any directory.
 ## Requirements
 
 - Rust: rustup. `rust-toolchain.toml` pins the toolchain and its components, and rustup installs them on first use.
-- Node: the major version in the root `.nvmrc`. In Actions, use `actions/setup-node` with `node-version-file: .nvmrc`.
+- Node: the exact version in the root `.nvmrc`. In Actions, use `actions/setup-node` with `node-version-file: .nvmrc`. `check-editor` and `build-app` stop with an error when `node` has a different major version, so local runs use the same Node as CI.
 - macOS, for `build-app` and `app-launch`.
 
 ## app-launch
@@ -52,7 +52,7 @@ When the fork builds, #8 does one of these:
 - Packaged build: set `WISP_APP_BUNDLE` to the built `wisp.app` in the workflows, or make that path the default in `app-launch`.
 - Development build, which Code - OSS runs as `.build/electron/<name>.app` with the source tree as its argument: replace `fromFixture()` in `app-launch` with a function that returns that executable, `args: ['<editor dir>']`, and an `env` with only the additions the build needs (upstream `scripts/code.sh` sets `VSCODE_DEV=1`, among others). Callers already merge `env`, so the spec does not change.
 
-Then point `check-editor`, `build-app`, and `package-app` at the fork's commands and delete the fixture, as 0001 describes.
+Then point `check-editor`, `build-app`, and `package-app` at the fork's commands and delete the fixture, as 0001 describes. Set the root `.nvmrc` to the fork's own `.nvmrc` (upstream pins an exact 24.x) and keep the two equal, because the scripts check against the root one.
 
 ## package-app (added by #5)
 

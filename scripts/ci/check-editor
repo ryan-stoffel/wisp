@@ -1,7 +1,15 @@
 #!/bin/sh
 set -eu
 
-cd "$(dirname "$0")/../../ci/fixtures/electron-smoke"
+root=$(cd "$(dirname "$0")/../.." && pwd)
+want=$(cut -d. -f1 "$root/.nvmrc")
+have=$(node -p 'process.versions.node.split(".")[0]')
+if [ "$have" != "$want" ]; then
+  echo "${0##*/}: Node $want is required (.nvmrc pins $(cat "$root/.nvmrc")), but node is $(node --version)" >&2
+  exit 1
+fi
+
+cd "$root/ci/fixtures/electron-smoke"
 set -x
 
 node --version
