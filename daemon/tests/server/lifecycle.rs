@@ -195,6 +195,39 @@ async fn sigterm_finishes_the_requests_in_flight_then_cleans_up() {
 }
 
 #[tokio::test]
+async fn sigterm_does_not_wait_out_the_grace_for_a_client_that_stopped_reading() {
+    let dir = temp_dir();
+    let wispd = Wispd::start(dir.path()).await;
+    let socket = wispd.socket.clone();
+    // Pipelines requests on its own thread and never reads the answers.
+    let flood = std::thread::spawn(move || {
+        let mut stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        let initialize = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":\
+            {\"protocol\":{\"min\":1,\"max\":1},\"client\":{\"name\":\"t\",\"version\":\"0\"},\
+            \"capabilities\":{}}}\n";
+        let mut sent = std::io::Write::write_all(&mut stream, initialize.as_bytes());
+        let mut id = 2_u64;
+        while sent.is_ok() {
+            let line = format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"host/health\"}}\n");
+            sent = std::io::Write::write_all(&mut stream, line.as_bytes());
+            id += 1;
+        }
+    });
+    sleep(SETTLE).await;
+
+    let signalled = Instant::now();
+    wispd.signal(Signal::TERM);
+    let (status, stderr) = wispd.exit().await;
+    assert!(status.success(), "{status} {stderr}");
+    assert!(
+        signalled.elapsed() < Duration::from_secs(5),
+        "took {:?}; the grace is 10 s",
+        signalled.elapsed()
+    );
+    flood.join().expect("the flood ends when wispd closes");
+}
+
+#[tokio::test]
 async fn sigint_stops_the_server_and_closes_idle_connections() {
     let dir = temp_dir();
     let wispd = Wispd::start(dir.path()).await;

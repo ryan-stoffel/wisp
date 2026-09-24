@@ -9,12 +9,15 @@
 //!
 //! When the client closes its side, or the server starts shutting down, the reader stops, and the
 //! connection closes once every request it read has been answered. When the client is gone, has
-//! been silent too long, or sends an oversized frame, the connection closes at once and its
-//! requests are cancelled.
+//! been silent too long, stops reading what wispd writes, or sends an oversized frame, the
+//! connection closes at once and its requests are cancelled.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::io;
 use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use futures_util::{FutureExt, SinkExt, StreamExt};
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf};
@@ -62,14 +65,19 @@ pub(crate) async fn serve<S>(
         session: None,
         in_flight: InFlight::default(),
         handlers: JoinSet::new(),
-        stop_reading,
+        stop_reading: stop_reading.clone(),
         closing: closing.clone(),
+    };
+    let stall = Stall {
+        timeout: daemon.limits.idle_timeout,
+        stopping: stop_reading.clone(),
     };
     let writer = run_writer(
         FramedWrite::new(write, FrameCodec::new()),
         queue,
         Arc::clone(&daemon.log),
         closing,
+        stall,
     );
     debug!("connected");
     let (session, ()) = tokio::join!(reader.run(), writer);
@@ -328,11 +336,12 @@ async fn run_writer<W: AsyncWrite + Unpin>(
     queue: mpsc::Receiver<Reply>,
     log: Arc<EventLog>,
     closing: CancellationToken,
+    stall: Stall,
 ) {
     tokio::select! {
         biased;
         () = closing.cancelled() => {}
-        written = write_loop(sink, queue, &log) => {
+        written = write_loop(sink, queue, &log, &stall) => {
             if let Err(error) = written {
                 debug!(%error, "writing failed");
             }
@@ -341,17 +350,58 @@ async fn run_writer<W: AsyncWrite + Unpin>(
     closing.cancel();
 }
 
+/// When a write that makes no progress gives up: after `timeout`, or [`SHUTDOWN_WRITE_TIMEOUT`]
+/// after a shutdown starts. A client that stops reading is dropped rather than holding its
+/// connection, and the shutdown, open forever.
+struct Stall {
+    timeout: Duration,
+    stopping: CancellationToken,
+}
+
+/// How long a stalled write may still wait once a shutdown has started.
+const SHUTDOWN_WRITE_TIMEOUT: Duration = Duration::from_secs(1);
+
+impl Stall {
+    async fn guard<T>(
+        &self,
+        write: impl Future<Output = Result<T, FrameError>>,
+    ) -> Result<T, FrameError> {
+        let stalled = async {
+            tokio::select! {
+                () = time::sleep(self.timeout) => {}
+                () = async {
+                    self.stopping.cancelled().await;
+                    time::sleep(SHUTDOWN_WRITE_TIMEOUT).await;
+                } => {}
+            }
+        };
+        tokio::select! {
+            written = write => written,
+            () = stalled => {
+                info!("closing a connection whose client stopped reading");
+                Err(FrameError::Io(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "the client stopped reading",
+                )))
+            }
+        }
+    }
+}
+
 async fn write_loop<W: AsyncWrite + Unpin>(
     mut sink: FramedWrite<W, FrameCodec>,
     mut queue: mpsc::Receiver<Reply>,
     log: &EventLog,
+    stall: &Stall,
 ) -> Result<(), FrameError> {
     let mut appended = log.watch();
     let mut cursors = Cursors::default();
     loop {
         match queue.try_recv() {
             Ok(reply) => {
-                send_reply(&mut sink, reply, &mut cursors).await?;
+                stall
+                    .guard(send_reply(&mut sink, reply, &mut cursors))
+                    .await?;
                 continue;
             }
             Err(TryRecvError::Disconnected) => break,
@@ -359,7 +409,7 @@ async fn write_loop<W: AsyncWrite + Unpin>(
         }
         match cursors.next(log) {
             Ok(Some(event)) => {
-                send_event(&mut sink, event).await?;
+                stall.guard(send_event(&mut sink, event)).await?;
                 // A long replay may never wait on the socket; let other tasks run.
                 tokio::task::consume_budget().await;
                 continue;
@@ -374,10 +424,14 @@ async fn write_loop<W: AsyncWrite + Unpin>(
             }
         }
         // FramedWrite is a Sink for every serializable item, so flush and close name one.
-        SinkExt::<Response>::flush(&mut sink).await?;
+        stall.guard(SinkExt::<Response>::flush(&mut sink)).await?;
         tokio::select! {
             reply = queue.recv() => match reply {
-                Some(reply) => send_reply(&mut sink, reply, &mut cursors).await?,
+                Some(reply) => {
+                    stall
+                        .guard(send_reply(&mut sink, reply, &mut cursors))
+                        .await?;
+                }
                 None => break,
             },
             changed = appended.changed() => if changed.is_err() {
@@ -385,7 +439,7 @@ async fn write_loop<W: AsyncWrite + Unpin>(
             },
         }
     }
-    SinkExt::<Response>::close(&mut sink).await
+    stall.guard(SinkExt::<Response>::close(&mut sink)).await
 }
 
 async fn send_reply<W: AsyncWrite + Unpin>(
@@ -472,7 +526,7 @@ mod tests {
     type Frames = FramedRead<ReadHalf<DuplexStream>, FrameCodec>;
 
     fn daemon(dir: &Path, retention: usize) -> Arc<Daemon> {
-        Daemon::for_tests(dir, retention)
+        Daemon::for_tests(dir, retention, Duration::from_secs(90))
     }
 
     fn append(daemon: &Daemon, count: usize) {
@@ -574,6 +628,39 @@ mod tests {
             delivered < 1_000,
             "{delivered} events, then the connection should close"
         );
+    }
+
+    #[tokio::test]
+    async fn a_client_that_stops_reading_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let idle = Duration::from_millis(300);
+        let daemon = Daemon::for_tests(dir.path(), 10, idle);
+        let (client, server) = tokio::io::duplex(1024);
+        tokio::spawn(serve(
+            server,
+            daemon,
+            CancellationToken::new(),
+            CancellationToken::new(),
+        ));
+        // The read half stays open and unread, so wispd's writes back up instead of failing.
+        let (_unread, mut write) = tokio::io::split(client);
+        let started = std::time::Instant::now();
+        let flood = async move {
+            let mut initialize = serde_json::to_vec(&requests(0)[0]).unwrap();
+            initialize.push(b'\n');
+            write.write_all(&initialize).await?;
+            for id in 2_u64.. {
+                let line =
+                    format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"host/health\"}}\n");
+                write.write_all(line.as_bytes()).await?;
+            }
+            Ok::<(), std::io::Error>(())
+        };
+        let flooded = timeout(PATIENCE, flood)
+            .await
+            .expect("wispd drops the connection instead of waiting forever");
+        assert!(flooded.is_err(), "writes fail once wispd has closed");
+        assert!(started.elapsed() >= idle, "{:?}", started.elapsed());
     }
 
     #[tokio::test]

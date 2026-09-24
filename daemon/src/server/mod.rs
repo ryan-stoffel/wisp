@@ -371,15 +371,19 @@ fn rebind(socket: &mut Socket, listener: &mut UnixListener) {
 
 #[cfg(test)]
 impl Daemon {
-    /// A daemon with its store in `dir`, and default limits.
-    pub(crate) fn for_tests(dir: &Path, event_retention: usize) -> Arc<Self> {
+    /// A daemon with its store in `dir`, and the default limits except the idle timeout.
+    pub(crate) fn for_tests(
+        dir: &Path,
+        event_retention: usize,
+        idle_timeout: Duration,
+    ) -> Arc<Self> {
         Arc::new(Self {
             started: Instant::now(),
             log: Arc::new(EventLog::new(event_retention)),
             store: StoreHandle::open(&dir.join("wispd.sqlite3")),
             os: "test".to_owned(),
             limits: Limits {
-                idle_timeout: Duration::from_secs(90),
+                idle_timeout,
                 max_requests_in_flight: 32,
                 outbound_queue: 32,
             },
@@ -389,6 +393,8 @@ impl Daemon {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use tokio::io::AsyncReadExt;
     use tokio::net::UnixStream;
     use tokio_util::sync::CancellationToken;
@@ -401,7 +407,7 @@ mod tests {
     #[tokio::test]
     async fn only_a_peer_running_as_this_user_is_served() {
         let dir = tempfile::tempdir().unwrap();
-        let daemon = Daemon::for_tests(dir.path(), 10);
+        let daemon = Daemon::for_tests(dir.path(), 10, Duration::from_secs(90));
         let connections = TaskTracker::new();
         let token = CancellationToken::new();
         let accepted = Accepted {
