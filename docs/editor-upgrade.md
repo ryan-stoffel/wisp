@@ -47,7 +47,7 @@ The times are from an M3 Pro. `scripts/ci/build-app` with `WISP_APP=editor` runs
    - For a new patch, make a new commit. The subject becomes the file name, so start it with the area (`branding:`, `strip:`, `chat:`). The body says why wisp needs the change.
    - To change an existing patch, commit with `git commit --fixup=<commit>`, then fold it in with `GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash <pinned commit>`. `git log` in `editor/vscode/` shows which commit is which patch.
 4. Run `scripts/editor/export-patches`. It rewrites `editor/patches/` from the commits.
-5. Commit `editor/patches/` in wisp. CI runs `export-patches --check`, which fails if the committed files differ from what an export would write, for example after a hand edit.
+5. Commit `editor/patches/` in wisp. CI runs `export-patches --check`, which fails if the committed files differ from what an export would write, for example after a hand edit. It also type-checks the patched tree.
 
 Keep patches cheap to carry across upgrades. [0002](decisions/0002-editor-fork-strategy.md#rules-for-patches) has the rules. In short:
 

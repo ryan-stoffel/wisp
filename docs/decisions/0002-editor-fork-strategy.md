@@ -62,7 +62,7 @@ Option 3: upstream Code - OSS at a pinned tag, plus a patch series applied by on
   - It refuses to overwrite uncommitted or unexported work in the tree.
 - Patches are commits, not plain `git apply` diffs as in VSCodium. That lets an upgrade use `git rebase`, with three-way merges and normal conflict tools, instead of `.rej` files. `scripts/editor/export-patches` writes the commits back in a canonical format, and `scripts/editor/upgrade <tag>` does the rebase, the pin, and the export. The GitLab Web IDE fork uses the same `format-patch` and `git am` pair.
 - The root `.nvmrc` equals upstream's `.nvmrc` (Node 24.18.0 for 1.139.0), because the CI scripts check Node against the root file. `upgrade` copies it, and `scripts/ci/check-editor` fails if the two differ.
-- `scripts/ci/check-editor` runs `prepare` and `export-patches --check` on every PR, so a broken or hand-edited patch fails CI.
+- `scripts/ci/check-editor` runs `prepare`, `export-patches --check`, and upstream's TypeScript type-check (`npm run typecheck-client`) on every PR. A patch that no longer applies, was edited by hand, or breaks the types fails CI. The full build and its caching are left to #9.
 
 ### What is committed
 
