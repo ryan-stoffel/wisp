@@ -22,4 +22,5 @@
 - Publishing never pushes to `main`, and the versions in the repo never have to change for a release.
 - Until #7, macOS asks for approval after every upgrade. Each build has a new ad-hoc signature, whose designated requirement is the build's own hash, so Homebrew cannot carry the user's earlier approval over to the new version.
 - #9 changes only the fixture half of `package-app` (stamping and packaging). It changes `RELEASE_ARCHES` only if Intel builds should ship.
-- Release PRs must be merged with a merge commit, as CLAUDE.md already says. After a squash merge, the next version would count all of `develop`'s history since the first commit.
+- Release PRs must be merged with a merge commit, as CLAUDE.md already says. After a squash merge, the next version would count the wrong commits. `release.yml` checks that the merge commit's second parent is the PR's head, and otherwise releases nothing.
+- Hotfix PRs into `main` publish nothing. Their changes ship with the next release from `develop`.

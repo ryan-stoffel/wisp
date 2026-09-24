@@ -13,12 +13,13 @@ Each script finds the repo root on its own, so it runs from any directory.
 | `screenshots` | Captures every scenario in `ci/screenshots/` from the built app into a directory (see [Screenshots](#screenshots)) | `screenshots.yml` (#4), `capture` job |
 | `publish-screenshots` | Checks a capture directory, commits its PNGs to the `ci-screenshots` branch, and creates or updates the PR comment. It needs Actions' environment; locally, `--dry-run` prints the comment | `screenshots.yml` (#4), `publish` job |
 | `check-screenshots` | `npm ci`, then lint, type-check, and test `ci/screenshots/` | Not yet: #39 adds it to `ci.yml` |
-| `package-app` | Builds `wisp.app` with a version stamped in, ad-hoc signs it, zips it, and prints the bundle path (see [package-app](#package-app)) | `release.yml` (#5) |
-| `next-version` | Prints the version the next release gets, from tags and Conventional Commits (see [Releases](#releases)) | `release.yml` (#5) |
-| `generate-cask` | Prints the Homebrew cask for a version and its zips, from `release/wisp.rb.template` | `release.yml` (#5) |
-| `audit-cask` | Runs `brew style` and `brew audit` on a cask in a throwaway tap, then installs and uninstalls it | `release.yml` (#5) |
-| `publish-cask` | Commits the cask to `ryan-stoffel/homebrew-taps` with `TAP_GITHUB_TOKEN`, and refuses to replace a newer version; `--check` only tests the token | `release.yml` (#5) |
-| `check-release` | Unit tests for the release scripts | `release.yml` (#5) |
+| `package-app` | Builds `wisp.app` with a version stamped in, ad-hoc signs it, zips it, and prints the bundle path (see [package-app](#package-app)) | `release.yml` (#5), `build` job |
+| `next-version` | Prints the version the next release gets, from tags and Conventional Commits (see [Releases](#releases)) | `release.yml` (#5), `build` job |
+| `generate-cask` | Prints the Homebrew cask for a version and its zips, from `release/wisp.rb.template` | `release.yml` (#5), `build` job |
+| `audit-cask` | Runs `brew style` and `brew audit` on a cask in a throwaway tap, then installs and uninstalls it | `release.yml` (#5), `build` job |
+| `check-release-artifact` | Checks that a downloaded release artifact holds exactly the expected zips and a `wisp.rb` that matches them | `release.yml` (#5), `release` job |
+| `publish-cask` | Commits the cask to `ryan-stoffel/homebrew-taps` with `TAP_GITHUB_TOKEN`, and refuses to replace a newer version; `--check` only tests the token | `release.yml` (#5), `release` job |
+| `check-release` | Unit tests for the release scripts | `release.yml` (#5), `build` job |
 
 ## Requirements
 
@@ -116,16 +117,21 @@ When #9 points it at the fork, only steps 1 and 2 change. Once `wispd` ships ins
 
 ## Releases
 
-`release.yml` runs only for PRs whose head is `develop` and whose base is `main`. Background: [0006](../../docs/decisions/0006-release-versioning-and-packaging.md).
+`release.yml` runs only for PRs whose head is `develop` and whose base is `main`. A hotfix PR into `main` publishes nothing; it ships with the next develop-into-main release. Background: [0006](../../docs/decisions/0006-release-versioning-and-packaging.md).
 
-- **While the PR is open**, `dry-run` runs the steps below and publishes nothing. The job summary shows the version the merge would release, the zip's sha256, and the cask. The zip and cask are also attached as the `wisp-<version>-dry-run` artifact.
-- **When Ryan merges it**, `publish` does the following:
-  1. Fails first if the `TAP_GITHUB_TOKEN` secret is missing or cannot read the tap (#28), before anything is tagged.
-  2. Repeats the same steps on the merge commit.
-  3. Runs `gh release create v<version> --target <merge commit> --generate-notes` with the zips, which also creates the tag.
-  4. Runs `publish-cask` to commit `Casks/wisp.rb` to the tap's default branch as `wisp <version>`.
+It has two jobs, split the way `screenshots.yml` is:
 
-  Releases queue rather than overlap. Merge release PRs with a merge commit (CLAUDE.md). After a squash merge, the next version would count all of `develop`'s history.
+- **`build`** runs on `macos-26` with `contents: read` and no secrets. It runs the steps below, writes the version, the zip's sha256, and the cask to the job summary, and uploads the zips and `wisp.rb` as an artifact:
+  - While the PR is open, that is the whole dry run, and the artifact is `wisp-<version>-dry-run`. Nothing is published.
+  - When Ryan merges the PR, `build` runs on the merge commit and uploads `wisp-<version>`. First, it stops unless the PR was merged with a merge commit, whose second parent is the PR's head. A squash merge would make the version count the wrong commits. It also refuses a `v<version>` tag that sits on another commit. If `v<version>` is already released, it reuses the published zips instead of building new ones.
+- **`release`** runs on `ubuntu-24.04` and only after a merge. It is the only job with `contents: write` and `TAP_GITHUB_TOKEN`, and it installs and builds nothing. It checks out only `scripts/ci/`. The scripts it runs use only Node built-ins, which `release/builtins.test.js` enforces. Before anything is tagged, it does the following:
+  1. Stops if the secret is missing, or if `publish-cask --check` cannot read the tap with it (#28).
+  2. Checks the artifact with `check-release-artifact`: exactly the zips for `RELEASE_ARCHES` plus a `wisp.rb` that matches the cask generated from them.
+  3. Stops if an earlier run left a draft release. If `v<version>` is already published, it checks that the artifact's zips match the ones attached to it.
+
+  Then it runs `gh release create v<version> --target <merge commit> --generate-notes` with the zips, which also creates the tag, and runs `publish-cask` to commit `Casks/wisp.rb` to the tap's default branch. If that push fails, the job prints what to fix and says to use **Re-run failed jobs**, which keeps the `build` artifact.
+
+Merged runs never cancel one another, so two merges cannot compute the same version. A concurrency group holds only one waiting run, though. If a third merge arrives while one run is in progress and another is waiting, the waiting run is cancelled, and its changes ship in the third run's release.
 
 The same steps run locally:
 
@@ -164,7 +170,7 @@ Left out:
 
 `audit-cask` uses a throwaway tap (`wisp-ci/dry-run`) and a throwaway download cache, and it never zaps. It skips the install check when a `wisp` cask is already installed, so running it on a dev Mac leaves Homebrew as it was.
 
-If `publish` fails after the release exists, re-run it, but only while no newer release has shipped. The re-run reuses the tag and the release's zips, and `publish-cask` skips the commit when the tap already has the same cask. Once the tap has a newer version, `publish-cask` refuses to replace it and exits 1, so re-running an old run cannot downgrade users. If a failed run left a draft release, delete the draft first.
+If a run fails after the release exists, re-run it, but only while no newer release has shipped. The re-run reuses the tag and the release's zips, and `publish-cask` skips the commit when the tap already has the same cask. Once the tap has a newer version, `publish-cask` refuses to replace it and exits 1, so re-running an old run cannot downgrade users. If a failed run left a draft release, delete the draft first; the `release` job says so.
 
 ## Notes for workflows
 
