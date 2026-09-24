@@ -40,6 +40,19 @@ The times are from an M3 Pro. `scripts/ci/build-app` with `WISP_APP=editor` runs
 
 `npm ci` also downloads Playwright's Chromium (550 MB) for upstream's browser tests. Set `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` to skip it when you do not run those tests. `build-app` sets it.
 
+## What wisp leaves out
+
+#10 strips the workbench to the editor, the file tree, search, source control, and the terminal. Its inventory of upstream's built-in extensions and workbench contributions is in [#10](https://github.com/ryan-stoffel/wisp/issues/10). The removals live in four places:
+
+| Where | What it removes |
+| --- | --- |
+| `editor/overlay/src/vs/workbench/common/wisp/exclusions.ts` | View containers and workbench contributions, by id: upstream Chat's container, Run and Debug, the Debug Console, Ports, chat setup, the Copilot status item, and the remote indicator. The `strip: skip the view containers...` patch makes the registries skip them, so they are never registered. |
+| `editor/overlay/src/vs/workbench/contrib/wisp/browser/wisp.contribution.ts` | Default settings registered in code, so the first launch gets them: `chat.disableAIFeatures` is on, which hides the rest of upstream's Chat and Copilot entry points |
+| `editor/product.json` | The js-debug extensions (`builtInExtensions`), Copilot's auto-update and GitHub token grant, and the voice endpoint |
+| The `strip:` patches | The Copilot extension and seven other built-in extensions in the packaged app (`build/lib/extensions.ts` lists them), the Accounts entry (hidden by default), the Agents window (a regular window opens instead), and the Welcome page's "Connect to..." |
+
+To remove another container or contribution, add its id to `exclusions.ts` with a one-line reason. `check-fork` fails if an id there no longer appears in upstream's source, because an upgrade that renames one would bring the feature back without an error. The development build still loads every folder in `extensions/`, because upstream scans the folder when running from source; only the packaged app leaves out the extensions above.
+
 ## Change a patch or add one
 
 1. Run `scripts/editor/prepare`.
