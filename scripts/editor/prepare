@@ -84,7 +84,8 @@ set -- "$patch_dir"/*.patch
 [ -e "$1" ] || shift
 if [ $# -gt 0 ]; then
   if ! GIT_COMMITTER_NAME='wisp prepare' GIT_COMMITTER_EMAIL='prepare@wisp.invalid' \
-    tree_git am --quiet --keep-cr --quoted-cr=nowarn --committer-date-is-author-date "$@"; then
+    tree_git -c advice.mergeConflict=false -c advice.amWorkDir=false \
+      am --quiet --keep-non-patch --keep-cr --quoted-cr=nowarn --committer-date-is-author-date "$@"; then
     tree_git am --abort
     tree_git update-ref refs/wisp/applied HEAD
     tree_git config --unset wisp.stamp || true
