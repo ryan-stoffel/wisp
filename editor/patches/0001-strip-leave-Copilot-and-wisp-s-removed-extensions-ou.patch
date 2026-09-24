@@ -1,0 +1,116 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ryan Stoffel <stoffel.thomas.ryan@gmail.com>
+Date: Thu, 24 Sep 2026 07:45:24 -0700
+Subject: [PATCH] strip: leave Copilot and wisp's removed extensions out of the
+ app
+
+`gulp vscode-darwin-<arch>` builds the built-in GitHub Copilot Chat
+extension from extensions/copilot and then patches its ripgrep shim into
+the app. wisp's coordinator replaces Copilot, so drop both steps, and
+with them the imports that only they used. Upstream already lists
+copilot in excludedExtensions, which keeps it out of the generic
+extension packaging.
+
+Add the other built-in extensions wisp removes to that list:
+
+- github-authentication and microsoft-authentication: account sign-in.
+- github: publishing to GitHub, permalinks, and git credentials through
+  GitHub sign-in.
+- tunnel-forwarding: port forwarding through Microsoft dev tunnels.
+- debug-auto-launch and debug-server-ready: debugger parts, since wisp
+  ships no debuggers.
+- prompt-basics: the language ids of Copilot's prompt, instruction,
+  agent, and skill files.
+
+editor/product.json empties builtInExtensions, which drops js-debug.
+build/tsconfig.json types product.json from its contents, and an empty
+array becomes never[], so type the one filter over that list.
+
+The development build still loads every folder in extensions/, because
+upstream scans the folder when running from source.
+
+diff --git a/build/gulpfile.vscode.ts b/build/gulpfile.vscode.ts
+index 8d648346d5c9a6787ad5658ec57d8bbfaea37187..7166b607e9dbec0e9b2c7d5c62f0a5c6c124843d 100644
+--- a/build/gulpfile.vscode.ts
++++ b/build/gulpfile.vscode.ts
+@@ -24,9 +24,9 @@ import { getProductionDependencies } from './lib/dependencies.ts';
+ import { config } from './lib/electron.ts';
+ import { createAsar } from './lib/asar.ts';
+ import minimist from 'minimist';
+-import { compileNonNativeExtensionsBuildTask, compileNativeExtensionsBuildTask, compileAllExtensionsBuildTask, compileExtensionMediaBuildTask, cleanExtensionsBuildTask, compileCopilotExtensionBuildTask } from './gulpfile.extensions.ts';
++import { compileNonNativeExtensionsBuildTask, compileNativeExtensionsBuildTask, compileAllExtensionsBuildTask, compileExtensionMediaBuildTask, cleanExtensionsBuildTask } from './gulpfile.extensions.ts';
+ import { checkApiProposalNamesTask, copyCodiconsTask } from './lib/compilation.ts';
+-import { ensureCopilotPlatformPackage, getCopilotExcludeFilter, getCopilotRuntimePrebuildFiles, getCopilotRuntimeVersion, getCopilotTgrepExcludeFilter, getMxcExcludeFilter, getRipgrepExcludeFilter, prepareBuiltInCopilotRipgrepShim } from './lib/copilot.ts';
++import { ensureCopilotPlatformPackage, getCopilotExcludeFilter, getCopilotRuntimePrebuildFiles, getCopilotRuntimeVersion, getCopilotTgrepExcludeFilter, getMxcExcludeFilter, getRipgrepExcludeFilter } from './lib/copilot.ts';
+ import { ensureOSProxyResolverPlatformPackage, getOSProxyResolverExcludeFilter, getOSProxyResolverPlatformFiles } from './lib/osProxyResolver.ts';
+ import { readAgentSdkResults } from './agent-sdk/common.ts';
+ import { readDictationRuntimeResults } from './dictation-runtime/common.ts';
+@@ -156,7 +156,7 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
+ 			.pipe(rename(function (path) { path.dirname = path.dirname!.replace(new RegExp('^' + out), 'out'); }))
+ 			.pipe(util.setExecutableBit(['**/*.sh']));
+ 
+-		const platformSpecificBuiltInExtensionsExclusions = product.builtInExtensions.filter(ext => {
++		const platformSpecificBuiltInExtensionsExclusions = (product.builtInExtensions as { name: string; platforms?: string[] }[]).filter(ext => {
+ 			if (!(ext as { platforms?: string[] }).platforms) {
+ 				return false;
+ 			}
+@@ -538,23 +538,6 @@ function patchWin32DependenciesTask(destinationFolderName: string) {
+ 	};
+ }
+ 
+-function prepareCopilotRipgrepShimTask(platform: string, arch: string, destinationFolderName: string) {
+-	const outputDir = path.join(path.dirname(root), destinationFolderName);
+-
+-	return async () => {
+-		// On Windows with win32VersionedUpdate, app resources live under a
+-		// commit-hash prefix: {output}/{commitHash}/resources/app/
+-		const versionedResourcesFolder = util.getVersionedResourcesFolder(platform, commit!);
+-		const appBase = platform === 'darwin'
+-			? path.join(outputDir, `${product.nameLong}.app`, 'Contents', 'Resources', 'app')
+-			: path.join(outputDir, versionedResourcesFolder, 'resources', 'app');
+-		const appNodeModulesDir = path.join(appBase, 'node_modules.asar.unpacked');
+-
+-		const builtInCopilotExtensionDir = path.join(appBase, 'extensions', 'copilot');
+-		prepareBuiltInCopilotRipgrepShim(platform, arch, builtInCopilotExtensionDir, appNodeModulesDir);
+-	};
+-}
+-
+ const buildRoot = path.dirname(root);
+ 
+ const BUILD_TARGETS = [
+@@ -579,8 +562,7 @@ BUILD_TARGETS.forEach(buildTarget => {
+ 		const packageTasks: task.Task[] = [
+ 			compileNativeExtensionsBuildTask,
+ 			util.rimraf(path.join(buildRoot, destinationFolderName)),
+-			packageTask(platform, arch, sourceFolderName, destinationFolderName, opts),
+-			prepareCopilotRipgrepShimTask(platform, arch, destinationFolderName)
++			packageTask(platform, arch, sourceFolderName, destinationFolderName, opts)
+ 		];
+ 
+ 		if (platform === 'win32') {
+@@ -604,7 +586,6 @@ BUILD_TARGETS.forEach(buildTarget => {
+ 			copyCodiconsTask,
+ 			cleanExtensionsBuildTask,
+ 			compileNonNativeExtensionsBuildTask,
+-			compileCopilotExtensionBuildTask,
+ 			compileExtensionMediaBuildTask,
+ 			writeISODate('out-build'),
+ 			esbuildBundleTask,
+diff --git a/build/lib/extensions.ts b/build/lib/extensions.ts
+index 10bd9fbd693b764a952fb52d7d97c6a07a676f85..5b5a8a3a54ea28aec70b5bc1ab8cb5ecd38c0c8c 100644
+--- a/build/lib/extensions.ts
++++ b/build/lib/extensions.ts
+@@ -323,6 +323,13 @@ const excludedExtensions = [
+ 	'vscode-test-resolver',
+ 	'ms-vscode.node-debug',
+ 	'ms-vscode.node-debug2',
++	'debug-auto-launch',
++	'debug-server-ready',
++	'github',
++	'github-authentication',
++	'microsoft-authentication',
++	'prompt-basics',
++	'tunnel-forwarding',
+ ];
+ 
+ const marketplaceWebExtensionsExclude = new Set([
