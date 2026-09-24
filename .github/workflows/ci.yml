@@ -138,14 +138,12 @@ jobs:
         with:
           persist-credentials: false
 
-      # The inputs are what scripts/editor/build-app reads, plus this job's own definition.
+      # The inputs are what scripts/editor/build-app reads, plus this job's own definition. screenshots.yml restores the same key.
       - name: Hash the inputs of the app build
         id: inputs
         run: |
-          inputs=$(git ls-files -s -- editor .nvmrc .gitattributes scripts/editor)
-          job=$(yq -o=json '.jobs.app' .github/workflows/ci.yml)
-          hash=$(printf '%s\n%s\n' "$inputs" "$job" | shasum -a 256 | cut -d' ' -f1)
-          echo "key=wisp-app-darwin-$ARCH-$hash" >> "$GITHUB_OUTPUT"
+          key=$(scripts/ci/app-cache-key "$ARCH")
+          echo "key=$key" >> "$GITHUB_OUTPUT"
 
       - name: Restore the app built from the same inputs
         id: cached
