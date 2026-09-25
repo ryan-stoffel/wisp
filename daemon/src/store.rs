@@ -27,6 +27,8 @@ use wisp_protocol::{
 };
 use wisp_store::{AccountFields, ProjectFields, RoleDefault, Store, StoreError};
 
+use crate::repo;
+
 const QUEUED: u8 = 0;
 const STARTED: u8 = 1;
 const CANCELLED: u8 = 2;
@@ -207,7 +209,7 @@ pub(crate) fn fields(params: ProjectCreateParams) -> (Uuid, ProjectFields) {
     )
 }
 
-/// A store row as the protocol's project.
+/// A store row as the protocol's project, with the branch its repository has checked out now.
 ///
 /// wispd writes only version 7 ids, so a row with another kind of id was written by something
 /// else, and the request fails rather than hide the row.
@@ -219,6 +221,7 @@ pub(crate) fn project(row: wisp_store::Project) -> Result<Project, ErrorObject> 
     Ok(Project {
         id,
         name: row.name,
+        branch: repo::branch(Path::new(&row.repo_path)),
         repo_path: row.repo_path,
         created_at: row.created_at,
         updated_at: row.updated_at,

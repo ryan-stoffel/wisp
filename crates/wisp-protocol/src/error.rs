@@ -29,6 +29,9 @@ pub enum ErrorKind {
     KeychainUnavailable,
     /// A create reused an existing id with different params.
     IdConflict,
+    /// A new project's `repoPath` is not the top folder of a git working tree on this host. The
+    /// message says what is wrong with it.
+    NotARepository,
     /// A kind this version does not know yet.
     #[serde(other)]
     #[ts(skip)]
@@ -121,6 +124,7 @@ mod tests {
             (ErrorKind::AccountNotFound, "accountNotFound"),
             (ErrorKind::KeychainUnavailable, "keychainUnavailable"),
             (ErrorKind::IdConflict, "idConflict"),
+            (ErrorKind::NotARepository, "notARepository"),
         ] {
             assert_eq!(serde_json::to_value(kind).unwrap(), json!(name));
             assert_eq!(

@@ -20,6 +20,11 @@ pub struct Project {
     pub name: String,
     /// The absolute path of the repository on this host.
     pub repo_path: String,
+    /// The branch checked out in the repository, or the first 7 digits of the commit when `HEAD`
+    /// is detached, read when wispd sends the project. Absent when wispd can't read it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub branch: Option<String>,
     /// When the project was created, in RFC 3339 UTC.
     pub created_at: Timestamp,
     /// When the project last changed, in RFC 3339 UTC.
@@ -44,7 +49,9 @@ pub struct ProjectListResult {
 /// Params of `project/create`.
 ///
 /// It is idempotent on `id`: if a project with that id exists, wispd returns it instead of
-/// creating another, and fails with `idConflict` if `name` or `repoPath` differ.
+/// creating another, and fails with `idConflict` if `name` or `repoPath` differ. A new project's
+/// `repoPath` must be the top folder of a git working tree on this host, or it fails with
+/// `notARepository`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectCreateParams {

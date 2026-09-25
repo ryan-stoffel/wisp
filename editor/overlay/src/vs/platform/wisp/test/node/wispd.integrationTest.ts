@@ -57,6 +57,7 @@ suite('wispd (integration)', function () {
 	this.timeout(60_000);
 
 	let dataDir: string;
+	let repoPath: string;
 	let store: DisposableStore;
 
 	setup(async function () {
@@ -65,6 +66,10 @@ suite('wispd (integration)', function () {
 		}
 		assert.ok(existsSync(wispdPath), `WISP_TEST_WISPD is ${wispdPath}, which does not exist`);
 		dataDir = await fs.mkdtemp(join(tmpdir(), 'wispd-'));
+		// A new project needs a repository; this is enough of one for wispd's check.
+		repoPath = join(dataDir, 'repo');
+		await fs.mkdir(join(repoPath, '.git'), { recursive: true });
+		await fs.writeFile(join(repoPath, '.git', 'HEAD'), 'ref: refs/heads/main\n');
 		store = new DisposableStore();
 	});
 
@@ -113,7 +118,7 @@ suite('wispd (integration)', function () {
 
 		const events = collect(first, { after: listed.seq, logId: connected.logId });
 		const one = generateUuidV7();
-		const created = await first.request('project/create', { id: one, name: 'one', repoPath: dataDir });
+		const created = await first.request('project/create', { id: one, name: 'one', repoPath });
 		assert.strictEqual(created.project.id, one);
 		await events.when(messages => createdIds(messages).includes(one), 'project one');
 
@@ -122,7 +127,7 @@ suite('wispd (integration)', function () {
 
 		const { client: second } = client();
 		const two = generateUuidV7();
-		await second.request('project/create', { id: two, name: 'two', repoPath: dataDir });
+		await second.request('project/create', { id: two, name: 'two', repoPath });
 		assert.strictEqual(first.state.kind, 'disconnected', 'the first client was still away when project two was created');
 
 		await whenState(first, 'connected');
@@ -138,7 +143,7 @@ suite('wispd (integration)', function () {
 		first.start();
 		const before = await whenState(first, 'connected');
 		const one = generateUuidV7();
-		await first.request('project/create', { id: one, name: 'one', repoPath: dataDir });
+		await first.request('project/create', { id: one, name: 'one', repoPath });
 		const events = collect(first, { after: 0, logId: before.logId });
 		await events.when(messages => messages.length > 0, 'the replayed project');
 
