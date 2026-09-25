@@ -1,0 +1,49 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ryan Stoffel <stoffel.thomas.ryan@gmail.com>
+Date: Thu, 24 Sep 2026 21:28:27 -0700
+Subject: [PATCH] branding: call Open in Editor IDE
+
+The Agents window's button that opens the current session's folder in an
+editor window is wisp's IDE button (decision record 0011). Relabel the
+action in the desktop and web variants, and drop VS Code from the
+button's hover.
+
+diff --git a/src/vs/sessions/browser/actions/vscodeActions.ts b/src/vs/sessions/browser/actions/vscodeActions.ts
+index 59d159c1035472aa8b1a2c74d48c0763dd6cb818..c6d7933c4c22a19782d56ecc37eb8a860413312d 100644
+--- a/src/vs/sessions/browser/actions/vscodeActions.ts
++++ b/src/vs/sessions/browser/actions/vscodeActions.ts
+@@ -34,7 +34,7 @@ export class OpenInVSCodeAction extends Action2 {
+ 	constructor() {
+ 		super({
+ 			id: OpenInVSCodeAction.ID,
+-			title: localize2('openInVSCode', 'Open in Editor'),
++			title: localize2('openInVSCode', 'IDE'),
+ 			icon: Codicon.vscodeInsiders,
+ 			precondition: ContextKeyExpr.and(IsAuxiliaryWindowContext.toNegated(), SessionsWelcomeVisibleContext.toNegated()),
+ 			menu: [{
+diff --git a/src/vs/sessions/browser/widget/openInVSCodeWidget.ts b/src/vs/sessions/browser/widget/openInVSCodeWidget.ts
+index 5d7e07a0833ae470cf8503ef17b91f917c3c8801..41932e2d506d4b92dd57433db7289d689f754431 100644
+--- a/src/vs/sessions/browser/widget/openInVSCodeWidget.ts
++++ b/src/vs/sessions/browser/widget/openInVSCodeWidget.ts
+@@ -44,7 +44,7 @@ export class OpenInVSCodeTitleBarWidget extends BaseActionViewItem {
+ 		}
+ 
+ 		const label = this.action.label;
+-		const hoverText = this.keybindingService.appendKeybinding(localize('openInVSCodeHover', "Open in VS Code Editor Window"), this.keybindingCommandId);
++		const hoverText = this.keybindingService.appendKeybinding(localize('openInVSCodeHover', "Open in the Editor Window"), this.keybindingCommandId);
+ 		container.setAttribute('aria-label', hoverText);
+ 		this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), container, hoverText));
+ 
+diff --git a/src/vs/sessions/electron-browser/actions/vscodeActions.ts b/src/vs/sessions/electron-browser/actions/vscodeActions.ts
+index 188a45b48de521c9cd1b84a9bdf23cf1a578806d..739a555bd00638a6877d2e98cf50a26491978827 100644
+--- a/src/vs/sessions/electron-browser/actions/vscodeActions.ts
++++ b/src/vs/sessions/electron-browser/actions/vscodeActions.ts
+@@ -38,7 +38,7 @@ export class OpenSessionInVSCodeAction extends Action2 {
+ 	constructor() {
+ 		super({
+ 			id: OpenSessionInVSCodeAction.ID,
+-			title: localize2('openInVSCode', 'Open in Editor'),
++			title: localize2('openInVSCode', 'IDE'),
+ 			icon: Codicon.vscodeInsiders,
+ 			precondition: ContextKeyExpr.and(IsAuxiliaryWindowContext.toNegated(), SessionsWelcomeVisibleContext.toNegated()),
+ 			menu: [{

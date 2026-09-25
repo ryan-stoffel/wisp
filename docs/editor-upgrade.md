@@ -75,16 +75,32 @@ Make these changes in wisp, not in `editor/vscode/`, then run `scripts/editor/pr
 
 ## What wisp leaves out
 
-#10 strips the workbench to the editor, the file tree, search, source control, and the terminal. Its inventory of upstream's built-in extensions and workbench contributions is in [#10](https://github.com/ryan-stoffel/wisp/issues/10). The removals live in four places:
+wisp opens into upstream's Agents window, its main UI, and keeps the editor window for quick edits ([0011](decisions/0011-agents-window-baseline.md)). The two are separate workbenches: the editor window starts from `src/vs/workbench/workbench.desktop.main.ts`, and the Agents window from `src/vs/sessions/sessions.desktop.main.ts`. Both register through the same view container, workbench contribution, and action registries, so one set of exclusion lists covers both.
+
+- **Editor window.** #10 strips it to the editor, the file tree, search, source control, and the terminal. Its inventory of upstream's built-in extensions and workbench contributions is in [#10](https://github.com/ryan-stoffel/wisp/issues/10). AI features stay off there.
+- **Agents window.** #103 leaves upstream's sessions layer, the chat stack it renders sessions with, and the sessions services. It takes out everything Copilot- or Microsoft-shaped: the sign-in gate, the account button, AI Customizations, Automations, upstream's Sessions list (wisp's sidebar replaces it, #12), the Copilot Chat sessions provider, the local agent host and the utility process it starts, remote agent hosts (SSH, dev tunnels, WSL, Dev Containers, WebSockets, GitHub cloud sandboxes), the GitHub pull request integration, onboarding tours, and voice. The inventory is in [#103](https://github.com/ryan-stoffel/wisp/issues/103).
+
+The removals live in these places:
 
 | Where | What it removes |
 | --- | --- |
-| `editor/overlay/src/vs/workbench/common/wisp/exclusions.ts` | View containers and workbench contributions, by id: upstream Chat's container, Run and Debug, the Debug Console, Ports, chat setup, the Copilot status item, and the remote indicator. The `strip: skip the view containers...` patch makes the registries skip them, so they are never registered. |
-| `editor/overlay/src/vs/workbench/contrib/wisp/browser/wisp.contribution.ts` | Default settings registered in code, so the first launch gets them: `chat.disableAIFeatures` is on, which hides the rest of upstream's Chat and Copilot entry points |
-| `editor/product.json` | The js-debug extensions (`builtInExtensions`), Copilot's GitHub token grant (`trustedExtensionAuthAccess`), and the voice endpoint (`voiceWsUrl`) |
-| The `strip:` patches | The Copilot extension and seven other built-in extensions in the packaged app (`build/lib/extensions.ts` lists them), the Accounts entry (hidden by default), the Agents window (a regular window opens instead), and the Welcome page's "Connect to..." |
+| `editor/overlay/src/vs/workbench/common/wisp/exclusions.ts` | View containers and workbench contributions, by id, grouped by feature with a reason for each. Editor window: upstream Chat's container, Run and Debug, the Debug Console, Ports, chat setup, the Copilot status item, and the remote indicator. Agents window: the Agents window parts listed above. The `strip: skip the view containers...` patch makes the registries skip them, so they are never registered. |
+| `editor/overlay/src/vs/platform/wisp/common/excludedActions.ts` | Actions, by id, for features whose visible part is an action: the Agents window's account button, and the agent host's and voice mode's developer commands. The `strip: skip the actions...` patch makes `registerAction2` skip them, with their menu entries and keybindings. It sits in `platform` because `registerAction2` does. |
+| `editor/overlay/src/vs/workbench/contrib/wisp/browser/wisp.contribution.ts` | Editor window default settings, registered in code so the first launch gets them: `chat.disableAIFeatures` is on, which hides the rest of upstream's Chat and Copilot entry points |
+| `editor/overlay/src/vs/sessions/contrib/wisp/browser/wisp.sessions.contribution.ts` | wisp's entry point in the Agents window, loaded by the `workbench: load wisp in the Agents window` patch. Its default settings turn off remote agent hosts (`chat.remoteAgentHostsEnabled`) and voice mode (`agents.voice.enabled`). The Agents window turns `chat.disableAIFeatures` off at its own workspace scope, which the editor window never reads. |
+| `editor/product.json` | The js-debug extensions (`builtInExtensions`), Copilot's GitHub token grant (`trustedExtensionAuthAccess`), the voice endpoint (`voiceWsUrl`), and Copilot Chat's extension id (`defaultChatAgent.chatExtensionId`, empty). With no chat extension id, the Agents window skips its "Sign in to use Agents" gate. |
+| The `strip:` patches | The Copilot extension and seven other built-in extensions in the packaged app (`build/lib/extensions.ts` lists them), the Accounts entry (hidden by default), and the Welcome page's "Connect to..." |
 
-To remove another container or contribution, add its id to `exclusions.ts` with a one-line reason. `check-fork` fails if an id there no longer appears in upstream's source, because an upgrade that renames one would bring the feature back without an error. The development build still loads every folder in `extensions/`, because upstream scans the folder when running from source; only the packaged app leaves out the extensions above.
+To remove another container, contribution, or action, add its id to `exclusions.ts` or `excludedActions.ts` with a one-line reason. `check-fork` fails if an id in either file no longer appears in upstream's source, because an upgrade that renames one would bring the feature back without an error. The development build still loads every folder in `extensions/`, because upstream scans the folder when running from source; only the packaged app leaves out the extensions above.
+
+### How wisp opens
+
+The `startup: open the Agents window at launch` patch changes two places in `src/vs/code/electron-main/app.ts`:
+
+- Started with no file or folder arguments, no `--new-window`, and no macOS open-file event, wisp opens the Agents window instead of restoring or opening an editor window. `--remote` keeps upstream's behavior.
+- When the dock reopens the app with no visible window, it opens the Agents window instead of an empty editor window.
+
+`wisp <folder>`, `wisp <file>`, and `wisp --new-window` open the editor window, and `wisp --agents` opens the Agents window. The Agents window's **IDE** button (upstream's **Open in Editor**, relabeled by the `branding: call Open in Editor IDE` patch) opens the current session's folder in the editor window.
 
 ## Change a patch or add one
 
@@ -101,7 +117,7 @@ Keep patches cheap to carry across upgrades. [0002](decisions/0002-editor-fork-s
 - Prefer configuration or new files over edits to upstream files.
 - Do not patch lockfiles.
 - Strip features by excluding them, not by deleting files.
-- Stay out of upstream's chat and agent code.
+- Stay out of upstream's chat and sessions code except for one-line imports, exclusions, and string changes, each its own patch ([0011](decisions/0011-agents-window-baseline.md#what-changes-in-0002)).
 
 ## Upgrade to a new upstream release
 
