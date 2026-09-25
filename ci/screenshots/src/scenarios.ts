@@ -1,7 +1,11 @@
+import { execFile } from 'node:child_process';
 import { cp } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { Page } from 'playwright-core';
-import { screenshot, visible, type Scenario } from './harness.ts';
+import { promisify } from 'node:util';
+import type { ElectronApplication, Page } from 'playwright-core';
+import { screenshot, visible, type Scenario, type ScenarioContext } from './harness.ts';
+
+const execFileAsync = promisify(execFile);
 
 const workspace = join(import.meta.dirname, '..', 'fixtures', 'workspace');
 const openFile = 'tasks.ts';
@@ -29,6 +33,59 @@ async function connectedToThisMac(window: Page): Promise<void> {
   await visible(window, '.part.titlebar', '.part.sidebar .wisp-threads');
   await hostChipIn(window, 'connected', 'Host: this Mac, connected');
   await window.locator('.wisp-agents-no-host').waitFor({ state: 'hidden' });
+}
+
+/** The project the project scenarios create, from a git repository of the same name. */
+const projectName = 'billing-service';
+const projectRow = `.part.sidebar button.wisp-threads-row[aria-label^="${projectName}, project"]`;
+
+/** Makes a real git repository in the scenario's folder, as `project/create` requires one. */
+async function gitRepository(dir: string): Promise<string> {
+  const repo = join(dir, projectName);
+  await execFileAsync('git', ['init', '--quiet', '--initial-branch=main', repo]);
+  return repo;
+}
+
+/**
+ * Answers the next native folder picker with `folder`. On this Mac, New Project asks for the
+ * repository with the system's folder picker, which Playwright can't drive.
+ */
+async function answerFolderPicker(app: ElectronApplication, folder: string): Promise<void> {
+  // Electron's types aren't a dependency here, so the one method replaced is typed by hand.
+  interface Dialog {
+    showOpenDialog: () => Promise<{ canceled: boolean; filePaths: string[] }>;
+  }
+  await app.evaluate((electron: unknown, path: string) => {
+    (electron as { dialog: Dialog }).dialog.showOpenDialog = () => Promise.resolve({ canceled: false, filePaths: [path] });
+  }, folder);
+}
+
+/**
+ * Creates a project the way a user does: `+` under Projects, the folder picker, then Enter on the
+ * name wisp suggests. Waits for its row, and for its Project tab.
+ */
+async function createProject({ app, window, dir }: ScenarioContext): Promise<void> {
+  await connectedToThisMac(window);
+  await answerFolderPicker(app, await gitRepository(dir));
+  await window.locator('.part.sidebar button.wisp-threads-new-project').click();
+  const name = window.locator('.quick-input-widget input');
+  await name.waitFor({ state: 'visible' });
+  const suggested = await name.inputValue();
+  if (suggested !== projectName) {
+    throw new Error(`New Project suggests the name ${JSON.stringify(suggested)}, not the folder's`);
+  }
+  await name.press('Enter');
+  await window.locator(projectRow).waitFor({ state: 'visible' });
+  await projectTab(window);
+}
+
+/** Waits for the Project tab to show the project, with the repository as its first fact. */
+async function projectTab(window: Page): Promise<void> {
+  await window.locator('.part.auxiliarybar .wisp-project-name', { hasText: projectName }).waitFor({ state: 'visible' });
+  const repo = await window.locator('.part.auxiliarybar .wisp-project-fact[data-fact="repo"] .wisp-project-fact-detail').textContent();
+  if (!repo?.includes(`${projectName} on this Mac, branch main`)) {
+    throw new Error(`the Project tab's repository fact is ${JSON.stringify(repo)}`);
+  }
 }
 
 export const scenarios: readonly Scenario[] = [
@@ -108,6 +165,30 @@ export const scenarios: readonly Scenario[] = [
       await menu.waitFor({ state: 'visible' });
       await visible(window, '.quick-input-widget [data-quick-input-id="current"]', '.quick-input-widget [data-quick-input-id="reconnect"]');
       return screenshot(window);
+    },
+  },
+  {
+    name: 'agents-window-project',
+    title: 'A new project in the sidebar, with its Project tab',
+    async run(context) {
+      await createProject(context);
+      await visible(context.window, '.part.sidebar button.wisp-threads-row.selected');
+      return screenshot(context.window);
+    },
+  },
+  {
+    name: 'agents-window-project-reopened',
+    title: 'The project is still listed after quitting Wisp and wispd',
+    async run(context) {
+      await createProject(context);
+      // Both the app and wispd stop, so the project comes back from wispd's store on disk.
+      const reopened = await context.relaunch();
+      await connectedToThisMac(reopened.window);
+      const row = reopened.window.locator(projectRow);
+      await row.waitFor({ state: 'visible' });
+      await row.click();
+      await projectTab(reopened.window);
+      return screenshot(reopened.window);
     },
   },
 ];
