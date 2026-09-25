@@ -59,7 +59,7 @@ It uses your own ssh config, keys, and agent (0007). For that command to work, t
      export PATH="/opt/homebrew/bin:$PATH"
      ```
 
-   - Or run `wispd` by its full path, such as `/opt/homebrew/bin/wispd attach`. The editor retries with that path when the host's shell exits 127, meaning it didn't find `wispd` (#64).
+   - Or do nothing: when the host's shell exits 127, meaning it didn't find `wispd`, the editor retries with `/opt/homebrew/bin/wispd`, then `/usr/local/bin/wispd`, in that order, without a login shell (#64). This costs one or two failed attempts per reconnect and assumes a normal Homebrew install; set `wisp.remoteWispdPath` to the binary's absolute path to skip the search, at the cost of having to update the setting if it ever moves.
 
    `SetEnv PATH=...` for the host in the laptop's `~/.ssh/config`, or `ssh -o SetEnv=...`, works only if the host's sshd lists `PATH` in `AcceptEnv`. macOS's sshd accepts only `LANG` and `LC_*`, so it drops `PATH`. Changing that means editing the host's sshd configuration, which affects every login, so prefer one of the fixes above.
 

@@ -20,6 +20,24 @@ const STDERR_TAIL_BYTES = 4096;
 export const ATTACH_EXIT_UNREACHABLE = 4;
 
 /**
+ * Turns a closed process's exit code, signal, and recent stderr into a close reason. The default,
+ * `classifyLocalExit`, is what a bundled `wispd attach` needs; the ssh transport (#64) supplies its
+ * own, since ssh's own exit codes (127, 255) mean something different from `attach`'s.
+ */
+export type WispdCloseClassifier = (exitCode: number | undefined, signal: NodeJS.Signals | null, stderrTail: string) => Omit<IWispdTransportClose, 'stderr'>;
+
+export const classifyLocalExit: WispdCloseClassifier = (exitCode, signal) => {
+	const unreachable = exitCode === ATTACH_EXIT_UNREACHABLE;
+	return {
+		reason: unreachable ? 'unreachable' : 'exited',
+		message: unreachable
+			? 'wispd attach could not reach or start wispd.'
+			: `wispd attach exited${signal ? ` on ${signal}` : ` with code ${exitCode}`}.`,
+		exitCode,
+	};
+};
+
+/**
  * Splits a stream into lines with upstream's `StreamSplitter('\n')`. `StreamSplitter` buffers
  * without limit, so this counts the bytes of the line in progress first, and reports an overflow
  * instead of buffering a line longer than `maxFrameBytes`.
@@ -126,6 +144,7 @@ export class WispdProcessTransport extends Disposable implements IWispdTransport
 		private readonly command: string,
 		private readonly logger: ILogger,
 		maxFrameBytes: number = MAX_FRAME_BYTES,
+		private readonly classifyExit: WispdCloseClassifier = classifyLocalExit,
 	) {
 		super();
 		this.reader = this._register(new WispdLineReader(child.stdout, maxFrameBytes));
@@ -157,14 +176,7 @@ export class WispdProcessTransport extends Disposable implements IWispdTransport
 		});
 		child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
 			const exitCode = code ?? undefined;
-			const unreachable = exitCode === ATTACH_EXIT_UNREACHABLE;
-			this.finish(this.pendingClose ?? {
-				reason: unreachable ? 'unreachable' : 'exited',
-				message: unreachable
-					? 'wispd attach could not reach or start wispd.'
-					: `wispd attach exited${signal ? ` on ${signal}` : ` with code ${code}`}.`,
-				exitCode,
-			});
+			this.finish(this.pendingClose ?? this.classifyExit(exitCode, signal, this.stderrTail));
 		});
 	}
 
