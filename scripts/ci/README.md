@@ -119,7 +119,8 @@ Launching gets 60 seconds for the process and 60 for the first window, then wait
 
 The shipped scenarios wait for these elements, using the classes and attributes that upstream's smoke tests use, never pixel positions:
 
-- `startup` opens an empty window and waits for the title bar, activity bar, editor, and status bar parts (`.part.titlebar` and so on).
+- `agents-window` launches with no arguments, which opens the Agents window (0011), and waits for its title bar and session parts (`.part.titlebar`, `.part.sessionspart`).
+- `startup` opens an empty editor window with `--new-window` and waits for the title bar, activity bar, editor, and status bar parts.
 - `editor-file-open` copies `ci/screenshots/fixtures/workspace/` into its directory and opens that folder with `src/tasks.ts`. It waits for three things:
   - the editor, `.monaco-editor[data-uri$="/src/tasks.ts"]`
   - the active tab, `.tab.active[data-resource-name="tasks.ts"]`
