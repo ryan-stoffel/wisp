@@ -35,10 +35,14 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         api_key_source: Option<String>,
     },
-    /// A follow-up turn began.
+    /// The CLI took a turn's message: the run's prompt, or a follow-up. Turns finish in the order
+    /// they started, so a follow-up sent during a turn starts before that turn finishes.
     TurnStarted {
-        /// The follow-up's id from [`FollowUp`](super::FollowUp).
-        turn_id: TurnId,
+        /// The caller's id for the turn: [`RunRequest::turn_id`](super::RunRequest::turn_id) for
+        /// the prompt's turn, or [`FollowUp::turn_id`](super::FollowUp::turn_id). Absent when the
+        /// caller gave the prompt's turn no id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<TurnId>,
     },
     /// Part of the assistant's reply, as it streams.
     TextDelta {
@@ -77,13 +81,34 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         output: Option<String>,
     },
+    /// Part or all of the model's reasoning, when the vendor shows it: Claude's thinking blocks,
+    /// Codex's `reasoning` items.
+    Reasoning {
+        /// The vendor's id for the message or item, when it has one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
+        /// The text.
+        text: String,
+    },
+    /// The agent's current plan as a checklist, replacing the previous one: Codex's `todo_list`
+    /// items, or Claude's `TodoWrite` input.
+    TodoList {
+        /// The items, in order.
+        items: Vec<TodoItem>,
+    },
+    /// A message from the vendor that doesn't end the run, such as a Codex `error` item or a
+    /// retry notice. Unlike [`Event::Warning`], it is meant for the user.
+    Notice {
+        /// The message.
+        detail: String,
+    },
     /// Tokens and cost the run used since its previous `Usage` event.
-    Usage(UsageDelta),
+    Usage(ModelUsage),
     /// The latest state of one of the account's limit windows.
     RateLimit(LimitWindow),
     /// A turn ended: Claude's and Cursor's `result`, Codex's `turn.completed`.
     TurnFinished {
-        /// The follow-up's id, or absent for the turn that the run's prompt started.
+        /// The turn's id, as its [`Event::TurnStarted`] had it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<TurnId>,
         /// The turn's final text, when the vendor reports one.
@@ -107,7 +132,41 @@ pub enum Event {
     Finished {
         /// How it ended.
         outcome: Outcome,
+        /// The session's running totals per model when the run ended, as the vendor counts
+        /// them: the [`Resume::usage_totals`](super::Resume::usage_totals) the run started from,
+        /// plus what it used. Store them with the session, and pass them back when resuming it,
+        /// so that vendors who report cumulative totals (Claude, Codex) aren't counted twice.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        usage_totals: Vec<ModelUsage>,
     },
+    /// A kind this version does not know, read back from a newer wispd's records.
+    #[serde(other)]
+    Unknown,
+}
+
+/// One item of an [`Event::TodoList`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TodoItem {
+    /// What to do.
+    pub text: String,
+    /// How far along it is.
+    pub status: TodoStatus,
+}
+
+/// How far along an [`TodoItem`] is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TodoStatus {
+    /// Not started.
+    Pending,
+    /// Being worked on.
+    InProgress,
+    /// Done.
+    Completed,
+    /// A status this version does not know.
+    #[serde(other)]
+    Other,
 }
 
 impl Event {
@@ -167,6 +226,9 @@ pub enum Outcome {
     Cancelled,
     /// It failed.
     Failed(Failure),
+    /// A status this version does not know, read back from a newer wispd's records.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Why a run failed.
@@ -305,27 +367,30 @@ impl AddAssign for Usage {
     }
 }
 
-/// The payload of [`Event::Usage`]: what one model used since the run's previous report.
+/// One model's usage: a delta in [`Event::Usage`], or a running total in
+/// [`Event::Finished::usage_totals`](Event::Finished) and
+/// [`Resume::usage_totals`](super::Resume::usage_totals).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct UsageDelta {
+pub struct ModelUsage {
     /// The model, when the vendor breaks usage down by model, as Claude's `modelUsage` does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// The new usage.
+    /// The usage.
     #[serde(flatten)]
     pub usage: Usage,
 }
 
-/// Turns running totals into [`UsageDelta`]s, per model.
+/// A session's running usage totals per model, as the vendor counts them.
 ///
-/// Codex's `turn.completed.usage` is cumulative for the thread, and Claude's `result.modelUsage`
-/// includes earlier turns and carries over into resumed sessions (0004). A backend feeds each
-/// total in and emits what comes out. For a resumed session, it starts from the totals the
-/// previous run reached, with [`CumulativeUsage::with_baseline`].
+/// [`EventSink`](super::EventSink) keeps one per run, starting from the resumed session's
+/// totals. Vendors that report running totals (Codex's `turn.completed.usage`, which is
+/// cumulative for the thread, and Claude's `result.modelUsage`, which carries over into resumed
+/// sessions, 0004) go through [`CumulativeUsage::observe`], which turns them into deltas. Deltas
+/// that a vendor reports directly go through [`CumulativeUsage::record`].
 #[derive(Clone, Debug, Default)]
 pub struct CumulativeUsage {
-    last: BTreeMap<Option<String>, Usage>,
+    totals: BTreeMap<Option<String>, Usage>,
 }
 
 impl CumulativeUsage {
@@ -335,24 +400,45 @@ impl CumulativeUsage {
         Self::default()
     }
 
-    /// A meter that treats `totals` as already reported.
+    /// A meter that starts from `totals`, such as a resumed session's.
     #[must_use]
-    pub fn with_baseline(totals: impl IntoIterator<Item = (Option<String>, Usage)>) -> Self {
-        Self {
-            last: totals.into_iter().collect(),
+    pub fn with_baseline(totals: impl IntoIterator<Item = ModelUsage>) -> Self {
+        let mut meter = Self::new();
+        for total in totals {
+            *meter.totals.entry(total.model).or_default() += total.usage;
         }
+        meter
     }
 
-    /// The delta since the last total for `model`, or `None` when nothing changed.
-    pub fn observe(&mut self, model: Option<&str>, total: Usage) -> Option<UsageDelta> {
+    /// Takes a running total for `model` and returns the delta since the last one, or `None` when
+    /// nothing changed. A count that went down means the vendor started over, so all of it is
+    /// new, and the vendor's new total becomes the one to compare with.
+    pub fn observe(&mut self, model: Option<&str>, total: Usage) -> Option<ModelUsage> {
         let key = model.map(str::to_owned);
-        let previous = self.last.get(&key).copied().unwrap_or_default();
+        let previous = self.totals.get(&key).copied().unwrap_or_default();
         let usage = total.since(&previous);
-        self.last.insert(key, total);
-        (!usage.is_zero()).then(|| UsageDelta {
+        self.totals.insert(key, total);
+        (!usage.is_zero()).then(|| ModelUsage {
             model: model.map(str::to_owned),
             usage,
         })
+    }
+
+    /// Adds a delta to its model's total.
+    pub fn record(&mut self, delta: &ModelUsage) {
+        *self.totals.entry(delta.model.clone()).or_default() += delta.usage;
+    }
+
+    /// The totals, per model, ordered by model with the unnamed model first.
+    #[must_use]
+    pub fn totals(&self) -> Vec<ModelUsage> {
+        self.totals
+            .iter()
+            .map(|(model, usage)| ModelUsage {
+                model: model.clone(),
+                usage: *usage,
+            })
+            .collect()
     }
 }
 
@@ -397,8 +483,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        CumulativeUsage, Event, ExitInfo, Failure, FailureKind, LimitStatus, LimitWindow, Outcome,
-        Usage, UsageDelta,
+        CumulativeUsage, Event, ExitInfo, Failure, FailureKind, LimitStatus, LimitWindow,
+        ModelUsage, Outcome, TodoItem, TodoStatus, Usage,
     };
 
     fn tokens(input: u64, output: u64) -> Usage {
@@ -420,7 +506,7 @@ mod tests {
             serde_json::to_value(&event).unwrap(),
             json!({"kind": "sessionStarted", "sessionId": "s-1", "model": "m"})
         );
-        let usage = Event::Usage(UsageDelta {
+        let usage = Event::Usage(ModelUsage {
             model: None,
             usage: Usage {
                 cost_usd_micros: Some(1_500),
@@ -444,6 +530,10 @@ mod tests {
                 }),
                 stderr_tail: None,
             }),
+            usage_totals: vec![ModelUsage {
+                model: Some("opus".into()),
+                usage: tokens(9, 1),
+            }],
         };
         let value = serde_json::to_value(&failed).unwrap();
         assert_eq!(
@@ -453,10 +543,24 @@ mod tests {
                 "outcome": {
                     "status": "failed", "failure": "rateLimited", "message": "limit",
                     "exit": {"code": 1}
-                }
+                },
+                "usageTotals": [{
+                    "model": "opus", "inputTokens": 9, "outputTokens": 1, "cacheReadTokens": 0,
+                    "cacheWriteTokens": 0
+                }]
             })
         );
         assert_eq!(serde_json::from_value::<Event>(value).unwrap(), failed);
+        let todo = Event::TodoList {
+            items: vec![TodoItem {
+                text: "Write tests".into(),
+                status: TodoStatus::InProgress,
+            }],
+        };
+        assert_eq!(
+            serde_json::to_value(&todo).unwrap(),
+            json!({"kind": "todoList", "items": [{"text": "Write tests", "status": "inProgress"}]})
+        );
     }
 
     #[test]
@@ -480,6 +584,20 @@ mod tests {
     fn unknown_kinds_decode_to_their_fallbacks() {
         let failure: FailureKind = serde_json::from_value(json!("quotaExploded")).unwrap();
         assert_eq!(failure, FailureKind::Other);
+        let event: Event =
+            serde_json::from_value(json!({"kind": "agentTeleported", "to": "mars"})).unwrap();
+        assert_eq!(event, Event::Unknown);
+        let finished: Event = serde_json::from_value(
+            json!({"kind": "finished", "outcome": {"status": "paused", "until": "later"}}),
+        )
+        .unwrap();
+        assert_eq!(
+            finished,
+            Event::Finished {
+                outcome: Outcome::Unknown,
+                usage_totals: Vec::new()
+            }
+        );
     }
 
     #[test]
@@ -528,10 +646,42 @@ mod tests {
 
     #[test]
     fn a_resumed_session_starts_from_its_baseline() {
-        let mut meter = CumulativeUsage::with_baseline([(Some("opus".into()), tokens(100, 10))]);
+        let mut meter = CumulativeUsage::with_baseline([ModelUsage {
+            model: Some("opus".into()),
+            usage: tokens(100, 10),
+        }]);
         assert_eq!(
             meter.observe(Some("opus"), tokens(120, 15)).unwrap().usage,
             tokens(20, 5)
+        );
+    }
+
+    #[test]
+    fn recorded_deltas_add_to_the_totals() {
+        let mut meter = CumulativeUsage::with_baseline([ModelUsage {
+            model: None,
+            usage: tokens(10, 1),
+        }]);
+        meter.record(&ModelUsage {
+            model: None,
+            usage: tokens(5, 5),
+        });
+        meter.record(&ModelUsage {
+            model: Some("haiku".into()),
+            usage: tokens(1, 1),
+        });
+        assert_eq!(
+            meter.totals(),
+            [
+                ModelUsage {
+                    model: None,
+                    usage: tokens(15, 6)
+                },
+                ModelUsage {
+                    model: Some("haiku".into()),
+                    usage: tokens(1, 1)
+                },
+            ]
         );
     }
 }

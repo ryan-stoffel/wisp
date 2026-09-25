@@ -10,8 +10,8 @@ use super::{FakeBackend, Script, Step};
 use crate::backend::process::{CancelPolicy, Environment, Launcher, OutputLimits};
 use crate::backend::{
     AccountRef, ApiKey, Backend, Credential, Event, EventStream, FailureKind, FollowUp,
-    LimitStatus, Outcome, RunId, RunRequest, SendError, StartError, Started, ToolPolicy,
-    ToolStatus, TurnId, Usage, WarningKind,
+    LimitStatus, ModelUsage, Outcome, Resume, RunId, RunRequest, SendError, StartError, Started,
+    ToolPolicy, ToolStatus, TurnId, Usage, WarningKind,
 };
 use crate::paths::DataDir;
 
@@ -63,6 +63,7 @@ fn request(cwd: &Path) -> RunRequest {
         prompt: "Summarize the README.".into(),
         policy: ToolPolicy::NoWrite,
         account: subscription(),
+        turn_id: None,
         resume: None,
         model: None,
     }
@@ -70,6 +71,17 @@ fn request(cwd: &Path) -> RunRequest {
 
 fn root() -> PathBuf {
     PathBuf::from("/")
+}
+
+/// Starts a run and checks that it opens with the prompt's turn.
+async fn launch(backend: &dyn Backend, request: RunRequest) -> Started {
+    let turn_id = request.turn_id;
+    let mut started = backend.start(request).unwrap();
+    assert_eq!(
+        next(&mut started.events).await,
+        Event::TurnStarted { turn_id }
+    );
+    started
 }
 
 async fn next(events: &mut EventStream) -> Event {
@@ -94,7 +106,7 @@ async fn rest(events: &mut EventStream) -> Vec<Event> {
 
 fn outcome(events: &[Event]) -> &Outcome {
     match events.last() {
-        Some(Event::Finished { outcome }) => outcome,
+        Some(Event::Finished { outcome, .. }) => outcome,
         other => panic!("expected Finished last, got {other:?}"),
     }
 }
@@ -115,7 +127,7 @@ async fn start_passes_the_task_to_the_cli() {
     let cwd = dir.path().canonicalize().unwrap();
     let mut request = request(&cwd);
     request.prompt = "Say \"hi\"\nthen stop.".into();
-    let Started { run, mut events } = backend("context").start(request.clone()).unwrap();
+    let Started { run, mut events } = launch(&backend("context"), request.clone()).await;
     assert_eq!(run.id(), request.run_id);
     let all = rest(&mut events).await;
     assert_eq!(
@@ -138,7 +150,7 @@ async fn an_api_key_account_gets_its_key_and_a_subscription_its_config_home() {
     let mut request = request(&root());
     request.policy = ToolPolicy::WorkspaceWrite;
     request.account.credential = Credential::ApiKey(ApiKey::new("sk-fake-123".into()));
-    let mut events = backend("context").start(request.clone()).unwrap().events;
+    let mut events = launch(&backend("context"), request.clone()).await.events;
     let all = rest(&mut events).await;
     assert_eq!(
         texts(&all)[2..5],
@@ -148,14 +160,14 @@ async fn an_api_key_account_gets_its_key_and_a_subscription_its_config_home() {
     request.account.credential = Credential::Subscription {
         config_home: Some("/tmp/second-account".into()),
     };
-    let mut events = backend("context").start(request).unwrap().events;
+    let mut events = launch(&backend("context"), request).await.events;
     let all = rest(&mut events).await;
     assert_eq!(texts(&all)[3..5], ["<unset>", "/tmp/second-account"]);
 }
 
 #[tokio::test]
 async fn events_stream_in_order_and_usage_adds_up() {
-    let mut events = backend("stream").start(request(&root())).unwrap().events;
+    let mut events = launch(&backend("stream"), request(&root())).await.events;
     let all = rest(&mut events).await;
     let kinds: Vec<&str> = all
         .iter()
@@ -239,7 +251,7 @@ async fn events_stream_in_order_and_usage_adds_up() {
 
 #[tokio::test]
 async fn the_stream_works_as_a_futures_stream() {
-    let events = backend("resume").start(request(&root())).unwrap().events;
+    let events = launch(&backend("resume"), request(&root())).await.events;
     let all: Vec<Event> = tokio::time::timeout(Duration::from_secs(10), events.collect())
         .await
         .unwrap();
@@ -249,7 +261,7 @@ async fn the_stream_works_as_a_futures_stream() {
 
 #[tokio::test]
 async fn cancel_mid_stream_interrupts_the_cli() {
-    let Started { run, mut events } = backend("hang").start(request(&root())).unwrap();
+    let Started { run, mut events } = launch(&backend("hang"), request(&root())).await;
     assert!(matches!(
         next(&mut events).await,
         Event::SessionStarted { .. }
@@ -262,12 +274,8 @@ async fn cancel_mid_stream_interrupts_the_cli() {
     run.cancel();
     run.cancel();
     let all = rest(&mut events).await;
-    assert_eq!(
-        all,
-        [Event::Finished {
-            outcome: Outcome::Cancelled
-        }]
-    );
+    assert_eq!(all.len(), 1, "{all:?}");
+    assert_eq!(outcome(&all), &Outcome::Cancelled);
     assert!(
         started.elapsed() < Duration::from_secs(5),
         "{:?}",
@@ -289,7 +297,7 @@ async fn cancel_escalates_to_sigkill_after_the_grace_period() {
         grace: Duration::from_millis(300),
         ..CancelPolicy::default()
     });
-    let Started { run, mut events } = backend.start(request(&root())).unwrap();
+    let Started { run, mut events } = launch(&backend, request(&root())).await;
     assert!(matches!(
         next(&mut events).await,
         Event::SessionStarted { .. }
@@ -307,7 +315,7 @@ async fn cancel_escalates_to_sigkill_after_the_grace_period() {
 
 #[tokio::test]
 async fn a_follow_up_becomes_the_next_turn() {
-    let Started { run, mut events } = backend("follow-up").start(request(&root())).unwrap();
+    let Started { run, mut events } = launch(&backend("follow-up"), request(&root())).await;
     assert!(matches!(
         next(&mut events).await,
         Event::SessionStarted { .. }
@@ -338,7 +346,9 @@ async fn a_follow_up_becomes_the_next_turn() {
     assert_eq!(
         all,
         [
-            Event::TurnStarted { turn_id },
+            Event::TurnStarted {
+                turn_id: Some(turn_id)
+            },
             Event::Text {
                 message_id: None,
                 text: "Now the \"tests\",\nplease.".into()
@@ -350,7 +360,8 @@ async fn a_follow_up_becomes_the_next_turn() {
             Event::Finished {
                 outcome: Outcome::Completed {
                     result: Some("Second answer.".into())
-                }
+                },
+                usage_totals: Vec::new(),
             },
         ]
     );
@@ -358,7 +369,7 @@ async fn a_follow_up_becomes_the_next_turn() {
 
 #[tokio::test]
 async fn a_follow_up_the_cli_never_read_is_reported_dropped() {
-    let Started { run, mut events } = backend("hang").start(request(&root())).unwrap();
+    let Started { run, mut events } = launch(&backend("hang"), request(&root())).await;
     assert!(matches!(
         next(&mut events).await,
         Event::SessionStarted { .. }
@@ -374,21 +385,164 @@ async fn a_follow_up_the_cli_never_read_is_reported_dropped() {
     assert_eq!(outcome(&all), &Outcome::Cancelled);
     if sent.is_ok() {
         assert!(
-            all.iter().any(|event| matches!(
-                event,
-                Event::TurnStarted { turn_id: t } | Event::FollowUpDropped { turn_id: t }
-                    if *t == turn_id
-            )),
+            all.iter().any(|event| match event {
+                Event::TurnStarted { turn_id: t } => *t == Some(turn_id),
+                Event::FollowUpDropped { turn_id: t } => *t == turn_id,
+                _ => false,
+            }),
             "{all:?}"
         );
     }
+    assert_eq!(
+        run.send(FollowUp {
+            turn_id,
+            text: "one more thing".into(),
+        }),
+        Err(SendError::Finished),
+        "a retry must not claim the dropped message arrived"
+    );
+}
+
+#[tokio::test]
+async fn turns_finish_in_the_order_they_started() {
+    let script = Script {
+        steps: vec![
+            Step::Init {
+                session_id: "queue-1".into(),
+                model: None,
+            },
+            Step::SleepMs(300),
+            Step::EndTurn {
+                result: Some("one".into()),
+            },
+            Step::AwaitFollowUp,
+            Step::EndTurn {
+                result: Some("two".into()),
+            },
+            Step::AwaitFollowUp,
+            Step::EndTurn {
+                result: Some("three".into()),
+            },
+        ],
+    };
+    let mut request = request(&root());
+    let first = TurnId::generate();
+    request.turn_id = Some(first);
+    let Started { run, mut events } = launch(&FakeBackend::new(launcher(), script), request).await;
+    assert!(matches!(
+        next(&mut events).await,
+        Event::SessionStarted { .. }
+    ));
+    // Both reach the CLI while the prompt's turn is still running.
+    let (second, third) = (TurnId::generate(), TurnId::generate());
+    for (turn_id, text) in [(second, "second"), (third, "third")] {
+        run.send(FollowUp {
+            turn_id,
+            text: text.into(),
+        })
+        .unwrap();
+    }
+    let all = rest(&mut events).await;
+    let finished: Vec<(Option<TurnId>, Option<&str>)> = all
+        .iter()
+        .filter_map(|event| match event {
+            Event::TurnFinished { turn_id, result } => Some((*turn_id, result.as_deref())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        finished,
+        [
+            (Some(first), Some("one")),
+            (Some(second), Some("two")),
+            (Some(third), Some("three")),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn cancel_works_while_the_consumer_is_not_reading() {
+    let mut steps = vec![Step::EchoPid];
+    steps.extend((0..600).map(|n| {
+        Step::Emit(Event::TextDelta {
+            message_id: None,
+            text: format!("chunk {n}"),
+        })
+    }));
+    steps.push(Step::Hang);
+    let backend = FakeBackend::new(launcher(), Script { steps }).with_cancel_policy(CancelPolicy {
+        grace: Duration::from_millis(200),
+        ..CancelPolicy::default()
+    });
+    let Started { run, mut events } = launch(&backend, request(&root())).await;
+    let Event::Text { text: pid, .. } = next(&mut events).await else {
+        panic!("no pid")
+    };
+    // Let the event buffer fill, so the driver is stuck waiting for this consumer.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    run.cancel();
+    wait_until_gone(&pid).await;
+    let all = rest(&mut events).await;
+    assert_eq!(outcome(&all), &Outcome::Cancelled);
+}
+
+#[tokio::test]
+async fn a_resumed_session_reports_only_its_own_usage() {
+    let opus = |input| ModelUsage {
+        model: Some("opus".into()),
+        usage: Usage {
+            input_tokens: input,
+            output_tokens: input / 10,
+            ..Usage::default()
+        },
+    };
+    let script = Script {
+        steps: vec![
+            Step::Init {
+                session_id: "fresh-usage".into(),
+                model: None,
+            },
+            Step::UsageTotal(opus(1200)),
+            Step::UsageTotal(opus(1250)),
+            Step::EndTurn { result: None },
+        ],
+    };
+    let backend = FakeBackend::new(launcher(), script);
+
+    let mut fresh = launch(&backend, request(&root())).await.events;
+    let all = rest(&mut fresh).await;
+    let deltas = |all: &[Event]| -> Vec<u64> {
+        all.iter()
+            .filter_map(|event| match event {
+                Event::Usage(delta) => Some(delta.usage.input_tokens),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(deltas(&all), [1200, 50]);
+    assert_eq!(fresh.usage_totals(), [opus(1250)]);
+
+    // The vendor's totals carry over into the resumed session; the run counts what it added.
+    let mut resumed = request(&root());
+    resumed.resume = Some(Resume {
+        session_id: "fresh-usage".into(),
+        usage_totals: vec![opus(1000)],
+    });
+    let mut events = launch(&backend, resumed).await.events;
+    let all = rest(&mut events).await;
+    assert_eq!(deltas(&all), [200, 50]);
+    assert_eq!(events.usage().input_tokens, 250);
+    let Some(Event::Finished { usage_totals, .. }) = all.last() else {
+        panic!("{all:?}")
+    };
+    assert_eq!(usage_totals, &[opus(1250)]);
 }
 
 #[tokio::test]
 async fn a_backend_without_follow_ups_refuses_them_and_closes_stdin() {
     let backend = backend("follow-up").without_follow_ups();
     assert!(!backend.capabilities().follow_ups);
-    let Started { run, mut events } = backend.start(request(&root())).unwrap();
+    let Started { run, mut events } = launch(&backend, request(&root())).await;
     assert_eq!(
         run.send(FollowUp {
             turn_id: TurnId::generate(),
@@ -409,8 +563,8 @@ async fn a_backend_without_follow_ups_refuses_them_and_closes_stdin() {
 #[tokio::test]
 async fn the_resume_id_reaches_the_cli() {
     let mut request = request(&root());
-    request.resume = Some("sess-42.b_c".into());
-    let mut events = backend("resume").start(request.clone()).unwrap().events;
+    request.resume = Some(Resume::new("sess-42.b_c"));
+    let mut events = launch(&backend("resume"), request.clone()).await.events;
     let first = next(&mut events).await;
     assert_eq!(
         first,
@@ -423,7 +577,7 @@ async fn the_resume_id_reaches_the_cli() {
     rest(&mut events).await;
 
     request.resume = None;
-    let mut events = backend("resume").start(request).unwrap().events;
+    let mut events = launch(&backend("resume"), request).await.events;
     assert!(matches!(
         next(&mut events).await,
         Event::SessionStarted { session_id, .. } if session_id == "fresh-session"
@@ -436,7 +590,7 @@ async fn malformed_and_oversized_lines_are_skipped_with_warnings() {
         max_line_bytes: 1024,
         ..OutputLimits::default()
     });
-    let mut events = backend.start(request(&root())).unwrap().events;
+    let mut events = launch(&backend, request(&root())).await.events;
     let all = rest(&mut events).await;
     let warnings: Vec<(WarningKind, &str)> = all
         .iter()
@@ -464,7 +618,7 @@ async fn malformed_and_oversized_lines_are_skipped_with_warnings() {
 
 #[tokio::test]
 async fn a_crashed_cli_fails_the_run_with_its_stderr() {
-    let mut events = backend("crash").start(request(&root())).unwrap().events;
+    let mut events = launch(&backend("crash"), request(&root())).await.events;
     let all = rest(&mut events).await;
     let Outcome::Failed(failure) = outcome(&all) else {
         panic!("{all:?}")
@@ -480,7 +634,7 @@ async fn a_crashed_cli_fails_the_run_with_its_stderr() {
 
 #[tokio::test]
 async fn an_unsuccessful_exit_without_a_result_fails_the_run() {
-    let mut events = backend("exit-code").start(request(&root())).unwrap().events;
+    let mut events = launch(&backend("exit-code"), request(&root())).await.events;
     let all = rest(&mut events).await;
     let Outcome::Failed(failure) = outcome(&all) else {
         panic!("{all:?}")
@@ -492,9 +646,8 @@ async fn an_unsuccessful_exit_without_a_result_fails_the_run() {
 
 #[tokio::test]
 async fn an_outcome_the_cli_reports_wins_over_its_exit_code() {
-    let mut events = backend("vendor-error")
-        .start(request(&root()))
-        .unwrap()
+    let mut events = launch(&backend("vendor-error"), request(&root()))
+        .await
         .events;
     let all = rest(&mut events).await;
     let Outcome::Failed(failure) = outcome(&all) else {
@@ -510,7 +663,7 @@ async fn an_outcome_the_cli_reports_wins_over_its_exit_code() {
 
 #[tokio::test]
 async fn dropping_the_run_and_its_stream_stops_the_cli() {
-    let Started { run, mut events } = backend("hang").start(request(&root())).unwrap();
+    let Started { run, mut events } = launch(&backend("hang"), request(&root())).await;
     next(&mut events).await;
     let Event::Text { text: pid, .. } = next(&mut events).await else {
         panic!("no pid")
@@ -529,7 +682,7 @@ async fn bad_requests_are_refused_before_spawning() {
         Err(StartError::Invalid(_))
     ));
     let mut bad = request(&root());
-    bad.resume = Some("x\"; rm -rf /".into());
+    bad.resume = Some(Resume::new("x\"; rm -rf /"));
     assert!(matches!(
         backend("resume").start(bad),
         Err(StartError::Invalid(_))
@@ -557,7 +710,7 @@ async fn backends_work_behind_trait_objects() {
     ];
     for backend in backends {
         assert_eq!(backend.name(), "fake");
-        let mut events = backend.start(request(&root())).unwrap().events;
+        let mut events = launch(&*backend, request(&root())).await.events;
         let all = rest(&mut events).await;
         assert!(matches!(outcome(&all), Outcome::Completed { .. }));
     }

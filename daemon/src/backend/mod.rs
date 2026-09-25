@@ -34,10 +34,10 @@ use tokio::sync::mpsc;
 pub use wisp_protocol::{RunId, TurnId};
 
 pub use self::event::{
-    CumulativeUsage, Event, ExitInfo, Failure, FailureKind, LimitStatus, LimitWindow, Outcome,
-    ToolStatus, Usage, UsageDelta, WarningKind,
+    CumulativeUsage, Event, ExitInfo, Failure, FailureKind, LimitStatus, LimitWindow, ModelUsage,
+    Outcome, TodoItem, TodoStatus, ToolStatus, Usage, WarningKind,
 };
-use self::process::SpawnError;
+use self::process::{CancelPolicy, Signals, SpawnError};
 
 /// How many events a run buffers before its backend waits for the consumer.
 pub const EVENT_BUFFER: usize = 256;
@@ -108,6 +108,11 @@ pub trait Run: Send + Sync {
 pub struct RunRequest {
     /// The caller's id for the run (0007's `agent/start {runId}`).
     pub run_id: RunId,
+    /// The caller's id for the prompt's turn, which the run's first [`Event::TurnStarted`] and
+    /// [`Event::TurnFinished`] carry. A message to an agent that has no live run, such as a Codex
+    /// subagent (0011's `agent/send`), becomes a resumed run whose prompt is the message and whose
+    /// `turn_id` is the message's.
+    pub turn_id: Option<TurnId>,
     /// Where the CLI runs: an absolute path to a directory, usually a worktree.
     pub cwd: PathBuf,
     /// The first message.
@@ -116,10 +121,32 @@ pub struct RunRequest {
     pub policy: ToolPolicy,
     /// The account the run is charged to.
     pub account: AccountRef,
-    /// The vendor's session to resume: an earlier run's [`Event::SessionStarted`] id.
-    pub resume: Option<String>,
+    /// The vendor's session to resume, or a new session.
+    pub resume: Option<Resume>,
     /// The model, or the CLI's default.
     pub model: Option<String>,
+}
+
+/// A vendor session for a run to continue.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Resume {
+    /// The session's id: an earlier run's [`Event::SessionStarted`] id.
+    pub session_id: String,
+    /// The session's running usage totals per model: the `usage_totals` of the last run of it
+    /// that finished. The caller stores them per session and passes them back here, so the new
+    /// run reports only what it adds, even for vendors whose totals carry over into a resumed
+    /// session (Claude, Codex) and across a wispd restart. Empty for a session with no usage.
+    pub usage_totals: Vec<ModelUsage>,
+}
+
+impl Resume {
+    /// Resumes `session_id`, with no usage so far.
+    pub fn new(session_id: impl Into<String>) -> Self {
+        Self {
+            session_id: session_id.into(),
+            usage_totals: Vec::new(),
+        }
+    }
 }
 
 /// A follow-up message for a running agent.
@@ -138,6 +165,10 @@ pub enum ToolPolicy {
     /// Read-only tools, no hooks, no project settings: the coordinator's policy.
     NoWrite,
     /// Edits inside the working directory: a worker's policy.
+    ///
+    /// Backends never commit. Codex's `workspace-write` sandbox keeps `.git` read-only, even in a
+    /// linked worktree (0004), so M3's runner commits a worker's changes after its run's
+    /// [`Event::Finished`], for every backend alike.
     WorkspaceWrite,
 }
 
@@ -236,37 +267,94 @@ pub enum SendError {
     IdConflict,
 }
 
-/// What a [`RunHandle`] asks its backend's driver to do.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Control {
-    /// Deliver a follow-up.
-    FollowUp(FollowUp),
-    /// Cancel the run.
-    Cancel,
+/// Cancels a run's current process, from any thread, without waiting on the run's driver.
+///
+/// [`Run::cancel`] has to work while the driver is stuck waiting for a consumer that isn't
+/// reading, so the handle signals the process itself. The driver arms the switch with each
+/// process it starts, and asks [`CancelSwitch::is_cancelled`] when it decides the outcome.
+#[derive(Clone, Debug, Default)]
+pub struct CancelSwitch {
+    state: Arc<Mutex<SwitchState>>,
 }
 
-/// A [`Run`] that forwards to a driver task over a channel, which every backend can use.
+#[derive(Debug, Default)]
+struct SwitchState {
+    cancelled: bool,
+    target: Option<(Signals, CancelPolicy)>,
+}
+
+impl CancelSwitch {
+    /// A switch that hasn't been flipped and has no process yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Makes `signals`' process the one a cancel stops, with `policy`. If the run was already
+    /// cancelled, it stops that process at once.
+    pub fn arm(&self, signals: Signals, policy: CancelPolicy) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.cancelled {
+            signals.cancel(policy);
+        }
+        state.target = Some((signals, policy));
+    }
+
+    /// Cancels the run: stops the armed process, if any, with its policy. Only the first call
+    /// does anything.
+    pub fn cancel(&self) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.cancelled {
+            return;
+        }
+        state.cancelled = true;
+        if let Some((signals, policy)) = &state.target {
+            signals.cancel(*policy);
+        }
+    }
+
+    /// Whether the run was cancelled.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .cancelled
+    }
+}
+
+/// A [`Run`] that every backend can use: it sends follow-ups to the backend's driver over a
+/// channel, and cancels through a [`CancelSwitch`] the driver arms.
 ///
 /// It checks follow-ups for support and for idempotency, so drivers only see each turn id once.
-/// The driver closing its receiver ends the run for [`Run::send`].
+/// The driver closes its receiver once it can deliver no more follow-ups; from then on every
+/// [`Run::send`], including a retry of a follow-up that was accepted but dropped, fails with
+/// [`SendError::Finished`].
 #[derive(Debug)]
 pub struct RunHandle {
     id: RunId,
     follow_ups: bool,
-    control: mpsc::UnboundedSender<Control>,
+    control: mpsc::UnboundedSender<FollowUp>,
     turns: Mutex<HashMap<TurnId, String>>,
+    cancel: CancelSwitch,
 }
 
 impl RunHandle {
-    /// A handle for run `id`, and the receiver its driver reads.
+    /// A handle for run `id` that cancels through `cancel`, and the receiver of follow-ups its
+    /// driver reads.
     #[must_use]
-    pub fn new(id: RunId, follow_ups: bool) -> (Self, mpsc::UnboundedReceiver<Control>) {
+    pub fn new(
+        id: RunId,
+        follow_ups: bool,
+        cancel: CancelSwitch,
+    ) -> (Self, mpsc::UnboundedReceiver<FollowUp>) {
         let (control, receiver) = mpsc::unbounded_channel();
         let handle = Self {
             id,
             follow_ups,
             control,
             turns: Mutex::new(HashMap::new()),
+            cancel,
         };
         (handle, receiver)
     }
@@ -281,6 +369,9 @@ impl Run for RunHandle {
         if !self.follow_ups {
             return Err(SendError::Unsupported);
         }
+        if self.control.is_closed() {
+            return Err(SendError::Finished);
+        }
         let mut turns = self.turns.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(text) = turns.get(&message.turn_id) {
             return if *text == message.text {
@@ -291,23 +382,24 @@ impl Run for RunHandle {
         }
         let (turn_id, text) = (message.turn_id, message.text.clone());
         self.control
-            .send(Control::FollowUp(message))
+            .send(message)
             .map_err(|_| SendError::Finished)?;
         turns.insert(turn_id, text);
         Ok(())
     }
 
     fn cancel(&self) {
-        let _ = self.control.send(Control::Cancel);
+        self.cancel.cancel();
     }
 }
 
-/// The producing side of an [`EventStream`]. It enforces the stream's contract: exactly one
-/// [`Event::Finished`], last.
+/// The producing side of an [`EventStream`]. It enforces the stream's contract, exactly one
+/// [`Event::Finished`] and last, and it keeps the session's usage totals for that event.
 #[derive(Debug)]
 pub struct EventSink {
     events: mpsc::Sender<Event>,
     finished: bool,
+    usage: CumulativeUsage,
 }
 
 /// The consumer dropped its [`EventStream`].
@@ -316,18 +408,21 @@ pub struct EventSink {
 pub struct StreamClosed;
 
 impl EventSink {
-    /// A connected sink and stream that buffer `buffer` events.
+    /// A connected sink and stream that buffer `buffer` events, for a session whose usage so far
+    /// is `usage_totals`: a resumed session's [`Resume::usage_totals`], or nothing.
     #[must_use]
-    pub fn channel(buffer: usize) -> (Self, EventStream) {
+    pub fn channel(buffer: usize, usage_totals: Vec<ModelUsage>) -> (Self, EventStream) {
         let (events, receiver) = mpsc::channel(buffer.max(1));
         let sink = Self {
             events,
             finished: false,
+            usage: CumulativeUsage::with_baseline(usage_totals),
         };
         let stream = EventStream {
             events: receiver,
             usage: Usage::default(),
             outcome: None,
+            usage_totals: Vec::new(),
         };
         (sink, stream)
     }
@@ -335,24 +430,49 @@ impl EventSink {
     /// Sends `event`, waiting while the buffer is full. After an [`Event::Finished`], further
     /// events are dropped.
     ///
+    /// An [`Event::Usage`] is a delta and adds to the session's totals. An [`Event::Finished`]
+    /// gets the totals filled in, whatever it carried.
+    ///
     /// # Errors
     ///
     /// [`StreamClosed`] once the consumer has dropped the stream. A backend then stops its CLI.
-    pub async fn emit(&mut self, event: Event) -> Result<(), StreamClosed> {
-        if self.finished {
-            return Ok(());
+    pub async fn emit(&mut self, mut event: Event) -> Result<(), StreamClosed> {
+        match &mut event {
+            Event::Usage(delta) => self.usage.record(delta),
+            Event::Finished { usage_totals, .. } => *usage_totals = self.usage.totals(),
+            _ => {}
         }
-        self.finished = event.is_terminal();
-        self.events.send(event).await.map_err(|_| StreamClosed)
+        self.send(event).await
     }
 
-    /// Ends the stream with `outcome`.
+    /// Takes a running total that the vendor reported for `model`, such as Codex's
+    /// `turn.completed.usage`, and sends the [`Event::Usage`] delta since the last one, if any.
+    ///
+    /// # Errors
+    ///
+    /// [`StreamClosed`] once the consumer has dropped the stream.
+    pub async fn observe_total(
+        &mut self,
+        model: Option<&str>,
+        total: Usage,
+    ) -> Result<(), StreamClosed> {
+        match self.usage.observe(model, total) {
+            Some(delta) => self.send(Event::Usage(delta)).await,
+            None => Ok(()),
+        }
+    }
+
+    /// Ends the stream with `outcome` and the session's usage totals.
     ///
     /// # Errors
     ///
     /// [`StreamClosed`] if the consumer has dropped the stream.
     pub async fn finish(&mut self, outcome: Outcome) -> Result<(), StreamClosed> {
-        self.emit(Event::Finished { outcome }).await
+        self.emit(Event::Finished {
+            outcome,
+            usage_totals: Vec::new(),
+        })
+        .await
     }
 
     /// Whether the stream has ended.
@@ -366,17 +486,27 @@ impl EventSink {
     pub async fn closed(&self) {
         self.events.closed().await;
     }
+
+    async fn send(&mut self, event: Event) -> Result<(), StreamClosed> {
+        if self.finished {
+            return Ok(());
+        }
+        self.finished = event.is_terminal();
+        self.events.send(event).await.map_err(|_| StreamClosed)
+    }
 }
 
 /// A run's events. It ends after exactly one [`Event::Finished`], and it sums the run's usage.
 ///
 /// If the backend stops without finishing, for example because its task panicked, the stream
-/// ends with a [`FailureKind::Internal`] failure, so a consumer always sees an outcome.
+/// ends with a [`FailureKind::Internal`] failure, so a consumer always sees an outcome. That
+/// failure has no usage totals; keep the session's previous ones.
 #[derive(Debug)]
 pub struct EventStream {
     events: mpsc::Receiver<Event>,
     usage: Usage,
     outcome: Option<Outcome>,
+    usage_totals: Vec<ModelUsage>,
 }
 
 impl EventStream {
@@ -395,6 +525,12 @@ impl EventStream {
     #[must_use]
     pub fn outcome(&self) -> Option<&Outcome> {
         self.outcome.as_ref()
+    }
+
+    /// The session's usage totals from [`Event::Finished`], once it has been read.
+    #[must_use]
+    pub fn usage_totals(&self) -> &[ModelUsage] {
+        &self.usage_totals
     }
 }
 
@@ -415,12 +551,17 @@ impl Stream for EventStream {
                     exit: None,
                     stderr_tail: None,
                 }),
+                usage_totals: Vec::new(),
             },
         };
         match &event {
             Event::Usage(delta) => self.usage += delta.usage,
-            Event::Finished { outcome } => {
+            Event::Finished {
+                outcome,
+                usage_totals,
+            } => {
                 self.outcome = Some(outcome.clone());
+                self.usage_totals.clone_from(usage_totals);
                 self.events.close();
             }
             _ => {}
@@ -434,9 +575,16 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        Backend, Control, Event, EventSink, FailureKind, FollowUp, Outcome, Run, RunHandle, RunId,
-        SendError, TurnId, Usage, UsageDelta,
+        Backend, CancelSwitch, Event, EventSink, FailureKind, FollowUp, ModelUsage, Outcome, Run,
+        RunHandle, RunId, SendError, TurnId, Usage,
     };
+
+    fn input(n: u64) -> Usage {
+        Usage {
+            input_tokens: n,
+            ..Usage::default()
+        }
+    }
 
     #[test]
     fn the_traits_are_object_safe() {
@@ -446,19 +594,19 @@ mod tests {
 
     #[test]
     fn follow_ups_are_idempotent_on_their_turn_id() {
-        let (handle, mut control) = RunHandle::new(RunId::generate(), true);
+        let (handle, mut control) = RunHandle::new(RunId::generate(), true, CancelSwitch::new());
         let turn = FollowUp {
             turn_id: TurnId::generate(),
             text: "and the tests".into(),
         };
         handle.send(turn.clone()).unwrap();
         handle.send(turn.clone()).unwrap();
-        assert_eq!(control.try_recv().unwrap(), Control::FollowUp(turn.clone()));
+        assert_eq!(control.try_recv().unwrap(), turn);
         assert!(control.try_recv().is_err(), "sent once");
         assert_eq!(
             handle.send(FollowUp {
                 text: "something else".into(),
-                ..turn
+                ..turn.clone()
             }),
             Err(SendError::IdConflict)
         );
@@ -470,11 +618,16 @@ mod tests {
             }),
             Err(SendError::Finished)
         );
+        assert_eq!(
+            handle.send(turn),
+            Err(SendError::Finished),
+            "a retry after the run ended must not claim the message arrived"
+        );
     }
 
     #[test]
     fn a_backend_without_follow_ups_refuses_them() {
-        let (handle, _control) = RunHandle::new(RunId::generate(), false);
+        let (handle, _control) = RunHandle::new(RunId::generate(), false, CancelSwitch::new());
         assert_eq!(
             handle.send(FollowUp {
                 turn_id: TurnId::generate(),
@@ -484,16 +637,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cancel_flips_the_switch_once() {
+        let switch = CancelSwitch::new();
+        let (handle, _control) = RunHandle::new(RunId::generate(), true, switch.clone());
+        assert!(!switch.is_cancelled());
+        handle.cancel();
+        handle.cancel();
+        assert!(switch.is_cancelled());
+    }
+
     #[tokio::test]
     async fn the_stream_ends_after_one_finished_and_sums_usage() {
-        let (mut sink, mut stream) = EventSink::channel(8);
+        let (mut sink, mut stream) = EventSink::channel(8, Vec::new());
         let delta = |n| {
-            Event::Usage(UsageDelta {
+            Event::Usage(ModelUsage {
                 model: None,
-                usage: Usage {
-                    input_tokens: n,
-                    ..Usage::default()
-                },
+                usage: input(n),
             })
         };
         sink.emit(delta(3)).await.unwrap();
@@ -511,14 +671,52 @@ mod tests {
         assert_eq!(events.len(), 3);
         assert_eq!(stream.outcome(), Some(&Outcome::Cancelled));
         assert_eq!(stream.usage().input_tokens, 7);
+        assert_eq!(
+            stream.usage_totals(),
+            [ModelUsage {
+                model: None,
+                usage: input(7)
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn running_totals_from_a_resumed_session_count_only_what_is_new() {
+        let baseline = vec![ModelUsage {
+            model: Some("opus".into()),
+            usage: input(1000),
+        }];
+        let (mut sink, mut stream) = EventSink::channel(8, baseline);
+        sink.observe_total(Some("opus"), input(1200)).await.unwrap();
+        sink.observe_total(Some("opus"), input(1200)).await.unwrap();
+        sink.observe_total(Some("opus"), input(1250)).await.unwrap();
+        sink.finish(Outcome::Completed { result: None })
+            .await
+            .unwrap();
+        let mut deltas = Vec::new();
+        while let Some(event) = stream.next().await {
+            if let Event::Usage(delta) = event {
+                deltas.push(delta.usage.input_tokens);
+            }
+        }
+        assert_eq!(deltas, [200, 50]);
+        assert_eq!(stream.usage().input_tokens, 250);
+        assert_eq!(
+            stream.usage_totals(),
+            [ModelUsage {
+                model: Some("opus".into()),
+                usage: input(1250)
+            }]
+        );
     }
 
     #[tokio::test]
     async fn a_backend_that_vanishes_still_ends_the_stream() {
-        let (sink, mut stream) = EventSink::channel(8);
+        let (sink, mut stream) = EventSink::channel(8, Vec::new());
         drop(sink);
         let Some(Event::Finished {
             outcome: Outcome::Failed(failure),
+            ..
         }) = stream.next().await
         else {
             panic!("expected a failure");

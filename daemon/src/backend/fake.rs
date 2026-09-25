@@ -3,13 +3,19 @@
 //! A [`Script`] is a list of [`Step`]s, usually read from a JSON fixture. The backend compiles it
 //! into a `/bin/sh` program and runs that through [`Launcher`], so the fake goes through the same
 //! supervision as the vendor adapters: spawning, the environment, line limits, stderr, cancel,
-//! and reaping. The fake CLI's output format is [`Event`]'s JSON, one per line.
+//! and reaping. The fake CLI's output format is [`Event`]'s JSON, one per line, plus
+//! `{"kind": "usageTotal", ...}` lines for running totals.
+//!
+//! It is also the reference driver for the adapters: it reports the prompt's turn as soon as the
+//! CLI starts, labels each `TurnFinished` with the oldest turn not yet finished, lets
+//! [`CancelSwitch`] stop the process directly, and leaves usage totals to [`EventSink`].
 //!
 //! The child gets its arguments as the vendor CLIs would: the resume id, the prompt as a JSON
 //! string, the policy, and the model. Follow-ups reach it on stdin, one JSON string per line.
 //! With an API key account, the key is in `FAKE_API_KEY`; with a subscription it is scrubbed, as
 //! 0004 has the Claude backend do with Anthropic's variables.
 
+use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,12 +25,12 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::unix::pipe;
 use tokio::sync::mpsc;
 
-use super::event::{Event, Failure, FailureKind, Outcome, WarningKind};
+use super::event::{Event, Failure, FailureKind, ModelUsage, Outcome, WarningKind};
 use super::process::{
     CancelPolicy, Exit, Launcher, Output, OutputLimits, Process, ProcessSpec, StdinMode,
 };
 use super::{
-    Backend, Capabilities, Control, Credential, EVENT_BUFFER, EventSink, FollowUp, RunHandle,
+    Backend, CancelSwitch, Capabilities, Credential, EVENT_BUFFER, EventSink, FollowUp, RunHandle,
     RunRequest, StartError, Started, ToolPolicy, TurnId,
 };
 
@@ -72,6 +78,9 @@ pub enum Step {
     },
     /// Prints an event.
     Emit(Event),
+    /// Prints a running usage total for the session, as Codex and Claude report them. The
+    /// backend turns it into an [`Event::Usage`] delta. In JSON, a [`ModelUsage`].
+    UsageTotal(ModelUsage),
     /// Prints a line as it is.
     Raw(String),
     /// Prints a line of this many bytes.
@@ -174,10 +183,11 @@ impl Backend for FakeBackend {
             return Err(StartError::Invalid("the prompt is empty".into()));
         }
         if let Some(resume) = &request.resume
-            && !is_safe_id(resume)
+            && !is_safe_id(&resume.session_id)
         {
             return Err(StartError::Invalid(format!(
-                "the resume id {resume:?} has characters the fake CLI doesn't take"
+                "the resume id {:?} has characters the fake CLI doesn't take",
+                resume.session_id
             )));
         }
         let script = compile(&self.script).map_err(StartError::Invalid)?;
@@ -187,11 +197,15 @@ impl Backend for FakeBackend {
             ToolPolicy::NoWrite => "no-write",
             ToolPolicy::WorkspaceWrite => "workspace-write",
         };
+        let session = request
+            .resume
+            .as_ref()
+            .map(|resume| resume.session_id.clone());
         spec.args = vec![
             "-c".into(),
             script.into(),
             "fake-cli".into(),
-            request.resume.clone().unwrap_or_default().into(),
+            session.unwrap_or_default().into(),
             json_string(&request.prompt).into(),
             policy.into(),
             request.model.clone().unwrap_or_default().into(),
@@ -215,9 +229,15 @@ impl Backend for FakeBackend {
         spec.limits = self.limits;
 
         let process = self.launcher.spawn(&spec)?;
-        let (handle, control) = RunHandle::new(request.run_id, self.follow_ups);
-        let (sink, events) = EventSink::channel(EVENT_BUFFER);
-        tokio::spawn(drive(process, control, sink, self.cancel));
+        let switch = CancelSwitch::new();
+        switch.arm(process.signals().clone(), self.cancel);
+        let (handle, control) = RunHandle::new(request.run_id, self.follow_ups, switch.clone());
+        let baseline = request
+            .resume
+            .map(|resume| resume.usage_totals)
+            .unwrap_or_default();
+        let (sink, events) = EventSink::channel(EVENT_BUFFER, baseline);
+        tokio::spawn(drive(process, control, sink, switch, request.turn_id));
         Ok(Started {
             run: Arc::new(handle),
             events,
@@ -252,105 +272,146 @@ async fn write_follow_ups(
     }
 }
 
-/// Runs one fake run: forwards the CLI's events, delivers follow-ups, cancels, and decides the
-/// outcome when the CLI exits.
+/// The follow-ups' way to the CLI: a queue into [`write_follow_ups`], and its results.
+struct Stdin {
+    queue: Option<mpsc::UnboundedSender<FollowUp>>,
+    results: Option<mpsc::UnboundedReceiver<Delivery>>,
+    writer: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Stdin {
+    /// Starts the writer, or closes `control` when the CLI's stdin isn't a pipe.
+    fn start(process: &mut Process, control: &mut mpsc::UnboundedReceiver<FollowUp>) -> Self {
+        let Some(stdin) = process.take_stdin() else {
+            control.close();
+            return Self {
+                queue: None,
+                results: None,
+                writer: None,
+            };
+        };
+        let (queue, queue_rx) = mpsc::unbounded_channel();
+        let (results, results_rx) = mpsc::unbounded_channel();
+        Self {
+            queue: Some(queue),
+            results: Some(results_rx),
+            writer: Some(tokio::spawn(write_follow_ups(stdin, queue_rx, results))),
+        }
+    }
+
+    /// After the CLI exited: reports every follow-up that was queued, or written but not yet
+    /// reported, as dropped. The writer fails what is still queued against the closed pipe.
+    async fn drop_undelivered(
+        mut self,
+        control: &mut mpsc::UnboundedReceiver<FollowUp>,
+        sink: &mut EventSink,
+    ) {
+        control.close();
+        while let Ok(follow_up) = control.try_recv() {
+            if let Some(queue) = &self.queue {
+                let _ = queue.send(follow_up);
+            }
+        }
+        drop(self.queue.take());
+        if let Some(writer) = self.writer.take() {
+            // Writes fail at once once nothing holds the pipe's read end. Something the CLI
+            // started outside its process group could, so don't wait on it for long.
+            let _ = tokio::time::timeout(Duration::from_secs(1), writer).await;
+        }
+        if let Some(results) = &mut self.results {
+            while let Ok(delivery) = results.try_recv() {
+                let turn_id = match delivery {
+                    Delivery::Written(turn_id) | Delivery::Failed(turn_id) => turn_id,
+                };
+                let _ = sink.emit(Event::FollowUpDropped { turn_id }).await;
+            }
+        }
+    }
+}
+
+/// Runs one fake run: forwards the CLI's events, delivers follow-ups, and decides the outcome
+/// when the CLI exits. Cancelling doesn't go through here: the run's handle signals the process
+/// through `switch`, so it works even while this task waits for a consumer that isn't reading.
 async fn drive(
     mut process: Process,
-    mut control: mpsc::UnboundedReceiver<Control>,
+    mut control: mpsc::UnboundedReceiver<FollowUp>,
     mut sink: EventSink,
-    cancel_policy: CancelPolicy,
+    switch: CancelSwitch,
+    first_turn: Option<TurnId>,
 ) {
-    let (queue, results_rx, writer) = match process.take_stdin() {
-        Some(stdin) => {
-            let (queue, queue_rx) = mpsc::unbounded_channel();
-            let (results, results_rx) = mpsc::unbounded_channel();
-            let writer = tokio::spawn(write_follow_ups(stdin, queue_rx, results));
-            (Some(queue), Some(results_rx), Some(writer))
-        }
-        None => (None, None, None),
-    };
-    let mut results = results_rx;
+    let mut stdin = Stdin::start(&mut process, &mut control);
     let mut state = State {
-        turn: None,
-        cancelled: false,
+        switch,
+        turns: VecDeque::from([first_turn]),
         reported: None,
         last_result: None,
     };
     let mut control_open = true;
+    let first = Event::TurnStarted {
+        turn_id: first_turn,
+    };
+    if sink.emit(first).await.is_err() {
+        state.switch.cancel();
+    }
 
     let exit = loop {
         tokio::select! {
             // Deliveries first, so a follow-up's TurnStarted comes before what the CLI answers.
             biased;
-            Some(delivery) = recv(&mut results) => {
+            Some(delivery) = recv(&mut stdin.results) => {
                 let event = match delivery {
                     Delivery::Written(turn_id) => {
-                        state.turn = Some(turn_id);
-                        Event::TurnStarted { turn_id }
+                        state.turns.push_back(Some(turn_id));
+                        Event::TurnStarted { turn_id: Some(turn_id) }
                     }
-                    Delivery::Failed(turn_id) => Event::FollowUpDropped { turn_id },
+                    Delivery::Failed(turn_id) => {
+                        // stdin is gone, so no later follow-up can arrive either.
+                        control.close();
+                        Event::FollowUpDropped { turn_id }
+                    }
                 };
                 if sink.emit(event).await.is_err() {
-                    state.stop(&process, cancel_policy);
+                    state.switch.cancel();
                 }
             }
-            output = process.next() => match output {
-                Some(Output::Line(line)) => {
-                    for event in state.parse(&line) {
-                        if sink.emit(event).await.is_err() {
-                            state.stop(&process, cancel_policy);
+            output = process.next() => {
+                let sent = match output {
+                    Some(Output::Line(line)) => match state.parse(&line) {
+                        Parsed::Event(Some(event)) => sink.emit(event).await,
+                        Parsed::Event(None) => Ok(()),
+                        Parsed::Total(total) => {
+                            sink.observe_total(total.model.as_deref(), total.usage).await
                         }
+                    },
+                    Some(Output::Oversized { bytes }) => {
+                        sink.emit(Event::Warning {
+                            warning: WarningKind::OversizedLine,
+                            detail: format!("skipped a {bytes}-byte line"),
+                        })
+                        .await
                     }
+                    Some(Output::Exited(exit)) => break Some(exit),
+                    None => break None,
+                };
+                if sent.is_err() {
+                    state.switch.cancel();
                 }
-                Some(Output::Oversized { bytes }) => {
-                    let warning = Event::Warning {
-                        warning: WarningKind::OversizedLine,
-                        detail: format!("skipped a {bytes}-byte line"),
-                    };
-                    if sink.emit(warning).await.is_err() {
-                        state.stop(&process, cancel_policy);
-                    }
-                }
-                Some(Output::Exited(exit)) => break Some(exit),
-                None => break None,
-            },
-            command = control.recv(), if control_open => match command {
-                Some(Control::FollowUp(follow_up)) => match &queue {
+            }
+            follow_up = control.recv(), if control_open => match follow_up {
+                Some(follow_up) => match &stdin.queue {
                     Some(queue) if queue.send(follow_up.clone()).is_ok() => {}
                     _ => {
                         let dropped = Event::FollowUpDropped { turn_id: follow_up.turn_id };
                         let _ = sink.emit(dropped).await;
                     }
                 },
-                Some(Control::Cancel) => state.stop(&process, cancel_policy),
                 None => control_open = false,
             },
-            () = sink.closed(), if !state.cancelled => state.stop(&process, cancel_policy),
+            () = sink.closed(), if !state.switch.is_cancelled() => state.switch.cancel(),
         }
     };
 
-    // Whatever is still queued never reaches the CLI: the writer fails it against the closed pipe.
-    control.close();
-    while let Ok(command) = control.try_recv() {
-        if let (Control::FollowUp(follow_up), Some(queue)) = (command, &queue) {
-            let _ = queue.send(follow_up);
-        }
-    }
-    drop(queue);
-    if let Some(writer) = writer {
-        // Writes fail at once once nothing holds the pipe's read end. Something the CLI started
-        // outside its process group could, so don't wait on it for long.
-        let _ = tokio::time::timeout(Duration::from_secs(1), writer).await;
-    }
-    if let Some(results) = &mut results {
-        while let Ok(delivery) = results.try_recv() {
-            let turn_id = match delivery {
-                Delivery::Written(turn_id) | Delivery::Failed(turn_id) => turn_id,
-            };
-            let _ = sink.emit(Event::FollowUpDropped { turn_id }).await;
-        }
-    }
-
+    stdin.drop_undelivered(&mut control, &mut sink).await;
     let outcome = state.outcome(exit);
     let _ = sink.finish(outcome).await;
 }
@@ -362,60 +423,75 @@ async fn recv<T>(receiver: &mut Option<mpsc::UnboundedReceiver<T>>) -> Option<T>
     }
 }
 
+/// A line of the fake CLI's output.
+enum Parsed {
+    /// An event to forward, or nothing.
+    Event(Option<Event>),
+    /// A running usage total.
+    Total(ModelUsage),
+}
+
 struct State {
-    turn: Option<TurnId>,
-    cancelled: bool,
+    switch: CancelSwitch,
+    /// Turns the CLI has taken but not finished, oldest first.
+    turns: VecDeque<Option<TurnId>>,
     /// The outcome the CLI reported itself, before any cancel.
     reported: Option<Outcome>,
     last_result: Option<String>,
 }
 
 impl State {
-    fn stop(&mut self, process: &Process, policy: CancelPolicy) {
-        if !self.cancelled {
-            self.cancelled = true;
-            process.signals().cancel(policy);
-        }
-    }
-
-    fn parse(&mut self, line: &[u8]) -> Vec<Event> {
-        let event = match serde_json::from_slice::<Event>(line) {
-            Ok(event) => event,
-            Err(error) => {
-                let value = serde_json::from_slice::<serde_json::Value>(line).ok();
-                let warning = match value.as_ref().and_then(|v| v.get("kind")) {
-                    Some(serde_json::Value::String(_)) => WarningKind::UnknownEvent,
-                    _ => WarningKind::MalformedLine,
-                };
-                return vec![Event::Warning {
-                    warning,
-                    detail: error.to_string(),
-                }];
-            }
+    fn parse(&mut self, line: &[u8]) -> Parsed {
+        let warning =
+            |warning, detail: String| Parsed::Event(Some(Event::Warning { warning, detail }));
+        let value = match serde_json::from_slice::<serde_json::Value>(line) {
+            Ok(value) => value,
+            Err(error) => return warning(WarningKind::MalformedLine, error.to_string()),
         };
-        match event {
+        let kind = value
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        if kind.as_deref() == Some("usageTotal") {
+            return match serde_json::from_value::<ModelUsage>(value) {
+                Ok(total) => Parsed::Total(total),
+                Err(error) => warning(WarningKind::MalformedLine, error.to_string()),
+            };
+        }
+        let event = match serde_json::from_value::<Event>(value) {
+            Ok(event) => event,
+            Err(error) => return warning(WarningKind::MalformedLine, error.to_string()),
+        };
+        let event = match event {
+            Event::Unknown => {
+                return warning(
+                    WarningKind::UnknownEvent,
+                    format!("an event of kind {:?}", kind.unwrap_or_default()),
+                );
+            }
             Event::TurnFinished { result, .. } => {
                 self.last_result.clone_from(&result);
-                vec![Event::TurnFinished {
-                    turn_id: self.turn,
+                Event::TurnFinished {
+                    turn_id: self.turns.pop_front().flatten(),
                     result,
-                }]
+                }
             }
-            Event::Finished { outcome } => {
-                if !self.cancelled && self.reported.is_none() {
+            Event::Finished { outcome, .. } => {
+                if !self.switch.is_cancelled() && self.reported.is_none() {
                     self.reported = Some(outcome);
                 }
-                Vec::new()
+                return Parsed::Event(None);
             }
-            event => vec![event],
-        }
+            event => event,
+        };
+        Parsed::Event(Some(event))
     }
 
     fn outcome(self, exit: Option<Exit>) -> Outcome {
         if let Some(reported) = self.reported {
             return reported;
         }
-        if self.cancelled {
+        if self.switch.is_cancelled() {
             return Outcome::Cancelled;
         }
         let Some(exit) = exit else {
@@ -528,6 +604,11 @@ fn compile(script: &Script) -> Result<String, String> {
             Step::Emit(event) => {
                 let json = serde_json::to_string(event).map_err(|e| e.to_string())?;
                 writeln!(out, "printf '%s\\n' {}", quote(&json)).expect("infallible");
+            }
+            Step::UsageTotal(total) => {
+                let mut json = serde_json::to_value(total).map_err(|e| e.to_string())?;
+                json["kind"] = "usageTotal".into();
+                writeln!(out, "printf '%s\\n' {}", quote(&json.to_string())).expect("infallible");
             }
             Step::Raw(line) => {
                 writeln!(out, "printf '%s\\n' {}", quote(line)).expect("infallible");
