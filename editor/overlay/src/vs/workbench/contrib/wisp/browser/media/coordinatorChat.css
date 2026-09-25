@@ -1,0 +1,161 @@
+/*---------------------------------------------------------------------------------------------
+ *  wisp: not part of Code - OSS. Edit editor/overlay in the wisp repo, not this copy.
+ *--------------------------------------------------------------------------------------------*/
+
+/*
+ * Only theme and size tokens, so light, dark, and high contrast themes need no rules of their own.
+ * The background and text color come from the part that holds the view.
+ */
+
+.wisp-coordinator-chat {
+	display: flex;
+	flex-direction: column;
+	box-sizing: border-box;
+	height: 100%;
+	font-size: var(--vscode-fontSize-body1);
+	line-height: 20px;
+}
+
+.wisp-coordinator-chat .wisp-chat-context {
+	display: flex;
+	flex: none;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--vscode-spacing-size80);
+	height: 28px;
+	padding: 0 var(--vscode-spacing-size80);
+	border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, transparent);
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+	white-space: nowrap;
+}
+
+.wisp-coordinator-chat .wisp-chat-project,
+.wisp-coordinator-chat .wisp-chat-host {
+	min-width: 0;
+	padding: 0 var(--vscode-spacing-size60);
+}
+
+.wisp-coordinator-chat .wisp-chat-project,
+.wisp-coordinator-chat .wisp-chat-host-label {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.wisp-coordinator-chat .wisp-chat-host {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+}
+
+/* A hollow dot: no host. The label next to it carries the state. */
+.wisp-coordinator-chat .wisp-chat-dot {
+	flex: none;
+	box-sizing: border-box;
+	width: 8px;
+	height: 8px;
+	border: 1.5px solid var(--vscode-descriptionForeground);
+	border-radius: var(--vscode-cornerRadius-circle);
+}
+
+.wisp-coordinator-chat .wisp-chat-empty {
+	display: flex;
+	flex: 1 1 auto;
+	flex-direction: column;
+	align-items: center;
+	justify-content: safe center;
+	gap: var(--vscode-spacing-size80);
+	min-height: 0;
+	padding: 0 var(--vscode-spacing-size160) calc(var(--vscode-spacing-size400) + var(--vscode-spacing-size80));
+	overflow-y: auto;
+	text-align: center;
+}
+
+.wisp-coordinator-chat .wisp-chat-empty h3 {
+	margin: 0;
+	font-size: var(--vscode-fontSize-heading3);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	line-height: 20px;
+}
+
+.wisp-coordinator-chat .wisp-chat-empty p {
+	max-width: 250px;
+	margin: 0;
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+	line-height: 18px;
+}
+
+.wisp-coordinator-chat .wisp-chat-composer {
+	flex: none;
+	margin: 0 var(--vscode-spacing-size120) var(--vscode-spacing-size120);
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size100) var(--vscode-spacing-size60);
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: var(--vscode-cornerRadius-large);
+	background-color: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+}
+
+.wisp-coordinator-chat .wisp-chat-composer:focus-within {
+	border-color: var(--vscode-focusBorder);
+}
+
+.wisp-coordinator-chat .wisp-chat-input {
+	display: block;
+	box-sizing: border-box;
+	width: 100%;
+	height: 40px;
+	margin: 0;
+	padding: 0;
+	border: none;
+	resize: none;
+	background: none;
+	color: inherit;
+	caret-color: var(--vscode-editorCursor-foreground, var(--vscode-foreground));
+	font-family: inherit;
+	font-size: var(--vscode-fontSize-body1);
+	line-height: 20px;
+}
+
+/* The composer's border shows focus instead. */
+.monaco-workbench .wisp-coordinator-chat .wisp-chat-input:focus {
+	outline: none;
+}
+
+.wisp-coordinator-chat .wisp-chat-input::placeholder {
+	color: var(--vscode-input-placeholderForeground);
+	opacity: 1;
+}
+
+.wisp-coordinator-chat .wisp-chat-input[aria-disabled="true"] {
+	cursor: default;
+}
+
+.wisp-coordinator-chat .wisp-chat-input[aria-disabled="true"]::placeholder {
+	color: var(--vscode-disabledForeground);
+}
+
+.wisp-coordinator-chat .wisp-chat-composer-footer {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--vscode-spacing-size80);
+	height: 24px;
+}
+
+/* Holds the coordinator's account picker from M2. */
+.wisp-coordinator-chat .wisp-chat-account {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.wisp-coordinator-chat .wisp-chat-send.monaco-text-button {
+	flex: none;
+	width: auto;
+	height: 24px;
+	padding: 0 var(--vscode-spacing-size100);
+	border-radius: var(--vscode-cornerRadius-small);
+	font-size: var(--vscode-fontSize-label1);
+	line-height: 16px;
+	white-space: nowrap;
+}
