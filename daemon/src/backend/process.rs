@@ -1041,6 +1041,14 @@ mod tests {
         );
     }
 
+    /// Far longer than [`HANG_TIMEOUT`], so the production SIGKILL escalation can never race a
+    /// slow-but-correct trap under a loaded runner (#139): only a genuinely stuck process reaches
+    /// it. The default 10 s grace used to be close enough to a test's own budget that CI
+    /// contention alone could make the two race.
+    const GENEROUS_GRACE: Duration = Duration::from_secs(120);
+    /// A test's own bound on a hang, independent of [`GENEROUS_GRACE`] above.
+    const HANG_TIMEOUT: Duration = Duration::from_secs(30);
+
     #[tokio::test]
     async fn cancel_asks_first() {
         // A trap shows which signal arrived. Without one, bash 3.2's exit status after a SIGINT
@@ -1051,16 +1059,11 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(process.next().await, Some(Output::Line(b"ready".to_vec())));
-        // A grace far longer than the timeout below: the default 10 s grace used to race the
-        // trap's own clean exit under a loaded runner, so a slow but successful trap could lose
-        // to the production SIGKILL escalation and this test would see a killed process instead
-        // of the trapped one (#139). Only a truly stuck process should ever reach that path here;
-        // the timeout below is this test's own bound on a genuine hang, decoupled from it.
         process.signals().cancel(CancelPolicy {
-            grace: Duration::from_secs(120),
+            grace: GENEROUS_GRACE,
             ..CancelPolicy::default()
         });
-        let (lines, exit) = timeout(Duration::from_secs(30), collect(&mut process))
+        let (lines, exit) = timeout(HANG_TIMEOUT, collect(&mut process))
             .await
             .expect("the process did not exit after SIGINT");
         assert_eq!(lines, [Output::Line(b"interrupted".to_vec())]);
