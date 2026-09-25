@@ -120,13 +120,34 @@ export async function launch(options: LaunchOptions, scenario: Pick<Scenario, 'a
       env: { ...inheritedEnv(), ...options.env, [WISPD_DATA_DIR_ENV]: wispdDataDir },
       timeout: TIMEOUT_MS,
     });
-    const window = await app.firstWindow({ timeout: TIMEOUT_MS });
+    const window = await firstRealWindow(app);
     window.setDefaultTimeout(TIMEOUT_MS);
     return { app, window, close };
   } catch (error) {
     await close();
     throw error;
   }
+}
+
+const entryPointUrl = /\/(workbench|sessions)\.html(?:[?#]|$)/;
+
+// app.firstWindow() trusts whichever BrowserWindow Electron creates first, at whatever URL it has at that
+// instant (usually still about:blank). On a cold launch that first window can be a transient page that closes
+// again before the caller gets to it, losing the window Playwright was watching (#13's Progress comment on a
+// flake #10 saw once). Instead, wait for a window whose navigation actually reaches the app's own HTML; a
+// transient window's predicate simply times out and Playwright keeps waiting for the real one. One wait, no retry.
+async function firstRealWindow(app: ElectronApplication): Promise<Page> {
+  return app.waitForEvent('window', {
+    timeout: TIMEOUT_MS,
+    predicate: async (page) => {
+      // Any failure here (a timeout, or the page closing first) means this particular window never
+      // became the real one; let Playwright keep waiting instead of failing the whole wait on it.
+      return page
+        .waitForURL(entryPointUrl, { timeout: TIMEOUT_MS })
+        .then(() => true)
+        .catch(() => false);
+    },
+  });
 }
 
 export async function ready({ app, window }: ScenarioContext): Promise<void> {

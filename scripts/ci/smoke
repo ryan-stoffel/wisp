@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+
+root=$(cd "$(dirname "$0")/../.." && pwd)
+want=$(cut -d. -f1 "$root/.nvmrc")
+have=$(node -p 'process.versions.node.split(".")[0]')
+if [ "$have" != "$want" ]; then
+  echo "${0##*/}: Node $want is required (.nvmrc pins $(cat "$root/.nvmrc")), but node is $(node --version)" >&2
+  exit 1
+fi
+
+set -x
+
+node --version
+# ci/smoke imports ci/screenshots/src/harness.ts by relative path instead of duplicating it (its own
+# README says why), and Node resolves that file's own "playwright-core" import from ci/screenshots'
+# node_modules, not ci/smoke's, so both installs are needed to actually launch the app.
+(cd "$root/ci/screenshots" && npm ci --omit=dev --no-audit --no-fund)
+(cd "$root/ci/smoke" && npm ci --omit=dev --no-audit --no-fund)
+node "$root/ci/smoke/src/run.ts"

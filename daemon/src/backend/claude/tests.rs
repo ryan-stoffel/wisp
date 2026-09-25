@@ -34,6 +34,7 @@ fn fixture(name: &str) -> &'static str {
         "rate-limited" => include_str!("fixtures/rate-limited.jsonl"),
         "resume" => include_str!("fixtures/resume.jsonl"),
         "api-key-source" => include_str!("fixtures/api-key-source.jsonl"),
+        "api-key-completed" => include_str!("fixtures/api-key-completed.jsonl"),
         "write-tools" => include_str!("fixtures/write-tools.jsonl"),
         "malformed" => include_str!("fixtures/malformed.jsonl"),
         "follow-up-folded" => include_str!("fixtures/follow-up-folded.jsonl"),
@@ -42,6 +43,7 @@ fn fixture(name: &str) -> &'static str {
         "stubborn" => include_str!("fixtures/stubborn.jsonl"),
         "follow-up-no-echo" => include_str!("fixtures/follow-up-no-echo.jsonl"),
         "provider" => include_str!("fixtures/provider.jsonl"),
+        "subprocess-env" => include_str!("fixtures/subprocess-env.jsonl"),
         other => panic!("no fixture {other}"),
     }
 }
@@ -645,6 +647,196 @@ async fn a_subscription_run_that_reports_an_api_key_is_stopped_at_once() {
     assert!(message.contains("\"ANTHROPIC_API_KEY\""), "{message}");
 }
 
+// #118: an API key account.
+
+fn api_key_request(cwd: &Path, key: &str) -> RunRequest {
+    let mut request = request(cwd);
+    request.account = AccountRef {
+        id: "anthropic-key".into(),
+        credential: Credential::ApiKey(ApiKey::new(key.into())),
+    };
+    request
+}
+
+#[tokio::test]
+async fn an_api_key_account_gets_only_its_key_and_reports_it_as_the_source() {
+    let fake = Fake::new("api-key-completed");
+    let key = "sk-ant-api03-test-key-not-real";
+    let all = run(&fake, api_key_request(&fake.root(), key)).await;
+    assert_eq!(
+        all[0],
+        Event::SessionStarted {
+            session_id: SESSION.into(),
+            model: Some(OPUS.into()),
+            api_key_source: Some("ANTHROPIC_API_KEY".into()),
+        }
+    );
+    assert!(
+        matches!(outcome(&all), Outcome::Completed { .. }),
+        "{all:?}"
+    );
+    let env = fake.env();
+    // Every other inherited credential is scrubbed; ANTHROPIC_API_KEY is wisp's own value, not
+    // the poisoned inherited one INHERITED_CREDENTIALS set.
+    for (name, value) in INHERITED_CREDENTIALS {
+        let prefix = format!("{name}=");
+        let leaked: Vec<&String> = env
+            .iter()
+            .filter(|var| var.starts_with(&prefix))
+            .filter(|var| *name != "ANTHROPIC_API_KEY" || var.ends_with(value))
+            .collect();
+        assert!(leaked.is_empty(), "{name} leaked: {leaked:?}");
+    }
+    assert!(env.contains(&format!("ANTHROPIC_API_KEY={key}")), "{env:?}");
+    assert!(
+        env.contains(&"CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1".to_owned()),
+        "{env:?}"
+    );
+    let serialized = format!("{all:?}");
+    assert!(
+        !serialized.contains(key),
+        "the key must not appear in an event: {serialized}"
+    );
+}
+
+#[tokio::test]
+async fn a_key_account_resolved_from_the_keystore_runs_end_to_end() {
+    use wisp_protocol::{AccountId, Provider};
+
+    use crate::backend::key_account;
+    use crate::keystore::{KeyStore, MemoryKeyStore};
+
+    let store = MemoryKeyStore::new();
+    let account = AccountId::generate();
+    let key = "sk-ant-api03-from-the-keystore";
+    store.set(account, key).unwrap();
+    let credential = key_account::resolve(&store, Provider::Anthropic, account).unwrap();
+
+    let fake = Fake::new("api-key-completed");
+    let mut request = request(&fake.root());
+    request.account = AccountRef {
+        id: account.to_string(),
+        credential,
+    };
+    let all = run(&fake, request).await;
+    assert_eq!(
+        all[0],
+        Event::SessionStarted {
+            session_id: SESSION.into(),
+            model: Some(OPUS.into()),
+            api_key_source: Some("ANTHROPIC_API_KEY".into()),
+        }
+    );
+    assert!(
+        matches!(outcome(&all), Outcome::Completed { .. }),
+        "{all:?}"
+    );
+    let env = fake.env();
+    assert!(env.contains(&format!("ANTHROPIC_API_KEY={key}")), "{env:?}");
+}
+
+#[tokio::test]
+async fn an_api_key_run_reporting_a_different_source_fails() {
+    let fake = Fake::new("read-only");
+    let key = "sk-ant-api03-test-key-not-real";
+    let all = run(&fake, api_key_request(&fake.root(), key)).await;
+    let (kind, message) = failure(&all);
+    assert_eq!(kind, FailureKind::UnexpectedApiKey);
+    assert!(
+        !message.contains(key),
+        "the key must not appear in a failure message: {message}"
+    );
+}
+
+#[tokio::test]
+async fn an_api_key_never_reaches_tracing_output() {
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Default)]
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Capture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let capture = Capture::default();
+    let for_writer = capture.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .with_writer(move || for_writer.clone())
+        .finish();
+    let guard = tracing::subscriber::set_default(subscriber);
+    let key = "sk-ant-api03-test-key-not-real";
+
+    // A completed run and a failed one (the mismatch check), so both outcomes are covered.
+    let completed = Fake::new("api-key-completed");
+    let completed_request = api_key_request(&completed.root(), key);
+    assert!(
+        !format!("{completed_request:?}").contains(key),
+        "the key must not appear in a request's Debug output"
+    );
+    tracing::info!("wisp-test-sentinel: starting the completed run");
+    let all = run(&completed, completed_request).await;
+    assert!(
+        matches!(outcome(&all), Outcome::Completed { .. }),
+        "{all:?}"
+    );
+
+    let mismatched = Fake::new("read-only");
+    tracing::info!("wisp-test-sentinel: starting the mismatched run");
+    let all = run(&mismatched, api_key_request(&mismatched.root(), key)).await;
+    assert_eq!(failure(&all).0, FailureKind::UnexpectedApiKey);
+
+    drop(guard);
+    let logged = String::from_utf8_lossy(&capture.0.lock().unwrap()).into_owned();
+    assert!(
+        logged.contains("wisp-test-sentinel: starting the mismatched run"),
+        "the capture never saw anything, so it can't prove the key's absence: {logged:?}"
+    );
+    assert!(
+        !logged.contains(key),
+        "the key leaked into tracing output: {logged}"
+    );
+}
+
+// The fake CLI's own scrubbing of its child's environment stands in for the real CLI's, which
+// is documented (0004 [16]) but not something wispd can verify directly: this proves wispd sets
+// CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 and that a CLI honoring it keeps the key from a subprocess.
+#[tokio::test]
+async fn a_tool_subprocess_the_cli_spawns_never_sees_the_key() {
+    let fake = Fake::new("subprocess-env");
+    let key = "sk-ant-api03-test-key-not-real";
+    run(&fake, api_key_request(&fake.root(), key)).await;
+    assert!(
+        fake.env().contains(&format!("ANTHROPIC_API_KEY={key}")),
+        "the CLI itself must have had the key, or this test proves nothing: {:?}",
+        fake.env()
+    );
+    let child_env: Vec<String> = fake
+        .recorded("child-env")
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        !child_env.iter().any(|var| var.contains(key)),
+        "{child_env:?}"
+    );
+    assert!(
+        child_env
+            .iter()
+            .any(|var| var.starts_with("CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=")),
+        "the child should still see the flag itself: {child_env:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_no_write_run_offered_write_tools_is_stopped() {
     let fake = Fake::new("write-tools");
@@ -866,12 +1058,6 @@ async fn bad_requests_are_refused_before_spawning() {
             "accepted"
         );
     }
-    let mut api_key = request(&cwd);
-    api_key.account.credential = Credential::ApiKey(ApiKey::new("wisp-test-not-a-key".into()));
-    assert!(matches!(
-        fake.backend.start(api_key),
-        Err(StartError::Unsupported(_))
-    ));
     let missing = fake.backend.clone().with_program("claude-not-installed");
     assert!(matches!(
         missing.start(request(&cwd)),
