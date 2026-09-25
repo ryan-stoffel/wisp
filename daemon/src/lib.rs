@@ -12,6 +12,8 @@
 //! - [`server`]: the server behind `wispd serve`.
 //! - [`attach`]: reaching the server and bridging stdio to it, behind `wispd attach`.
 //! - [`launch_agent`]: the launch agent that `attach` starts wispd through, when it is installed.
+//! - [`service`]: installs, removes, and reports on the per-user `LaunchAgent` that keeps
+//!   `serve` running (#61).
 
 #![warn(missing_docs)]
 
@@ -22,6 +24,7 @@ pub mod logging;
 mod methods;
 pub mod paths;
 pub mod server;
+pub mod service;
 mod spawn;
 mod store;
 

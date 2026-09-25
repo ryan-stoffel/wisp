@@ -12,6 +12,7 @@ use wispd::launch_agent::LaunchAgent;
 use wispd::logging::{self, DEFAULT_LOG_LEVEL, LOG_LEVEL_ENV, LogFilter};
 use wispd::paths::{DATA_DIR_ENV, DataDir};
 use wispd::server::{self, Config, EXIT_ALREADY_RUNNING, Server, Shutdown, StartError};
+use wispd::service::{self, DEFAULT_LABEL, SERVICE_LABEL_ENV};
 
 #[derive(Debug, Parser)]
 #[command(name = "wispd", version, about = "The wisp host daemon.")]
@@ -27,6 +28,8 @@ enum Command {
     Serve(ServeArgs),
     /// Connect stdin and stdout to wispd's socket, starting wispd if it isn't running.
     Attach(AttachArgs),
+    /// Manage wispd's per-user `LaunchAgent`.
+    Service(ServiceArgs),
 }
 
 #[derive(Debug, Args)]
@@ -59,11 +62,39 @@ fn parse_seconds(text: &str) -> Result<Duration, String> {
         .ok_or_else(|| format!("{text:?} is not a number of seconds greater than 0"))
 }
 
+#[derive(Debug, Args)]
+struct ServiceArgs {
+    #[command(subcommand)]
+    command: ServiceCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ServiceCommand {
+    /// Install or update the `LaunchAgent`, then start or restart it.
+    Install(ServiceOptions),
+    /// Stop the `LaunchAgent` if it is running, and remove it.
+    Uninstall(ServiceOptions),
+    /// Report whether the `LaunchAgent` is installed, loaded, and running.
+    Status(ServiceOptions),
+}
+
+#[derive(Debug, Args)]
+struct ServiceOptions {
+    /// The data folder [default: ~/Library/Application Support/wisp]
+    #[arg(long, value_name = "DIR", env = DATA_DIR_ENV)]
+    data_dir: Option<PathBuf>,
+
+    /// Override the `LaunchAgent`'s label. For tests: a real install never needs this.
+    #[arg(long, value_name = "LABEL", env = SERVICE_LABEL_ENV, default_value = DEFAULT_LABEL, hide = true)]
+    label: String,
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Serve(args) => serve(&args),
         Command::Attach(args) => attach(&args),
+        Command::Service(args) => service_command(args.command),
     }
 }
 
@@ -186,6 +217,77 @@ fn serve(args: &ServeArgs) -> ExitCode {
     })
 }
 
+fn service_command(command: ServiceCommand) -> ExitCode {
+    match command {
+        ServiceCommand::Install(options) => service_install(&options),
+        ServiceCommand::Uninstall(options) => service_uninstall(&options),
+        ServiceCommand::Status(options) => service_status(&options),
+    }
+}
+
+fn service_install(options: &ServiceOptions) -> ExitCode {
+    let data_dir = match resolve_data_dir(options) {
+        Ok(data_dir) => data_dir,
+        Err(code) => return code,
+    };
+    match service::install(&options.label, &data_dir) {
+        Ok(service::InstallOutcome::Installed) => {
+            println!("installed and started {}", options.label);
+            ExitCode::SUCCESS
+        }
+        Ok(service::InstallOutcome::Reinstalled) => {
+            println!("updated the plist and restarted {}", options.label);
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(&error.to_string()),
+    }
+}
+
+fn service_uninstall(options: &ServiceOptions) -> ExitCode {
+    match service::uninstall(&options.label) {
+        Ok(service::UninstallOutcome::Removed) => {
+            println!("uninstalled {}", options.label);
+            ExitCode::SUCCESS
+        }
+        Ok(service::UninstallOutcome::NotInstalled) => {
+            println!("{} was not installed", options.label);
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(&error.to_string()),
+    }
+}
+
+fn service_status(options: &ServiceOptions) -> ExitCode {
+    let data_dir = match resolve_data_dir(options) {
+        Ok(data_dir) => data_dir,
+        Err(code) => return code,
+    };
+    match service::status(&options.label, &data_dir) {
+        Ok(status) => {
+            println!("label: {}", status.label);
+            println!("plist: {}", status.plist_path.display());
+            println!("installed: {}", status.installed);
+            println!("loaded: {}", status.launchd.loaded());
+            println!("running: {}", status.launchd.running());
+            println!(
+                "pid: {}",
+                status
+                    .launchd
+                    .pid()
+                    .map_or_else(|| "-".to_owned(), |pid| pid.to_string())
+            );
+            println!("answers initialize: {}", status.answers_initialize);
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(&error.to_string()),
+    }
+}
+
+fn resolve_data_dir(options: &ServiceOptions) -> Result<DataDir, ExitCode> {
+    DataDir::resolve(options.data_dir.as_deref())
+        .map_err(|error| fail(&format!("could not find the data folder: {error}")))
+}
+
 fn catch_signals(shutdown: Shutdown) -> io::Result<()> {
     let mut terminate = signal(SignalKind::terminate())?;
     let mut interrupt = signal(SignalKind::interrupt())?;
@@ -213,7 +315,7 @@ mod tests {
 
     use clap::{CommandFactory, Parser};
 
-    use super::{AttachArgs, Cli, Command};
+    use super::{AttachArgs, Cli, Command, ServiceCommand};
 
     #[test]
     fn the_command_line_definition_is_valid() {
@@ -273,5 +375,57 @@ mod tests {
             assert!(attach_args(&["--connect-timeout", bad]).is_err(), "{bad}");
         }
         assert!(attach_args(&["extra"]).is_err());
+    }
+
+    #[test]
+    fn service_install_takes_a_data_folder_and_a_label() {
+        let cli = Cli::try_parse_from([
+            "wispd",
+            "service",
+            "install",
+            "--data-dir",
+            "/tmp/d",
+            "--label",
+            "io.example.test",
+        ])
+        .unwrap();
+        let Command::Service(service) = cli.command else {
+            panic!("expected service, got {:?}", cli.command);
+        };
+        let ServiceCommand::Install(options) = service.command else {
+            panic!("expected install, got {:?}", service.command);
+        };
+        assert_eq!(
+            options.data_dir.as_deref(),
+            Some(std::path::Path::new("/tmp/d"))
+        );
+        assert_eq!(options.label, "io.example.test");
+    }
+
+    #[test]
+    fn service_status_defaults_to_the_wisp_label_with_no_data_dir_override() {
+        let cli = Cli::try_parse_from(["wispd", "service", "status"]).unwrap();
+        let Command::Service(service) = cli.command else {
+            panic!("expected service, got {:?}", cli.command);
+        };
+        let ServiceCommand::Status(options) = service.command else {
+            panic!("expected status, got {:?}", service.command);
+        };
+        assert_eq!(options.label, super::DEFAULT_LABEL);
+        assert_eq!(options.data_dir, None);
+    }
+
+    #[test]
+    fn service_uninstall_parses_with_no_options() {
+        let cli = Cli::try_parse_from(["wispd", "service", "uninstall"]).unwrap();
+        let Command::Service(service) = cli.command else {
+            panic!("expected service, got {:?}", cli.command);
+        };
+        assert!(matches!(service.command, ServiceCommand::Uninstall(_)));
+    }
+
+    #[test]
+    fn service_without_a_subcommand_is_a_usage_error() {
+        assert!(Cli::try_parse_from(["wispd", "service"]).is_err());
     }
 }
