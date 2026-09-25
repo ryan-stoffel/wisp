@@ -28,13 +28,25 @@ const MIGRATIONS: &[Migration] = &[
         version: 2,
         sql: "ALTER TABLE projects DROP COLUMN host;",
     },
+    // A key account's record: metadata only. The API key itself lives in the Keychain and never
+    // reaches this database (#117); `masked_key` is the display form, such as `sk-ant-...abcd`.
+    Migration {
+        version: 3,
+        sql: "CREATE TABLE accounts (
+            id TEXT NOT NULL PRIMARY KEY,
+            provider TEXT NOT NULL,
+            label TEXT NOT NULL,
+            masked_key TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );",
+    },
     // Per-account usage (#120): append-only token/cost deltas, one replaced snapshot per account
     // limit window, and one replaced running total per session and model, so a resumed session
     // can pass its baseline (#113's `Resume::usage_totals`). `model` uses `''`, not `NULL`, as the
     // "no model reported" sentinel: SQLite treats two `NULL`s as distinct, which would stop
     // `session_usage_totals` from replacing an existing row for the unnamed model.
     Migration {
-        version: 3,
+        version: 4,
         sql: "CREATE TABLE usage_deltas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             run_id TEXT NOT NULL,

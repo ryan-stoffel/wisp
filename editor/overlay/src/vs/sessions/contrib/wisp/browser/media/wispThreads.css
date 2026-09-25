@@ -155,19 +155,43 @@
 	text-overflow: ellipsis;
 }
 
-.wisp-threads-host {
+/* The host chip: a button that opens the host menu. Below 264 px the host truncates and keeps its mark. */
+.wisp-threads .wisp-threads-host {
 	display: inline-flex;
-	flex: none;
+	flex: 0 1 auto;
 	align-items: center;
 	gap: var(--vscode-spacing-size60);
+	min-width: 0;
+	max-width: 60%;
 	height: 22px;
 	padding: 0 var(--vscode-spacing-size80);
+	border: 1px solid transparent;
 	border-radius: var(--vscode-cornerRadius-circle);
 	background-color: var(--vscode-agentStatusIndicator-background);
 	font-size: var(--vscode-fontSize-label1);
 }
 
-/* A hollow dot: no host. The label next to it carries the state. */
+.wisp-threads .wisp-threads-host:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+	outline: 1px dashed var(--vscode-toolbar-hoverOutline, transparent);
+	outline-offset: -1px;
+}
+
+.wisp-threads-host-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.wisp-threads-host-state {
+	flex: none;
+	color: var(--vscode-descriptionForeground);
+}
+
+/*
+ * The mark. Each state has its own shape: a filled dot (connected), a dashed ring (connecting),
+ * a hollow dot (not connected), and a diamond (a problem). The text next to it names the state.
+ */
 .wisp-threads-host-dot {
 	flex: none;
 	box-sizing: border-box;
@@ -175,4 +199,35 @@
 	height: 8px;
 	border: 1.5px solid var(--vscode-descriptionForeground);
 	border-radius: var(--vscode-cornerRadius-circle);
+}
+
+.wisp-threads-host[data-mark="connected"] .wisp-threads-host-dot {
+	border-color: var(--vscode-charts-green);
+	background-color: var(--vscode-charts-green);
+}
+
+.wisp-threads-host[data-mark="connecting"] .wisp-threads-host-dot {
+	border-style: dashed;
+	border-color: var(--vscode-charts-yellow);
+}
+
+.wisp-threads-host[data-mark="error"] .wisp-threads-host-dot {
+	width: 7px;
+	height: 7px;
+	border: none;
+	border-radius: 1px;
+	background-color: var(--vscode-errorForeground);
+	transform: rotate(45deg);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+	.wisp-threads-host[data-mark="connecting"] .wisp-threads-host-dot {
+		animation: wisp-threads-host-spin 1.6s linear infinite;
+	}
+}
+
+@keyframes wisp-threads-host-spin {
+	to {
+		transform: rotate(360deg);
+	}
 }

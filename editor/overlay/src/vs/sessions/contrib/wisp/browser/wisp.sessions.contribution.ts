@@ -2,14 +2,21 @@
  *  wisp: not part of Code - OSS. Edit editor/overlay in the wisp repo, not this copy.
  *--------------------------------------------------------------------------------------------*/
 
-// wisp's entry point in the Agents window, which never loads the editor window's
-// wisp.contribution.ts. wisp's sessions provider and sidebar view are imported here.
+// wisp's browser code in the Agents window, which never loads the editor window's
+// wisp.contribution.ts: the sessions provider, the sidebar view, and the host status. The
+// window's entry point is ../electron-browser/wisp.sessions.contribution.ts, which imports this
+// file and the wispd connection.
 
 import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
+import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
+import { IWispHostStatusService, WispHostStatusService } from './wispHostStatusService.js';
 import '../../providers/wisp/browser/wispSessionsProvider.contribution.js';
 import './wispThreads.contribution.js';
 import './wispNoHost.contribution.js';
+import './wispHostMenu.js';
+
+registerSingleton(IWispHostStatusService, WispHostStatusService, InstantiationType.Delayed);
 
 // Settings that turn off what the exclusion list leaves behind. Registered in code so the
 // first launch gets them too. In this window, a setting's own `agentsWindow.default` wins over

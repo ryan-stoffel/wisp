@@ -77,7 +77,7 @@ async function capture(scenario: Scenario, options: LaunchOptions): Promise<Resu
   const { name, title } = scenario;
   let session: Session | undefined;
   try {
-    session = await launch(options, scenario.args);
+    session = await launch(options, scenario);
     const context = session;
     const shot = await withTimeout(
       (async () => {

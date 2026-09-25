@@ -4,6 +4,7 @@
 //! Later milestones add a module here for each capability (M3 `agents`: agents and context; M4
 //! `coordinator`), and `host.rs` advertises the capability in `initialize`.
 
+mod accounts;
 mod events;
 mod host;
 mod project;
@@ -17,8 +18,8 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use wisp_protocol::jsonrpc::{ErrorObject, INVALID_REQUEST, Request, RequestId, Response};
 use wisp_protocol::methods::{
-    EventsSubscribe, EventsUnsubscribe, HostHealth, HostVersion, Initialize, ProjectCreate,
-    ProjectList, RequestMethod, UsageGet,
+    AccountsKeysAdd, AccountsKeysList, AccountsKeysRemove, EventsSubscribe, EventsUnsubscribe,
+    HostHealth, HostVersion, Initialize, ProjectCreate, ProjectList, RequestMethod, UsageGet,
 };
 use wisp_protocol::{EventsSubscribeResult, EventsUnsubscribeResult, SubscriptionId};
 
@@ -68,6 +69,15 @@ pub(crate) async fn dispatch(context: Context, request: Request) -> Reply {
         }
         ProjectCreate::NAME => {
             handle::<ProjectCreate, _, _>(&request, |p| project::create(&context, p)).await
+        }
+        AccountsKeysAdd::NAME => {
+            handle::<AccountsKeysAdd, _, _>(&request, |p| accounts::add(&context, p)).await
+        }
+        AccountsKeysList::NAME => {
+            handle::<AccountsKeysList, _, _>(&request, |p| accounts::list(&context, p)).await
+        }
+        AccountsKeysRemove::NAME => {
+            handle::<AccountsKeysRemove, _, _>(&request, |p| accounts::remove(&context, p)).await
         }
         UsageGet::NAME => handle::<UsageGet, _, _>(&request, |p| usage::get(&context, p)).await,
         EventsSubscribe::NAME => {
