@@ -7,6 +7,7 @@ use clap::{Args, Parser, Subcommand};
 use tokio::net::UnixStream;
 use tokio::signal::unix::{SignalKind, signal};
 use tracing::{error, info, warn};
+use wispd::VERSION;
 use wispd::attach::{
     self, DEFAULT_CONNECT_TIMEOUT, EXIT_UNAVAILABLE, MAX_CONNECT_TIMEOUT, Options, report,
 };
@@ -17,7 +18,7 @@ use wispd::server::{self, Config, EXIT_ALREADY_RUNNING, Server, Shutdown, StartE
 use wispd::service::{self, DEFAULT_LABEL, SERVICE_LABEL_ENV};
 
 #[derive(Debug, Parser)]
-#[command(name = "wispd", version, about = "The wisp host daemon.")]
+#[command(name = "wispd", version = VERSION, about = "The wisp host daemon.")]
 #[command(arg_required_else_help = true)]
 struct Cli {
     #[command(subcommand)]
@@ -328,11 +329,18 @@ mod tests {
 
     use clap::{CommandFactory, Parser};
 
-    use super::{AttachArgs, Cli, Command, ServiceCommand};
+    use super::{AttachArgs, Cli, Command, ServiceCommand, VERSION};
 
     #[test]
     fn the_command_line_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn version_is_wired_to_wispds_own_version() {
+        // daemon/tests/cli.rs checks what `wispd --version` actually prints; this just checks
+        // the command is wired to the crate's VERSION (0006, #44), not a hardcoded string.
+        assert_eq!(Cli::command().get_version(), Some(VERSION));
     }
 
     #[test]

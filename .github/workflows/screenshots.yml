@@ -79,6 +79,23 @@ jobs:
           # Upstream's lockfiles exist only after scripts/editor/prepare runs, and the pin decides them.
           cache-dependency-path: editor/upstream.json
 
+      # build-app also builds wispd (#62), only needed on a miss. The key matches ci.yml's rust
+      # and app jobs, so all three can share one cached toolchain download.
+      - name: Cache Rust toolchain
+        if: steps.source.outputs.same-repo == 'true' && steps.cached.outputs.cache-hit != 'true'
+        timeout-minutes: 5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.rustup/toolchains/*
+            !~/.rustup/toolchains/stable-*
+          key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
+
+      - name: Install Rust toolchain
+        if: steps.source.outputs.same-repo == 'true' && steps.cached.outputs.cache-hit != 'true'
+        timeout-minutes: 5
+        run: rustup toolchain install --no-self-update
+
       # On a miss, upstream's build calls GitHub's API, which rate-limits anonymous calls from shared runners.
       # The token is this job's contents: read token, and it expires when the job ends, before publish reads the log.
       - name: Build the app, or unpack the cached build
