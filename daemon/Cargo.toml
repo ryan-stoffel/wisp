@@ -14,10 +14,10 @@ workspace = true
 [dependencies]
 clap = { workspace = true, features = ["derive", "env"] }
 futures-util = { workspace = true, features = ["sink", "std"] }
-jiff.workspace = true
+jiff = { workspace = true, features = ["serde"] }
 nix = { workspace = true, features = ["process", "signal"] }
 rustix = { workspace = true, features = ["fs", "process"] }
-serde.workspace = true
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true

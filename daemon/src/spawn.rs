@@ -1,4 +1,5 @@
-//! Starting a process that is detached from this one, as `attach` starts `serve` (0010).
+//! Starting a process in its own session with no descriptors but its stdio: `serve`, which
+//! `attach` starts detached (0010), and the agent CLIs that `backend::process` supervises.
 
 use std::collections::BTreeMap;
 use std::ffi::{CString, OsStr, OsString};
@@ -44,13 +45,31 @@ pub(crate) fn spawn_detached(command: &Command, stdio: Stdio<'_>) -> io::Result<
         command.get_current_dir().is_none(),
         "a detached process keeps the working directory"
     );
-    let args = iter::once(command.get_program())
+    let argv: Vec<&OsStr> = iter::once(command.get_program())
         .chain(command.get_args())
-        .map(c_string)
-        .collect::<io::Result<Vec<_>>>()?;
-    let env = environment(command)
-        .into_iter()
-        .map(|(mut pair, value)| {
+        .collect();
+    spawn_session(command.get_program(), &argv, &environment(command), stdio)
+}
+
+/// Starts `program` with `argv` (whose first entry is the name the program sees for itself) and
+/// exactly the environment `env`, as [`spawn_detached`] describes: in a new session and process
+/// group whose id is the returned pid, with `stdio` as its only descriptors, and in this process's
+/// working directory. `program` must be a path; `PATH` is not searched.
+///
+/// # Errors
+///
+/// If an argument or environment variable contains a NUL byte, or `posix_spawn` fails.
+pub(crate) fn spawn_session(
+    program: &OsStr,
+    argv: &[&OsStr],
+    env: &BTreeMap<OsString, OsString>,
+    stdio: Stdio<'_>,
+) -> io::Result<Pid> {
+    let c_args = argv.iter().map(c_string).collect::<io::Result<Vec<_>>>()?;
+    let c_env = env
+        .iter()
+        .map(|(key, value)| {
+            let mut pair = key.clone();
             pair.push("=");
             pair.push(value);
             c_string(&pair)
@@ -78,7 +97,7 @@ pub(crate) fn spawn_detached(command: &Command, stdio: Stdio<'_>) -> io::Result<
     attr.set_sigdefault(&SigSet::all())?;
     attr.set_sigmask(&SigSet::empty())?;
 
-    let pid = posix_spawn(command.get_program(), &actions, &attr, &args, &env)?;
+    let pid = posix_spawn(program, &actions, &attr, &c_args, &c_env)?;
     Pid::from_raw(pid.as_raw()).ok_or_else(|| io::Error::other("posix_spawn returned pid 0"))
 }
 

@@ -29,6 +29,7 @@
 
 #![warn(missing_docs)]
 
+mod agent;
 mod error;
 mod events;
 pub mod framing;
@@ -43,6 +44,7 @@ pub mod typescript;
 #[cfg(test)]
 mod samples;
 
+pub use agent::{RunId, TurnId};
 pub use error::{ErrorData, ErrorKind, IncompatibleProtocolDetail};
 pub use events::{
     EventsEventParams, EventsSubscribeParams, EventsSubscribeResult, EventsUnsubscribeParams,

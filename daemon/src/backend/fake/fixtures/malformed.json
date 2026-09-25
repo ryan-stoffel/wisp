@@ -1,0 +1,9 @@
+[
+  {"init": {"sessionId": "messy-1"}},
+  {"raw": "Update available: run npm i -g fake-cli"},
+  {"raw": "{\"kind\": \"mystery\", \"detail\": 1}"},
+  {"raw": "[1, 2"},
+  {"oversized": 5000},
+  {"emit": {"kind": "text", "text": "Still here."}},
+  {"endTurn": {"result": "Still here."}}
+]
