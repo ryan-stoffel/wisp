@@ -827,6 +827,7 @@ mod tests {
 
     use rustix::process::{Pid, Signal};
     use tokio::io::AsyncWriteExt;
+    use tokio::time::timeout;
 
     use super::{
         CancelPolicy, Environment, Launcher, LineReader, Output, OutputLimits, Process,
@@ -1050,12 +1051,20 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(process.next().await, Some(Output::Line(b"ready".to_vec())));
-        let started = Instant::now();
-        process.signals().cancel(CancelPolicy::default());
-        let (lines, exit) = collect(&mut process).await;
+        // A grace far longer than the timeout below: the default 10 s grace used to race the
+        // trap's own clean exit under a loaded runner, so a slow but successful trap could lose
+        // to the production SIGKILL escalation and this test would see a killed process instead
+        // of the trapped one (#139). Only a truly stuck process should ever reach that path here;
+        // the timeout below is this test's own bound on a genuine hang, decoupled from it.
+        process.signals().cancel(CancelPolicy {
+            grace: Duration::from_secs(120),
+            ..CancelPolicy::default()
+        });
+        let (lines, exit) = timeout(Duration::from_secs(30), collect(&mut process))
+            .await
+            .expect("the process did not exit after SIGINT");
         assert_eq!(lines, [Output::Line(b"interrupted".to_vec())]);
         assert_eq!(exit.info.code, Some(7), "{exit:?}");
-        assert!(started.elapsed() < Duration::from_secs(5));
         assert!(process.signals().reaped());
         assert!(
             !process.signals().signal(Signal::TERM),
