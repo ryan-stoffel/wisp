@@ -146,6 +146,8 @@ export class WispdClient extends Disposable {
 	private failures = 0;
 	private retryTimer: IDisposable | undefined;
 	private readonly subscriptions = new Set<Subscription>();
+	/** Requests waiting for a connection, failed with a cancellation when the client is disposed. */
+	private readonly waiting = new Set<() => void>();
 
 	constructor(
 		private readonly factory: IWispdTransportFactory,
@@ -169,6 +171,9 @@ export class WispdClient extends Disposable {
 			this.connection = undefined;
 			connection?.dispose();
 			this.subscriptions.clear();
+			for (const cancel of [...this.waiting]) {
+				cancel();
+			}
 		}));
 	}
 
@@ -388,12 +393,19 @@ export class WispdClient extends Disposable {
 			return Promise.reject(new WispdUnavailableError(describeIncompatible(this._state)));
 		}
 
+		if (this._store.isDisposed) {
+			return Promise.reject(new CancellationError());
+		}
+
 		return new Promise<Connection>((resolve, reject) => {
 			const store = new DisposableStore();
 			const settle = (fn: () => void) => {
+				this.waiting.delete(cancel);
 				store.dispose();
 				fn();
 			};
+			const cancel = () => settle(() => reject(new CancellationError()));
+			this.waiting.add(cancel);
 			store.add(this.onDidChangeState(state => {
 				const connection = this.connection;
 				if (state.kind === 'connected' && connection) {
@@ -407,19 +419,23 @@ export class WispdClient extends Disposable {
 				const why = state.kind === 'disconnected' ? `: ${state.message}` : '';
 				settle(() => reject(new WispdUnavailableError(`wispd is not reachable through ${this.factory.command}${why}`)));
 			}, this.connectWaitMs));
-			store.add(token.onCancellationRequested(() => settle(() => reject(new CancellationError()))));
+			store.add(token.onCancellationRequested(cancel));
 		});
 	}
 
 	private send<T>(connection: Connection, method: keyof WispRequests, params: unknown, token: CancellationToken = CancellationToken.None): Promise<T> {
-		connection.outstanding++;
-		this.armLiveness(connection);
+		// Only received bytes restart the liveness timer; sending never does (decision record 0007).
+		if (connection.outstanding++ === 0) {
+			this.armLiveness(connection);
+		}
 		const request = connection.protocol.sendRequest<T>({ method, params }, token, id => {
 			connection.protocol.sendNotification({ method: '$/cancelRequest', params: { id } });
 		});
 		return request.finally(() => {
-			connection.outstanding--;
-			this.armLiveness(connection);
+			if (--connection.outstanding === 0) {
+				connection.liveness?.dispose();
+				connection.liveness = undefined;
+			}
 		});
 	}
 

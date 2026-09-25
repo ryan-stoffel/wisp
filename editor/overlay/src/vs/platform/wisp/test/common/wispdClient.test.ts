@@ -201,6 +201,29 @@ suite('WispdClient', () => {
 		assert.strictEqual(client.state.kind, 'connected');
 	});
 
+	test('sending requests does not reset the liveness timer while wispd stays silent', async () => {
+		const client = await connect();
+		wispd.answering = false;
+		client.request('project/list', {}).catch(() => { });
+		await settle();
+		assert.strictEqual(wispd.current.requests('project/list').length, 1);
+		await timers.advance(6_000);
+		client.request('project/list', {}).catch(() => { });
+		const cts = new CancellationTokenSource();
+		client.request('project/list', {}, cts.token).catch(() => { });
+		await settle();
+		cts.cancel();
+		cts.dispose();
+		await timers.advance(3_999);
+		assert.strictEqual(client.state.kind, 'connected');
+		await timers.advance(1);
+
+		const state = stateOf(client);
+		assert.strictEqual(state.kind, 'disconnected');
+		assert.strictEqual(state.reason, 'timedOut');
+		assert.strictEqual(timers.now(), 10_000, '10 s after the first request');
+	});
+
 	test('the handshake gets 20 s, since attach may be starting wispd', async () => {
 		wispd.answering = false;
 		const client = createClient();
