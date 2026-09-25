@@ -418,5 +418,5 @@ fn a_version_1_database_migrates_and_keeps_its_projects() {
             row.get(0)
         })
         .expect("read schema version");
-    assert_eq!(version, 2);
+    assert_eq!(version, 3, "migration 3 (#120) also applies");
 }
