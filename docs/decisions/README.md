@@ -15,6 +15,7 @@ A decision that affects more than one issue gets a record here. Records supersed
 | [0009](0009-wispd-data-folder-and-project-host.md) | wispd's files, overrides, log, and exit codes in the data folder; projects have no host field |
 | [0010](0010-wispd-attach.md) | `wispd attach` starts wispd through the LaunchAgent `io.github.ryan-stoffel.wisp.wispd` or as a detached `serve`, and exits 4 when it never reaches wispd |
 | [0011](0011-agents-window-baseline.md) | wisp opens into upstream's Agents window, laid out like Cursor's Projects: a built-in `ISessionsProvider` and wisp-owned sidebar in the overlay, subagents as tool-origin chats behind the Agents pill, and a few patches |
+| [0013](0013-worker-sandbox.md) | Workers run in their vendor's own OS sandbox: they write only their worktree, the shared context folder, and temp; their commands can't read credential stores and have no network; wispd commits. Claude workers use `--restricted` with Claude Code's Bash sandbox |
 
 Numbers are assigned in order. Take the next free number when you start the record, add a row to this table in the same PR, and link the record from its issue.
 
