@@ -40,7 +40,15 @@ pub fn record_event(
                 captured_at: Timestamp::now(),
             })?;
         }
-        Event::Finished { usage_totals, .. } => {
+        // `usage_totals` is empty only when the vendor's own totals are genuinely empty (a
+        // fresh session that used nothing, in which case there is no baseline to lose), or when
+        // `EventStream` synthesizes this event because the backend task died without ever
+        // calling `EventSink::finish` (`backend/mod.rs`'s `poll_next`). In the second case the
+        // session may already have a real baseline recorded from before the crash, and replacing
+        // it with nothing would make the next resume start from zero and double-count every
+        // delta the vendor's cumulative total already carries. Skipping the write leaves the
+        // last known baseline in place either way.
+        Event::Finished { usage_totals, .. } if !usage_totals.is_empty() => {
             let totals: Vec<_> = usage_totals.iter().map(session_total).collect();
             store.set_session_usage_totals(session_id, &totals)?;
         }
@@ -238,6 +246,107 @@ mod tests {
         assert_eq!(
             totals[0].input_tokens, 1200,
             "the session's stored baseline is the vendor's real cumulative total"
+        );
+    }
+
+    /// A run that dies without ever reaching `EventSink::finish` (a panic, or the backend task
+    /// vanishing outright) never produces a real `Event::Finished`. Instead `EventStream::poll_next`
+    /// synthesizes one, with an empty `usage_totals` (`backend/mod.rs`). Recording that must not
+    /// wipe a baseline a previous, successful run of the same session already established, or the
+    /// next resume would treat the vendor's full cumulative total as entirely new and double-count
+    /// everything already recorded.
+    #[tokio::test]
+    async fn a_run_that_dies_without_finishing_does_not_wipe_the_resume_baseline() {
+        use crate::backend::EventSink;
+
+        let (_dir, mut store) = open();
+        let session_id = "sess-crash";
+
+        // First run: a clean finish establishes a baseline of 100 tokens.
+        let first_run = RunId::generate();
+        record_event(
+            &mut store,
+            first_run,
+            "claude-max",
+            session_id,
+            &Event::Usage(ModelUsage {
+                model: None,
+                usage: usage(100, 10),
+            }),
+        )
+        .unwrap();
+        record_event(
+            &mut store,
+            first_run,
+            "claude-max",
+            session_id,
+            &Event::Finished {
+                outcome: Outcome::Completed { result: None },
+                usage_totals: vec![ModelUsage {
+                    model: None,
+                    usage: usage(100, 10),
+                }],
+            },
+        )
+        .unwrap();
+
+        // Second run: the backend task vanishes before it ever finishes. This drives the exact
+        // production path (`backend/mod.rs`'s `EventStream::poll_next`), not a hand-built event,
+        // by dropping the sink and reading the synthesized `Finished` back out of the stream.
+        let (sink, mut stream) = EventSink::channel(8, Vec::new());
+        drop(sink);
+        let crashed = stream.next().await.expect("a synthesized Finished");
+        let crashed_run = RunId::generate();
+        record_event(&mut store, crashed_run, "claude-max", session_id, &crashed).unwrap();
+
+        let totals = store.session_usage_totals(session_id).unwrap();
+        assert_eq!(totals.len(), 1);
+        assert_eq!(
+            totals[0].input_tokens, 100,
+            "a run dying mid-flight must not wipe the pre-crash baseline"
+        );
+
+        // Third run: resumes from that surviving baseline. Its `Usage` delta is only what's new
+        // since 100, and its `Finished` reports the vendor's real new cumulative total of 120.
+        let resumed_run = RunId::generate();
+        record_event(
+            &mut store,
+            resumed_run,
+            "claude-max",
+            session_id,
+            &Event::Usage(ModelUsage {
+                model: None,
+                usage: usage(20, 2),
+            }),
+        )
+        .unwrap();
+        record_event(
+            &mut store,
+            resumed_run,
+            "claude-max",
+            session_id,
+            &Event::Finished {
+                outcome: Outcome::Completed { result: None },
+                usage_totals: vec![ModelUsage {
+                    model: None,
+                    usage: usage(120, 12),
+                }],
+            },
+        )
+        .unwrap();
+
+        let far_past = "2020-01-01T00:00:00Z".parse().unwrap();
+        let far_future = "2030-01-01T00:00:00Z".parse().unwrap();
+        let summary = store
+            .usage_summary("claude-max", far_past, far_future)
+            .unwrap();
+        assert_eq!(
+            summary.input_tokens, 120,
+            "100 before the crash plus 20 after resuming, never double-counted"
+        );
+        assert_eq!(
+            store.session_usage_totals(session_id).unwrap()[0].input_tokens,
+            120
         );
     }
 
