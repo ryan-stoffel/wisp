@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ryan Stoffel <stoffel.thomas.ryan@gmail.com>
+Date: Thu, 24 Sep 2026 21:37:19 -0700
+Subject: [PATCH] strip: skip the actions wisp leaves out
+
+Some upstream features show up as an action rather than a view container
+or a workbench contribution, which the registration filter already
+covers. The Agents window's Copilot account button is one: its action
+sits in the title bar at module load, and its contribution only draws
+it, so excluding the contribution still leaves a text button behind.
+
+The ids live in one wisp-owned list,
+src/vs/platform/wisp/common/excludedActions.ts, which the overlay
+provides. It sits in platform because registerAction2 does, and platform
+code must not import from the workbench. registerAction2 returns before
+registering an excluded action's command, menu entries, or keybinding.
+
+diff --git a/src/vs/platform/actions/common/actions.ts b/src/vs/platform/actions/common/actions.ts
+index 6ed9a9a6170392a04fbf75af8f9f2ec8996da98e..2ac60a3f54e261c7718ff7689b7245b95965e1a2 100644
+--- a/src/vs/platform/actions/common/actions.ts
++++ b/src/vs/platform/actions/common/actions.ts
+@@ -14,6 +14,7 @@ import { CommandsRegistry, ICommandService } from '../../commands/common/command
+ import { ContextKeyExpr, ContextKeyExpression, IContextKeyService } from '../../contextkey/common/contextkey.js';
+ import { createDecorator, ServicesAccessor } from '../../instantiation/common/instantiation.js';
+ import { IKeybindingRule, KeybindingsRegistry } from '../../keybinding/common/keybindingsRegistry.js';
++import { isExcludedAction } from '../../wisp/common/excludedActions.js';
+ 
+ export interface IMenuItem {
+ 	command: ICommandAction;
+@@ -728,6 +729,9 @@ export abstract class Action2 {
+ export function registerAction2(ctor: { new(): Action2 }): IDisposable {
+ 	const disposables: IDisposable[] = []; // not using `DisposableStore` to reduce startup perf cost
+ 	const action = new ctor();
++	if (isExcludedAction(action.desc.id)) {
++		return toDisposable(() => { });
++	}
+ 
+ 	const { f1, menu, keybinding, ...command } = action.desc;
+ 

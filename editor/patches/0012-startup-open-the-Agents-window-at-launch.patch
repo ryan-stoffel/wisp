@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ryan Stoffel <stoffel.thomas.ryan@gmail.com>
+Date: Thu, 24 Sep 2026 21:28:22 -0700
+Subject: [PATCH] startup: open the Agents window at launch
+
+The Agents window is wisp's main UI (decision record 0011). Started with
+no file or folder arguments, no --new-window, and no macOS open-file
+event, wisp opens it instead of restoring or opening an editor window.
+When the dock reopens the app with no visible window, it opens the
+Agents window instead of an empty editor window.
+
+`wisp <folder>` and `wisp <file>` never reach either branch, so they
+still open the editor window, and --new-window still opens an empty
+one. A --remote launch keeps upstream's behavior, since the Agents
+window has no remote authority.
+
+diff --git a/src/vs/code/electron-main/app.ts b/src/vs/code/electron-main/app.ts
+index b9a22c34f22106d9343ef49aeee9e3ae54bf8978..52e797cd498096ddd1bf16505c6f557a56034af2 100644
+--- a/src/vs/code/electron-main/app.ts
++++ b/src/vs/code/electron-main/app.ts
+@@ -558,7 +558,7 @@ export class CodeApplication extends Disposable {
+ 
+ 			// Mac only event: open new window when we get activated
+ 			if (!hasVisibleWindows) {
+-				await this.windowsMainService?.openEmptyWindow({ context: OpenContext.DOCK });
++				await this.windowsMainService?.openAgentsWindow({ context: OpenContext.DOCK, cli: this.environmentMainService.args });
+ 			}
+ 		});
+ 
+@@ -1605,6 +1605,10 @@ export class CodeApplication extends Disposable {
+ 					// remoteAuthority: will be determined based on macOpenFiles
+ 				});
+ 			}
++
++			if (!remoteAuthority) {
++				return windowsMainService.openAgentsWindow({ context, cli: args, initialStartup: true });
++			}
+ 		}
+ 
+ 		// default: read paths from cli

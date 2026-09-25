@@ -24,6 +24,7 @@ command -v brew >/dev/null || fail "Homebrew is required"
 tap=wisp-ci/dry-run
 cask=$tap/wisp
 launcher="$(brew --prefix)/bin/wisp"
+wispd_launcher="$(brew --prefix)/bin/wispd"
 export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ANALYTICS=1 HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_INSTALL_CLEANUP=1
 
 # A throwaway download cache and tap keep a local run from touching the user's own Homebrew state.
@@ -34,10 +35,12 @@ cleanup() {
   status=$?
   if [ "$installed" = yes ]; then
     brew uninstall --cask "$cask" || status=1
-    if [ -e "$launcher" ] || [ -L "$launcher" ]; then
-      echo "${0##*/}: uninstalling the cask left $launcher behind" >&2
-      status=1
-    fi
+    for link in "$launcher" "$wispd_launcher"; do
+      if [ -e "$link" ] || [ -L "$link" ]; then
+        echo "${0##*/}: uninstalling the cask left $link behind" >&2
+        status=1
+      fi
+    done
   fi
   brew untrust --cask "$cask" >/dev/null 2>&1 || true
   brew untap "$tap" >/dev/null 2>&1 || true
@@ -89,9 +92,11 @@ done
 if brew list --cask wisp >/dev/null 2>&1; then
   skip "a wisp cask is already installed here"
 fi
-if [ -e "$launcher" ] || [ -L "$launcher" ]; then
-  skip "$launcher already exists"
-fi
+for link in "$launcher" "$wispd_launcher"; do
+  if [ -e "$link" ] || [ -L "$link" ]; then
+    skip "$link already exists"
+  fi
+done
 
 version=${host_zip##*/}
 version=${version#wisp-}
@@ -110,10 +115,16 @@ xattr -p com.apple.quarantine "$app" >/dev/null ||
   fail "Homebrew did not quarantine Wisp.app, so this check no longer matches what users get"
 target=$(readlink "$launcher") || fail "the cask did not link $launcher"
 [ "$target" = "$app/Contents/Resources/app/bin/wisp" ] || fail "$launcher links to $target, not into the installed Wisp.app"
+wispd_target=$(readlink "$wispd_launcher") || fail "the cask did not link $wispd_launcher"
+[ "$wispd_target" = "$app/Contents/Resources/app/bin/wispd" ] ||
+  fail "$wispd_launcher links to $wispd_target, not into the installed Wisp.app"
 
 # Users remove the quarantine, or click Open Anyway, before wisp runs (README, Install).
 xattr -dr com.apple.quarantine "$app"
 printed=$("$launcher" --version) || fail "$launcher --version failed"
 echo "${0##*/}: $launcher --version: $(printf '%s' "$printed" | tr '\n' ' ')" >&2
 [ "$(printf '%s\n' "$printed" | sed -n 1p)" = "$version" ] || fail "wisp --version does not start with $version"
-echo "${0##*/}: installed wisp $version from the cask, quarantined as users will get it, and ran $launcher --version; uninstalling" >&2
+wispd_printed=$("$wispd_launcher" --version) || fail "$wispd_launcher --version failed"
+echo "${0##*/}: $wispd_launcher --version: $wispd_printed" >&2
+[ "$wispd_printed" = "wispd $version" ] || fail "wispd --version printed '$wispd_printed', expected 'wispd $version'"
+echo "${0##*/}: installed wisp $version from the cask, quarantined as users will get it, and ran $launcher --version and $wispd_launcher --version; uninstalling" >&2

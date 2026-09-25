@@ -19,6 +19,9 @@ cask "wisp" do
 
   app "Wisp.app"
   binary "#{appdir}/Wisp.app/Contents/Resources/app/bin/wisp"
+  binary "#{appdir}/Wisp.app/Contents/Resources/app/bin/wispd"
+
+  uninstall launchctl: "io.github.ryan-stoffel.wisp.wispd"
 
   zap trash: [
     "~/.wisp",
@@ -27,6 +30,7 @@ cask "wisp" do
     "~/Library/Application Support/[Ww]isp",
     "~/Library/Caches/io.github.ryan-stoffel.wisp",
     "~/Library/HTTPStorages/io.github.ryan-stoffel.wisp",
+    "~/Library/LaunchAgents/io.github.ryan-stoffel.wisp.wispd.plist",
     "~/Library/Preferences/io.github.ryan-stoffel.wisp.plist",
     "~/Library/Saved Application State/io.github.ryan-stoffel.wisp.savedState",
   ]

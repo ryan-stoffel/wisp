@@ -7,8 +7,17 @@ const openFile = 'tasks.ts';
 
 export const scenarios: readonly Scenario[] = [
   {
+    name: 'agents-window',
+    title: 'Agents window at startup',
+    async run({ window }) {
+      await visible(window, '.part.titlebar', '.part.sessionspart');
+      return screenshot(window);
+    },
+  },
+  {
     name: 'startup',
-    title: 'Startup',
+    title: 'Empty editor window',
+    args: () => Promise.resolve(['--new-window']),
     async run({ window }) {
       await visible(window, '.part.titlebar', '.part.activitybar', '.part.editor', '.part.statusbar');
       return screenshot(window);
