@@ -9,6 +9,7 @@ import { Disposable, DisposableStore } from '../../../base/common/lifecycle.js';
 import { sanitizeProcessEnvironment } from '../../../base/common/processes.js';
 import { ILogger } from '../../log/common/log.js';
 import { IWispdTransport, IWispdTransportClose, IWispdTransportFactory } from '../common/wispdClient.js';
+import { validateSshDestination } from '../common/wispdConfiguration.js';
 import { ATTACH_EXIT_UNREACHABLE, IWispdProcessStreams, WispdCloseClassifier, WispdProcessTransport } from './wispdTransport.js';
 
 /** ssh's own exit code for a connection-level failure: no route, a timeout, auth, or a host key (`ssh(1)`). */
@@ -16,6 +17,9 @@ export const SSH_CONNECTION_FAILURE_EXIT_CODE = 255;
 
 /** The remote shell's exit code when the command it was asked to run isn't on its `PATH`. */
 export const REMOTE_COMMAND_NOT_FOUND_EXIT_CODE = 127;
+
+// Moved to common so the UI validates with it too; re-exported for existing imports.
+export { validateSshDestination };
 
 /** ssh isn't found on the editor's own `PATH`, so it never ran at all. */
 const SSH_NOT_FOUND_HINT = 'Install ssh, or make sure it is on PATH.';
@@ -25,39 +29,6 @@ const SSH_NOT_FOUND_HINT = 'Install ssh, or make sure it is on PATH.';
  * (decision record 0007; see daemon/README.md for why a non-interactive SSH `PATH` misses these).
  */
 export const DEFAULT_REMOTE_WISPD_CANDIDATES: readonly string[] = ['wispd', '/opt/homebrew/bin/wispd', '/usr/local/bin/wispd'];
-
-/** Every C0 and C1 control character, plus Unicode format characters such as zero-width space and RTL override. */
-const CONTROL_OR_FORMAT_CHARACTER = /[\p{Cc}\p{Cf}]/u;
-/** Shell metacharacters. ssh runs argv with no shell of its own, but the destination still ends up in one on the host (0007) or, for a user@-host form, can be misread by ssh itself. */
-const SHELL_METACHARACTER = /[`$;&|<>(){}'"\\]/;
-/** A `-` right where ssh would start reading a hostname: at the start, right after `@`, or right after a `scheme://`. */
-const LEADING_DASH = /(^|@|:\/\/)-/;
-
-/**
- * Rejects an ssh destination that ssh could misread as an option, that could carry stray or
- * invisible bytes into the argument vector, or that could inject a second shell command once the
- * host's login shell runs it (0007's `-- <destination>` stops ssh from reading it as an option,
- * but not the host's shell from interpreting what's inside it). Returns why it's invalid, or
- * `undefined` if it's fine to use.
- */
-export function validateSshDestination(destination: string): string | undefined {
-	if (destination.length === 0) {
-		return 'it is empty';
-	}
-	if (LEADING_DASH.test(destination)) {
-		return 'it starts with "-" (or a user or scheme part does), which ssh would read as an option';
-	}
-	if (/\s/.test(destination)) {
-		return 'it contains whitespace';
-	}
-	if (CONTROL_OR_FORMAT_CHARACTER.test(destination)) {
-		return 'it contains a control or invisible formatting character';
-	}
-	if (SHELL_METACHARACTER.test(destination)) {
-		return 'it contains a shell metacharacter';
-	}
-	return undefined;
-}
 
 /** An absolute path of plain characters: no shell metacharacters, quoting, or expansion for a host's login shell to act on. */
 const REMOTE_WISPD_PATH_PATTERN = /^\/[A-Za-z0-9._+/-]+$/;
