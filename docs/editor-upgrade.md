@@ -7,7 +7,7 @@ wisp's editor is upstream Code - OSS at the release pinned in `editor/upstream.j
 | Path | What it is | In git |
 | --- | --- | --- |
 | `editor/upstream.json` | The pin: upstream repository, release tag, and the commit the tag must resolve to | Yes |
-| `editor/product.json` | wisp's changes to upstream's `product.json`, as a JSON merge patch: branding, Open VSX, telemetry, and updates | Yes |
+| `editor/product.json` | wisp's changes to upstream's `product.json`, as a JSON merge patch: branding, Open VSX, telemetry, updates, and removed Copilot and debugger keys | Yes |
 | `editor/overlay/` | Files copied into the tree at the same path, such as the app icon `resources/darwin/code.icns` | Yes |
 | `editor/branding/icon.svg` | The source of the app icon. `scripts/editor/make-icon` renders it into `editor/overlay/`. | Yes |
 | `editor/patches/NNNN-*.patch` | wisp's changes to upstream files, one `git format-patch` file per commit, applied in filename order | Yes |
@@ -71,6 +71,19 @@ scripts/editor/build-app          # this Mac's architecture, or: build-app arm64
 - To change the app icon, edit `editor/branding/icon.svg` and run `scripts/editor/make-icon`. It writes `editor/overlay/resources/darwin/code.icns`.
 
 Make these changes in wisp, not in `editor/vscode/`, then run `scripts/editor/prepare`. It rebuilds the overlay commit and reapplies the patches in a second or two. `export-patches` refuses a patch that changes `product.json` or an overlaid file. [0008](decisions/0008-editor-overlay.md) explains why.
+
+## What wisp leaves out
+
+#10 strips the workbench to the editor, the file tree, search, source control, and the terminal. Its inventory of upstream's built-in extensions and workbench contributions is in [#10](https://github.com/ryan-stoffel/wisp/issues/10). The removals live in four places:
+
+| Where | What it removes |
+| --- | --- |
+| `editor/overlay/src/vs/workbench/common/wisp/exclusions.ts` | View containers and workbench contributions, by id: upstream Chat's container, Run and Debug, the Debug Console, Ports, chat setup, the Copilot status item, and the remote indicator. The `strip: skip the view containers...` patch makes the registries skip them, so they are never registered. |
+| `editor/overlay/src/vs/workbench/contrib/wisp/browser/wisp.contribution.ts` | Default settings registered in code, so the first launch gets them: `chat.disableAIFeatures` is on, which hides the rest of upstream's Chat and Copilot entry points |
+| `editor/product.json` | The js-debug extensions (`builtInExtensions`), Copilot's GitHub token grant (`trustedExtensionAuthAccess`), and the voice endpoint (`voiceWsUrl`) |
+| The `strip:` patches | The Copilot extension and seven other built-in extensions in the packaged app (`build/lib/extensions.ts` lists them), the Accounts entry (hidden by default), the Agents window (a regular window opens instead), and the Welcome page's "Connect to..." |
+
+To remove another container or contribution, add its id to `exclusions.ts` with a one-line reason. `check-fork` fails if an id there no longer appears in upstream's source, because an upgrade that renames one would bring the feature back without an error. The development build still loads every folder in `extensions/`, because upstream scans the folder when running from source; only the packaged app leaves out the extensions above.
 
 ## Change a patch or add one
 
