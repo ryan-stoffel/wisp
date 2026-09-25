@@ -17,6 +17,7 @@
 //! - [`service`]: installs, removes, and reports on the per-user `LaunchAgent` that keeps
 //!   `serve` running (#61).
 //! - [`keystore`]: where API keys live, the macOS login Keychain (#117).
+//! - [`usage`]: turns backend usage events into `wisp-store` rows (#120).
 
 #![warn(missing_docs)]
 
@@ -32,6 +33,7 @@ pub mod server;
 pub mod service;
 mod spawn;
 mod store;
+pub mod usage;
 
 /// wispd's release version, reported by `wispd --version`, the protocol handshake
 /// (`initialize` and `host/version`), and the `LaunchAgent`'s probe.

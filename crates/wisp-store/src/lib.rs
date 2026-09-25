@@ -12,6 +12,7 @@ mod error;
 mod migrations;
 mod project;
 mod timestamp;
+mod usage;
 
 use std::fs;
 use std::path::Path;
@@ -23,6 +24,7 @@ use rusqlite::{Connection, Error as SqliteError, ErrorCode};
 pub use accounts::{Account, AccountFields};
 pub use error::StoreError;
 pub use project::{Project, ProjectFields};
+pub use usage::{LimitSnapshot, SessionModelUsage, UsageDelta, UsageSummary};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const WAL_RETRY_INTERVAL: Duration = Duration::from_millis(20);
