@@ -23,29 +23,50 @@ it. #119 still has to let a task name one.
   per role, set and read over `accounts/defaults/get` and `accounts/defaults/set`
   (`daemon/src/methods/defaults.rs`). Setting `account: null` clears a role's default.
 - **`daemon/src/routing.rs`** is the decision engine `resolve()` (account + backend, in-memory, no
-  I/O) and `start()` (reads the credential and starts the run). The coordinator role always gets
-  `ToolPolicy::NoWrite`, regardless of what was requested.
+  I/O) and `start()` (reads the credential and starts the run). `Resolved`'s fields are private:
+  `resolve()` is the only place that decides a coordinator's policy, `start()` re-applies
+  `ToolPolicy::NoWrite` for `Role::Coordinator` from `Resolved::role()` regardless of what
+  `Resolved::policy()` already says, and nothing between the two calls can substitute a
+  `workspace-write` policy for it.
 - **A `BackendRegistry` maps one backend per `Provider`.** A backend takes both a subscription
   login and a key account for its provider already (0004's Claude backend), so fallback never
   needs a second backend, only a different `Credential` on the same one.
 - **Fallback has no separate "which key account" setting.** `KeyAccounts::fallback_for(provider)`
   answers with any key account configured for that provider; M2 does not need to let the user pick
   among several. `start()` retries at most once, only from a subscription's `notSignedIn` or
-  `rateLimited` failure, and marks the switch with a new `backend::Event::AccountFallback`, which
-  is the fallback run's first event.
-- **The no-write policy's second check — `git status --porcelain` after a coordinator's turn — is
-  `routing::check_no_write_policy`,** not backend-specific, since it doesn't depend on which CLI
-  ran. It returns a `Failure` for the caller to end the run with; #156's runner calls it after each
-  `Event::TurnFinished` on a coordinator run.
+  `rateLimited` failure, and marks the switch with `backend::Event::AccountFallback`, the fallback
+  run's first event. That event names both `from_account` and `to_account`: everything after it,
+  including that run's own `Usage` and `RateLimit` events, is charged to `to_account`. `start()`
+  returns a `Run` handle (`routing::FallbackRun`) that forwards to whichever attempt is actually
+  running, swapped in before `AccountFallback` is emitted, so `cancel` and `send` reach the running
+  process even after a fallback, and the outer `EventSink`'s running usage total is reset to the
+  fallback's own baseline at the same point, so `Finished.usage_totals` reports only that account's
+  session, not both attempts summed together.
+- **The no-write policy's second check is `routing::snapshot` and `routing::check`,** not
+  backend-specific, since it doesn't depend on which CLI ran, and not a single "is the tree dirty"
+  check, since a project repo is often already dirty while the user works (0004: "if `git status`
+  changes during its turn"). The caller takes a `snapshot` before the turn and `check`s it after;
+  each is a hash of `git status --porcelain=v1 -z --untracked-files=all`, `git diff HEAD --binary`,
+  and every untracked file's contents, so a further edit to an already-modified file, or a new
+  untracked file, both still count as a change even though the tree was never clean.
+- **`accounts/defaults/set` validates before it writes.** A `Key` choice must be a real row in
+  `accounts`; a `Subscription` choice's backend must be in a fixed list of vendor CLIs 0004 commits
+  to (`claude`, `codex`, `cursor`) until #114 lands real detection. Either failure is
+  `invalidParams`, naming the account or backend.
 
 ## Consequences
 
-- #156 (the M3 runner) calls `routing::resolve` and `routing::start`, and owns turning
-  `Event::AccountFallback` and a `check_no_write_policy` violation into `agent/*` protocol events
-  and stopping the run; #119 only produces the values, since the runner and its store tables don't
-  exist yet.
-- `start()`'s returned `Started::run` is always the first attempt's control handle. A fallback
-  starts a second process the caller has no direct handle to; #156, which already has to keep a
-  run's handle by `runId`, re-points it when it sees `Event::AccountFallback`.
-- #114 lands a real, listable subscription account identity later. `AccountChoice::Subscription`
-  keeps working as today's one-account-per-backend meaning until that issue changes it.
+- #156 (the M3 runner, workers only) calls `routing::resolve` and `routing::start` for a worker's
+  `workspace-write` run, maps `Event::AccountFallback` to an `agent/*` notification, and charges
+  usage after it to `to_account`. It does not call `routing::snapshot`/`routing::check`: those are
+  a coordinator's job, and #156 doesn't run coordinators.
+- No M4 task issue exists yet to call `routing::resolve`/`start` for the coordinator, or
+  `routing::snapshot` before a coordinator's turn and `routing::check` after it (stopping the run
+  and reporting `policyViolation` on a violation). #24 (Epic: M4: Coordinator) lists "Coordinator
+  planning loop" as a planned task; that is where this belongs once M4's task issues are filed.
+- #114 lands a real, listable subscription account identity later, and a real list of installed
+  CLIs to validate `accounts/defaults/set`'s `Subscription` choices against, replacing the fixed
+  `claude`/`codex`/`cursor` list. `AccountChoice::Subscription` keeps working as today's
+  one-account-per-backend meaning until then, and #114 should account for `role_defaults` rows and
+  usage rows already keyed by a backend name such as `"claude"` needing to migrate to that real
+  identity rather than being orphaned by it.
