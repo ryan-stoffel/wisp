@@ -8,6 +8,7 @@ mod accounts;
 mod events;
 mod host;
 mod project;
+mod usage;
 
 use std::future::{Future, ready};
 use std::sync::Arc;
@@ -19,7 +20,7 @@ use wisp_protocol::jsonrpc::{ErrorObject, INVALID_REQUEST, Request, RequestId, R
 use wisp_protocol::methods::{
     AccountsKeysAdd, AccountsKeysList, AccountsKeysRemove, AccountsList, AccountsRefresh,
     EventsSubscribe, EventsUnsubscribe, HostHealth, HostVersion, Initialize, ProjectCreate,
-    ProjectList, RequestMethod,
+    ProjectList, RequestMethod, UsageGet,
 };
 use wisp_protocol::{EventsSubscribeResult, EventsUnsubscribeResult, SubscriptionId};
 
@@ -86,6 +87,7 @@ pub(crate) async fn dispatch(context: Context, request: Request) -> Reply {
             handle::<AccountsKeysRemove, _, _>(&request, |p| accounts::keys::remove(&context, p))
                 .await
         }
+        UsageGet::NAME => handle::<UsageGet, _, _>(&request, |p| usage::get(&context, p)).await,
         EventsSubscribe::NAME => {
             let subscribed = match request.params() {
                 Ok(params) => events::subscribe(&context, params).await,

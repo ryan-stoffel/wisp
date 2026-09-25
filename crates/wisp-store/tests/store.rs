@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use rusqlite::Connection;
 use uuid::Uuid;
-use wisp_store::{AccountFields, ProjectFields, Store, StoreError};
+use wisp_store::{AccountFields, ProjectFields, Store, StoreError, UsageDelta};
 
 fn temp_db_path() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().expect("create temp dir");
@@ -426,7 +426,10 @@ fn a_version_1_database_migrates_and_keeps_its_projects() {
             row.get(0)
         })
         .expect("read schema version");
-    assert_eq!(version, 3, "migration 3 (accounts) should also have run");
+    assert_eq!(
+        version, 4,
+        "migrations 3 (accounts, #117) and 4 (usage, #120) also apply"
+    );
     let account_columns: Vec<String> = conn
         .prepare("SELECT name FROM pragma_table_info('accounts')")
         .expect("prepare")
@@ -438,6 +441,82 @@ fn a_version_1_database_migrates_and_keeps_its_projects() {
         account_columns,
         ["id", "provider", "label", "masked_key", "created_at"]
     );
+}
+
+/// A database as `develop` (schema version 3, `accounts` but no usage tables) leaves it, opened by
+/// a build that also knows migration 4 (#120). Both the pre-existing `accounts` row and the new
+/// usage tables must be intact afterward.
+#[test]
+fn a_version_3_database_from_develop_migrates_to_usage_tables_and_keeps_its_account() {
+    let (_dir, path) = temp_db_path();
+    let account_id = Uuid::now_v7();
+    let conn = Connection::open(&path).expect("open raw connection");
+    conn.execute_batch(&format!(
+        "CREATE TABLE schema_version (
+             version INTEGER NOT NULL PRIMARY KEY,
+             applied_at TEXT NOT NULL
+         );
+         CREATE TABLE projects (
+             id TEXT NOT NULL PRIMARY KEY,
+             name TEXT NOT NULL,
+             repo_path TEXT NOT NULL,
+             created_at TEXT NOT NULL,
+             updated_at TEXT NOT NULL
+         );
+         CREATE TABLE accounts (
+             id TEXT NOT NULL PRIMARY KEY,
+             provider TEXT NOT NULL,
+             label TEXT NOT NULL,
+             masked_key TEXT NOT NULL,
+             created_at TEXT NOT NULL
+         );
+         INSERT INTO schema_version VALUES
+             (1, '2026-09-24T12:00:00.000000000Z'),
+             (2, '2026-09-24T12:00:00.000000000Z'),
+             (3, '2026-09-24T12:00:00.000000000Z');
+         INSERT INTO accounts VALUES ('{account_id}', 'anthropic', 'Personal', 'sk-ant-...abcd',
+             '2026-09-24T12:00:00.000000000Z');"
+    ))
+    .expect("write a version 3 database, as develop's #117 leaves it");
+    drop(conn);
+
+    let store = Store::open(&path).expect("open should migrate to version 4");
+    let account = store
+        .get_account(account_id)
+        .expect("get")
+        .expect("the pre-existing account row should survive the migration");
+    assert_eq!(account.masked_key, "sk-ant-...abcd");
+
+    // The new usage tables work: a delta records and reads back.
+    store
+        .record_usage_delta(&UsageDelta {
+            run_id: Uuid::now_v7(),
+            account_id: account_id.to_string(),
+            model: None,
+            input_tokens: 5,
+            output_tokens: 1,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            cost_usd_micros: None,
+            at: "2026-09-24T12:00:00Z".parse().unwrap(),
+        })
+        .expect("record a usage delta after migrating");
+    let summary = store
+        .usage_summary(
+            &account_id.to_string(),
+            "2026-01-01T00:00:00Z".parse().unwrap(),
+            "2027-01-01T00:00:00Z".parse().unwrap(),
+        )
+        .expect("summary");
+    assert_eq!(summary.input_tokens, 5);
+
+    let conn = Connection::open(&path).expect("open verification connection");
+    let version: i64 = conn
+        .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+            row.get(0)
+        })
+        .expect("read schema version");
+    assert_eq!(version, 4);
 }
 
 #[test]

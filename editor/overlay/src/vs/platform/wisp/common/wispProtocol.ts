@@ -79,6 +79,11 @@ export type WispRequests = {
 	 * cache. Gated on the `agentClis` capability.
 	 */
 	"accounts/refresh": { params: AccountsRefreshParams, result: AccountsRefreshResult },
+	/**
+	 * `usage/get`: per-account tokens and cost for today and this week (local time on this
+	 * host), and the latest limit windows.
+	 */
+	"usage/get": { params: UsageGetParams, result: UsageGetResult },
 };
 
 /** Notifications, which get no response, by method. */
@@ -597,6 +602,99 @@ export type AccountsRefreshResult = {
 	 * When this probe ran.
 	 */
 	checkedAt: string,
+};
+
+/**
+ * Params of `usage/get`.
+ *
+ * Empty: wispd has no account registry yet (#114, #117, #118 are still open, and #113's
+ * `AccountRef` is already just a caller-supplied string), so it reports every account id it has
+ * recorded usage or limits for.
+ */
+export type UsageGetParams = Record<symbol, never>;
+
+/**
+ * Result of `usage/get`.
+ */
+export type UsageGetResult = {
+	/**
+	 * Every account wispd has recorded usage or limits for, in no particular order.
+	 */
+	accounts: Array<AccountUsage>,
+};
+
+/**
+ * One account's usage and latest limit windows.
+ */
+export type AccountUsage = {
+	/**
+	 * wispd's id for the account (#114, #117).
+	 */
+	accountId: string,
+	/**
+	 * Tokens and cost used today, local time on this host.
+	 */
+	today: UsagePeriod,
+	/**
+	 * Tokens and cost used this week (Monday to now), local time on this host.
+	 */
+	week: UsagePeriod,
+	/**
+	 * The account's limit windows, as last reported. Empty when the vendor reports none (0004:
+	 * Cursor's headless output has no usage API).
+	 */
+	limits: Array<UsageLimitWindow>,
+};
+
+/**
+ * One of an account's limit windows, as a vendor last reported it (0004's `rate_limit_event` and
+ * Codex's `account/rateLimits/read`).
+ */
+export type UsageLimitWindow = {
+	/**
+	 * The vendor's name for the window, such as `five_hour`, `seven_day`, `primary`, or
+	 * `secondary`.
+	 */
+	window: string,
+	/**
+	 * How much of the window is used, from 0 to 100, when the vendor says.
+	 */
+	usedPercent?: number | null,
+	/**
+	 * When the window resets, when the vendor says.
+	 */
+	resetsAt?: string | null,
+	/**
+	 * When wispd captured this snapshot.
+	 */
+	capturedAt: string,
+};
+
+/**
+ * Tokens and cost over a period.
+ */
+export type UsagePeriod = {
+	/**
+	 * Input tokens, not counting cache reads and writes.
+	 */
+	inputTokens: number,
+	/**
+	 * Output tokens, including reasoning.
+	 */
+	outputTokens: number,
+	/**
+	 * Input tokens read from the prompt cache.
+	 */
+	cacheReadTokens: number,
+	/**
+	 * Input tokens written to the prompt cache.
+	 */
+	cacheWriteTokens: number,
+	/**
+	 * The cost, when the vendor reports one for this account in the period. Absent, not zero,
+	 * when it never does (0004: Codex and Cursor report no cost).
+	 */
+	costUsdMicros?: number | null,
 };
 
 /**

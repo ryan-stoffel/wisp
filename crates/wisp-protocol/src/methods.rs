@@ -31,7 +31,8 @@ use crate::{
     AccountsRefreshParams, AccountsRefreshResult, EventsEventParams, EventsSubscribeParams,
     EventsSubscribeResult, EventsUnsubscribeParams, EventsUnsubscribeResult, HostHealthParams,
     HostHealthResult, HostVersionParams, HostVersionResult, InitializeParams, InitializeResult,
-    ProjectCreateParams, ProjectCreateResult, ProjectListParams, ProjectListResult,
+    ProjectCreateParams, ProjectCreateResult, ProjectListParams, ProjectListResult, UsageGetParams,
+    UsageGetResult,
 };
 
 /// A method that is called with a request and answered with a response.
@@ -137,6 +138,9 @@ method_table! {
         /// `accounts/refresh`: like `accounts/list`, but always probes again instead of using the
         /// cache. Gated on the `agentClis` capability.
         AccountsRefresh = "accounts/refresh": AccountsRefreshParams => AccountsRefreshResult;
+        /// `usage/get`: per-account tokens and cost for today and this week (local time on this
+        /// host), and the latest limit windows.
+        UsageGet = "usage/get": UsageGetParams => UsageGetResult;
     }
     notifications {
         /// `$/cancelRequest`: cancels a request, which still gets exactly one response. Either
@@ -187,6 +191,7 @@ mod tests {
                 "accounts/keys/remove",
                 "accounts/list",
                 "accounts/refresh",
+                "usage/get",
                 "$/cancelRequest",
                 "events/event",
             ]
