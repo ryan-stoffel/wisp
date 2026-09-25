@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+
+root=$(cd "$(dirname "$0")/../.." && pwd)
+want=$(cut -d. -f1 "$root/.nvmrc")
+have=$(node -p 'process.versions.node.split(".")[0]')
+if [ "$have" != "$want" ]; then
+  echo "${0##*/}: Node $want is required (.nvmrc pins $(cat "$root/.nvmrc")), but node is $(node --version)" >&2
+  exit 1
+fi
+
+set -x
+
+node --version
+# See scripts/ci/smoke: type-checking ci/smoke/src/harness.ts pulls in ci/screenshots/src/harness.ts,
+# whose own "playwright-core" import resolves from ci/screenshots' node_modules, not ci/smoke's.
+(cd "$root/ci/screenshots" && npm ci --no-audit --no-fund)
+cd "$root/ci/smoke"
+npm ci --no-audit --no-fund
+npm run lint
+npm run typecheck
+npm test
