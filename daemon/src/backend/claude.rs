@@ -39,8 +39,11 @@
 //! [`SCRUBBED_VARS`]. Those include the three that outrank the login (0004), the cloud provider
 //! switches, `ANTHROPIC_BASE_URL`, which would send the login's token elsewhere, and the profile
 //! and federation variables. `CLAUDE_CONFIG_DIR` is dropped too, and set only to the account's
-//! own configuration folder. [`apply_credential`] then injects only what the account needs;
-//! API key runs are #118's, which fills it in.
+//! own configuration folder. [`apply_credential`] then injects only what the account needs: the
+//! account's configuration folder for a subscription, or, for an API key account (#118), only
+//! [`API_KEY_ENV`] with the key [`key_account::resolve`](super::key_account::resolve) read from
+//! the Keychain. The key is never in `args`, so `ps` can't show it, and the [`super::ApiKey`]
+//! that carries it zeroizes its buffer once the run holding it is dropped.
 //!
 //! A project's `env` block can still set variables for a worker (0004, #134), so the output is
 //! checked as well. A `system/init` whose `apiKeySource` isn't the account's, or is missing, and
@@ -130,6 +133,13 @@ pub const CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
 
 /// What `system/init` reports as `apiKeySource` for a subscription login.
 pub const SUBSCRIPTION_KEY_SOURCE: &str = "none";
+
+/// The variable an API key account's key is injected as (0004's table, #118).
+pub const API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
+
+/// What `system/init` reports as `apiKeySource` for an API key account. Happens to be the same
+/// string as [`API_KEY_ENV`] (0004's table), but the two names are checked independently.
+pub const API_KEY_SOURCE: &str = "ANTHROPIC_API_KEY";
 
 /// Variables every run gets: keep credentials out of the agent's own subprocesses (0004
 /// Consequences), and report a startup failure as a `result` instead of on stderr alone.
@@ -235,8 +245,8 @@ pub fn scrubbed(base: &Environment) -> Vec<OsString> {
 ///
 /// # Errors
 ///
-/// [`StartError::Unsupported`] for an API key, until #118 injects it here as
-/// `ANTHROPIC_API_KEY` and expects `apiKeySource` to be `ANTHROPIC_API_KEY`.
+/// Never today; kept fallible so a future credential kind this backend can't serve has somewhere
+/// to report it, the way [`StartError::Unsupported`] already does elsewhere in this module.
 pub fn apply_credential(
     credential: &Credential,
     spec: &mut ProcessSpec,
@@ -248,9 +258,10 @@ pub fn apply_credential(
             }
             Ok(SUBSCRIPTION_KEY_SOURCE)
         }
-        Credential::ApiKey(_) => Err(StartError::Unsupported(
-            "this wispd can't run Claude Code with an API key yet".into(),
-        )),
+        Credential::ApiKey(key) => {
+            spec.inject.set(API_KEY_ENV, key.expose());
+            Ok(API_KEY_SOURCE)
+        }
     }
 }
 
