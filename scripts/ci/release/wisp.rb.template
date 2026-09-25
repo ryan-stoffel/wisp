@@ -15,12 +15,16 @@ cask "wisp" do
   end
 
   {{depends_on_arch}}
-  depends_on macos: :ventura
+  depends_on macos: :monterey
 
-  app "wisp.app"
+  app "Wisp.app"
+  binary "#{appdir}/Wisp.app/Contents/Resources/app/bin/wisp"
 
   zap trash: [
-    "~/Library/Application Support/wisp",
+    "~/.wisp",
+    "~/.wisp-shared",
+    # The editor's Wisp and wispd's wisp: one folder, unless the volume is case-sensitive
+    "~/Library/Application Support/[Ww]isp",
     "~/Library/Caches/io.github.ryan-stoffel.wisp",
     "~/Library/HTTPStorages/io.github.ryan-stoffel.wisp",
     "~/Library/Preferences/io.github.ryan-stoffel.wisp.plist",
@@ -31,7 +35,7 @@ cask "wisp" do
     Wisp is not signed with an Apple Developer ID yet, so macOS blocks its first launch.
     Try to open it, close the warning, then click Open Anyway in
     System Settings > Privacy & Security. Or remove the quarantine attribute:
-      xattr -dr com.apple.quarantine #{appdir}/wisp.app
+      xattr -dr com.apple.quarantine #{appdir}/Wisp.app
     macOS asks again after each upgrade. Details:
       https://github.com/ryan-stoffel/wisp#install
   EOS

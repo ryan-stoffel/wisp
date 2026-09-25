@@ -5,6 +5,12 @@ fail() {
   echo "${0##*/}: $*" >&2
   exit 1
 }
+# A local run leaves the user's own wisp alone. In Actions, a skipped install check fails instead.
+skip() {
+  [ "${GITHUB_ACTIONS-}" != true ] || fail "$*, so the install check could not run"
+  echo "${0##*/}: $*, so the install check was skipped" >&2
+  exit 0
+}
 
 [ $# -ge 1 ] || fail "usage: ${0##*/} <cask.rb> [wisp-<version>-<arch>.zip...]"
 cask_file=$1
@@ -17,6 +23,7 @@ command -v brew >/dev/null || fail "Homebrew is required"
 
 tap=wisp-ci/dry-run
 cask=$tap/wisp
+launcher="$(brew --prefix)/bin/wisp"
 export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ANALYTICS=1 HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_INSTALL_CLEANUP=1
 
 # A throwaway download cache and tap keep a local run from touching the user's own Homebrew state.
@@ -27,6 +34,10 @@ cleanup() {
   status=$?
   if [ "$installed" = yes ]; then
     brew uninstall --cask "$cask" || status=1
+    if [ -e "$launcher" ] || [ -L "$launcher" ]; then
+      echo "${0##*/}: uninstalling the cask left $launcher behind" >&2
+      status=1
+    fi
   fi
   brew untrust --cask "$cask" >/dev/null 2>&1 || true
   brew untap "$tap" >/dev/null 2>&1 || true
@@ -74,27 +85,35 @@ for zip in "$@"; do
   fi
 done
 
-if [ -z "$host_zip" ]; then
-  echo "${0##*/}: no zip for this Mac's architecture ($host_arch), so the install check was skipped" >&2
-  exit 0
-fi
+[ -n "$host_zip" ] || skip "no zip for this Mac's architecture ($host_arch)"
 if brew list --cask wisp >/dev/null 2>&1; then
-  echo "${0##*/}: a wisp cask is already installed here, so the install check was skipped to leave it alone" >&2
-  exit 0
+  skip "a wisp cask is already installed here"
+fi
+if [ -e "$launcher" ] || [ -L "$launcher" ]; then
+  skip "$launcher already exists"
 fi
 
 version=${host_zip##*/}
 version=${version#wisp-}
 version=${version%-*}
 appdir="$work/Applications"
+app="$appdir/Wisp.app"
 mkdir -p "$appdir"
 installed=yes
 set -x
 brew install --cask --appdir="$appdir" "$cask"
-codesign --verify --deep --strict "$appdir/wisp.app"
+codesign --verify --deep --strict "$app"
 set +x
-actual=$(plutil -extract CFBundleShortVersionString raw -o - "$appdir/wisp.app/Contents/Info.plist")
-[ "$actual" = "$version" ] || fail "installed wisp.app is version $actual, expected $version"
-xattr -p com.apple.quarantine "$appdir/wisp.app" >/dev/null ||
-  fail "Homebrew did not quarantine wisp.app, so this check no longer matches what users get"
-echo "${0##*/}: installed wisp $version from the cask, quarantined as users will get it; uninstalling" >&2
+actual=$(plutil -extract CFBundleShortVersionString raw -o - "$app/Contents/Info.plist")
+[ "$actual" = "$version" ] || fail "installed Wisp.app is version $actual, expected $version"
+xattr -p com.apple.quarantine "$app" >/dev/null ||
+  fail "Homebrew did not quarantine Wisp.app, so this check no longer matches what users get"
+target=$(readlink "$launcher") || fail "the cask did not link $launcher"
+[ "$target" = "$app/Contents/Resources/app/bin/wisp" ] || fail "$launcher links to $target, not into the installed Wisp.app"
+
+# Users remove the quarantine, or click Open Anyway, before wisp runs (README, Install).
+xattr -dr com.apple.quarantine "$app"
+printed=$("$launcher" --version) || fail "$launcher --version failed"
+echo "${0##*/}: $launcher --version: $(printf '%s' "$printed" | tr '\n' ' ')" >&2
+[ "$(printf '%s\n' "$printed" | sed -n 1p)" = "$version" ] || fail "wisp --version does not start with $version"
+echo "${0##*/}: installed wisp $version from the cask, quarantined as users will get it, and ran $launcher --version; uninstalling" >&2
