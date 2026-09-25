@@ -27,7 +27,7 @@ pub const DEFAULT_LABEL: &str = "io.github.ryan-stoffel.wisp.wispd";
 /// should set it, so a test run never touches a real install.
 pub const SERVICE_LABEL_ENV: &str = "WISPD_SERVICE_LABEL";
 
-const LAUNCHCTL: &str = "/bin/launchctl";
+pub(crate) const LAUNCHCTL: &str = "/bin/launchctl";
 
 /// How long [`status`] and the conflict check in [`install`] wait for an `initialize` answer.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -47,6 +47,18 @@ pub enum ServiceError {
     )]
     AlreadyRunningOutsideLaunchd {
         /// The data folder it is serving.
+        data_dir: PathBuf,
+    },
+    /// The default label serves only the default data folder, because a plain `wispd attach`
+    /// starts the agent under that label for that folder (0010). Another folder needs its own
+    /// label.
+    #[error(
+        "the {DEFAULT_LABEL} LaunchAgent serves only the default data folder, not {}; \
+         give another data folder its own label with --label",
+        .data_dir.display()
+    )]
+    NotTheDefaultDataDir {
+        /// The data folder that was asked for.
         data_dir: PathBuf,
     },
     /// The home folder is unknown, so `~/Library/LaunchAgents` can't be found.
@@ -188,6 +200,7 @@ pub enum UninstallOutcome {
 /// `serve` that fights the first one for the lock. Stop that `serve` first. Other variants for a
 /// filesystem or `launchctl` failure.
 pub fn install(label: &str, data_dir: &DataDir) -> Result<InstallOutcome, ServiceError> {
+    check_label_serves(label, data_dir, DataDir::default_location().ok().as_ref())?;
     let uid = rustix::process::getuid().as_raw();
     let already_loaded = load_state(uid, label)?.loaded();
     if !already_loaded && probe_initialize(data_dir) {
@@ -215,6 +228,22 @@ pub fn install(label: &str, data_dir: &DataDir) -> Result<InstallOutcome, Servic
     } else {
         InstallOutcome::Installed
     })
+}
+
+/// Refuses to put [`DEFAULT_LABEL`] on a data folder other than `default`, the default one.
+/// `attach` kickstarts the agent with that label whenever it serves the default folder, so the
+/// agent must serve that folder too. Any other label may serve any folder.
+fn check_label_serves(
+    label: &str,
+    data_dir: &DataDir,
+    default: Option<&DataDir>,
+) -> Result<(), ServiceError> {
+    if label == DEFAULT_LABEL && default != Some(data_dir) {
+        return Err(ServiceError::NotTheDefaultDataDir {
+            data_dir: data_dir.root().to_owned(),
+        });
+    }
+    Ok(())
 }
 
 /// Removes the per-user `LaunchAgent` for `label`: stops it if loaded, then deletes its plist.
@@ -456,8 +485,28 @@ fn launchctl_ok(args: &[&str]) -> Result<Output, ServiceError> {
 mod tests {
     use std::path::Path;
 
-    use super::{DEFAULT_LABEL, escape_plist_text, parse_print_output, plist_path, render_plist};
+    use super::{
+        DEFAULT_LABEL, ServiceError, check_label_serves, escape_plist_text, parse_print_output,
+        plist_path, render_plist,
+    };
     use crate::paths::DataDir;
+
+    #[test]
+    fn the_default_label_serves_only_the_default_data_folder() {
+        let default = DataDir::new("/Users/me/Library/Application Support/wisp").unwrap();
+        let other = DataDir::new("/tmp/elsewhere").unwrap();
+
+        check_label_serves(DEFAULT_LABEL, &default, Some(&default)).unwrap();
+        let error = check_label_serves(DEFAULT_LABEL, &other, Some(&default)).unwrap_err();
+        assert!(
+            matches!(&error, ServiceError::NotTheDefaultDataDir { data_dir } if data_dir == other.root()),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("--label"), "{error}");
+        assert!(check_label_serves(DEFAULT_LABEL, &default, None).is_err());
+
+        check_label_serves("io.example.test", &other, Some(&default)).unwrap();
+    }
 
     #[test]
     fn plist_matches_the_golden_file() {
