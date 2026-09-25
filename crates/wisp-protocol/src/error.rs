@@ -22,6 +22,8 @@ pub enum ErrorKind {
     ResyncRequired,
     /// No project has the given id.
     ProjectNotFound,
+    /// No key account has the given id.
+    AccountNotFound,
     /// A create reused an existing id with different params.
     IdConflict,
     /// A kind this version does not know yet.
@@ -113,6 +115,7 @@ mod tests {
             (ErrorKind::IncompatibleProtocol, "incompatibleProtocol"),
             (ErrorKind::ResyncRequired, "resyncRequired"),
             (ErrorKind::ProjectNotFound, "projectNotFound"),
+            (ErrorKind::AccountNotFound, "accountNotFound"),
             (ErrorKind::IdConflict, "idConflict"),
         ] {
             assert_eq!(serde_json::to_value(kind).unwrap(), json!(name));

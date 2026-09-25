@@ -1,0 +1,97 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": 16,
+    "method": "accounts/keys/add",
+    "params": {
+      "id": "01a0d34e-01e0-7dc0-b326-598cbff22aa1",
+      "provider": "anthropic",
+      "label": "Personal",
+      "key": "sk-ant-api03-thisisathrowawaytestkeyabcd"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 16,
+    "result": {
+      "account": {
+        "id": "01a0d34e-01e0-7dc0-b326-598cbff22aa1",
+        "provider": "anthropic",
+        "label": "Personal",
+        "createdAt": "2026-09-24T12:00:00Z",
+        "maskedKey": "sk-ant-...abcd"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 17,
+    "method": "accounts/keys/add",
+    "params": {
+      "id": "01a0d34e-01e0-7dc0-b326-598cbff22aa1",
+      "provider": "anthropic",
+      "label": "Personal",
+      "key": "sk-ant-api03-thisisathrowawaytestkeyabcd"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 17,
+    "result": {
+      "account": {
+        "id": "01a0d34e-01e0-7dc0-b326-598cbff22aa1",
+        "provider": "anthropic",
+        "label": "Personal",
+        "createdAt": "2026-09-24T12:00:00Z",
+        "maskedKey": "sk-ant-...abcd"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 18,
+    "method": "accounts/keys/list",
+    "params": {}
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 18,
+    "result": {
+      "accounts": [
+        {
+          "id": "01a0d34e-01e0-7dc0-b326-598cbff22aa1",
+          "provider": "anthropic",
+          "label": "Personal",
+          "createdAt": "2026-09-24T12:00:00Z",
+          "maskedKey": "sk-ant-...abcd"
+        }
+      ]
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 19,
+    "method": "accounts/keys/remove",
+    "params": { "id": "01a0d34e-01e0-7dc0-b326-598cbff22aa1" }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 19,
+    "result": {}
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 20,
+    "method": "accounts/keys/remove",
+    "params": { "id": "01a0d34e-01e0-7dc0-b326-598cbff22aa1" }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 20,
+    "error": {
+      "code": -32000,
+      "message": "no key account has id 01a0d34e-01e0-7dc0-b326-598cbff22aa1",
+      "data": { "kind": "accountNotFound" }
+    }
+  }
+]
