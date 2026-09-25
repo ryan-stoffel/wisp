@@ -20,6 +20,7 @@
 pub mod claude;
 pub mod event;
 pub mod fake;
+pub mod key_account;
 pub mod process;
 
 use std::collections::HashMap;
@@ -33,6 +34,7 @@ use futures_util::Stream;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 pub use wisp_protocol::{RunId, TurnId};
+use zeroize::Zeroize;
 
 pub use self::event::{
     CumulativeUsage, Event, ExitInfo, Failure, FailureKind, LimitStatus, LimitWindow, ModelUsage,
@@ -196,7 +198,9 @@ pub enum Credential {
     ApiKey(ApiKey),
 }
 
-/// An API key. Its `Debug` hides it, and it doesn't serialize.
+/// An API key. Its `Debug` hides it, it doesn't serialize, and it zeroizes its buffer once the
+/// run that needed it (#118's [`key_account::resolve`]) is done with it, like
+/// [`wisp_protocol::RawKey`] does for the same key on its way in from the editor.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ApiKey(String);
 
@@ -217,6 +221,12 @@ impl ApiKey {
 impl fmt::Debug for ApiKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("ApiKey(<redacted>)")
+    }
+}
+
+impl Drop for ApiKey {
+    fn drop(&mut self) {
+        self.0.zeroize();
     }
 }
 
