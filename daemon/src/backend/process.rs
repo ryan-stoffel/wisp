@@ -827,7 +827,6 @@ mod tests {
 
     use rustix::process::{Pid, Signal};
     use tokio::io::AsyncWriteExt;
-    use tokio::time::timeout;
 
     use super::{
         CancelPolicy, Environment, Launcher, LineReader, Output, OutputLimits, Process,
@@ -1041,33 +1040,27 @@ mod tests {
         );
     }
 
-    /// This test's own bound on a hang. It races nothing: unlike `CancelPolicy`'s grace-then-kill
-    /// escalation, it is the only timer in play, so it is a plain hang detector, not a margin
-    /// against a competing timeout.
-    const HANG_TIMEOUT: Duration = Duration::from_secs(30);
-
     #[tokio::test]
     async fn cancel_asks_first() {
         // A trap shows which signal arrived. Without one, bash 3.2's exit status after a SIGINT
-        // in `wait` varies.
+        // in `wait` varies. Printing "ready" only after the trap is installed is this test's
+        // deterministic handshake: reading that line can never race the trap's own installation.
         let mut process = launcher(base())
             .spawn(&sh(
                 "trap 'echo interrupted; exit 7' INT; echo ready; sleep 30 & wait $!",
             ))
             .unwrap();
         assert_eq!(process.next().await, Some(Output::Line(b"ready".to_vec())));
+        let started = Instant::now();
         // Signals the process directly instead of `cancel()`, which would also arm the
-        // grace-then-`SIGKILL` escalation. That escalation raced this trap's own clean exit
-        // under a loaded runner (#139): a slow-but-correct trap could lose to it, and widening
-        // the grace only narrowed the window without removing it. This test is about the trap's
-        // reaction to `SIGINT`, not the escalation (`cancel_kills_the_group_after_the_grace_period`
-        // owns that), so it never arms a second timer to race in the first place.
+        // grace-then-`SIGKILL` escalation. This test is about the trap's own reaction to
+        // `SIGINT`, not the escalation (`cancel_kills_the_group_after_the_grace_period` owns
+        // that), so it never arms a second timer that could race the trap's clean exit (#139).
         assert!(process.signals().signal(Signal::INT));
-        let (lines, exit) = timeout(HANG_TIMEOUT, collect(&mut process))
-            .await
-            .expect("the process did not exit after SIGINT");
+        let (lines, exit) = collect(&mut process).await;
         assert_eq!(lines, [Output::Line(b"interrupted".to_vec())]);
         assert_eq!(exit.info.code, Some(7), "{exit:?}");
+        assert!(started.elapsed() < Duration::from_secs(5));
         assert!(process.signals().reaped());
         assert!(
             !process.signals().signal(Signal::TERM),

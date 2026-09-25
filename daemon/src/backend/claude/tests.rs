@@ -25,20 +25,6 @@ const TURN_2: &str = "01997e2a-4c3b-7d10-8a2e-5f6b7c8d9e02";
 const OPUS: &str = "claude-opus-4-7";
 const FAKE_CLAUDE: &str = include_str!("fixtures/fake-claude.sh");
 
-/// [`next`]'s wait for an event: a plain hang detector, not a margin against a competing timeout.
-/// Raised from the original 10 s because that value was itself what a loaded runner could
-/// legitimately exceed for a correct, un-raced cancel (#149) — signal delivery, the CLI's own
-/// exit, and wispd's reap-and-report path all depend on the OS scheduling real threads and
-/// processes, which no in-test synchronization can make instantaneous under contention. CI's own
-/// job timeout (30 min) is the backstop against a genuine hang.
-const EVENT_TIMEOUT: Duration = Duration::from_secs(60);
-/// Longer than CI's own 30 min job timeout (`ci.yml`), so the run would fail on that before this
-/// grace's `SIGKILL` escalation could ever fire: the escalation is removed as a possible actor in
-/// this test, not merely made less likely at the same order of magnitude as `EVENT_TIMEOUT`. The
-/// default 10 s grace used to race a slow-but-correct exit under a loaded runner (#149); the fix
-/// is to make that race structurally impossible, not to widen it.
-const UNREACHABLE_GRACE: Duration = Duration::from_hours(1);
-
 fn fixture(name: &str) -> &'static str {
     match name {
         "read-only" => include_str!("fixtures/read-only.jsonl"),
@@ -192,9 +178,9 @@ async fn launch(backend: &dyn Backend, request: RunRequest) -> Started {
 }
 
 async fn next(events: &mut EventStream) -> Event {
-    tokio::time::timeout(EVENT_TIMEOUT, events.next())
+    tokio::time::timeout(Duration::from_secs(10), events.next())
         .await
-        .expect("no event within 60 s")
+        .expect("no event within 10 s")
         .expect("the stream ended")
 }
 
@@ -819,16 +805,24 @@ async fn a_follow_up_can_be_its_own_turn_and_stdin_waits_for_it() {
 #[tokio::test]
 async fn cancel_interrupts_the_cli_with_sigint() {
     let fake = Fake::new("cancel");
-    let backend = fake.backend.clone().with_cancel_policy(CancelPolicy {
-        grace: UNREACHABLE_GRACE,
-        ..CancelPolicy::default()
-    });
-    let Started { run, mut events } = launch(&backend, request(&fake.root())).await;
+    let Started { run, mut events } = launch(&fake.backend, request(&fake.root())).await;
     assert!(matches!(
         next(&mut events).await,
         Event::SessionStarted { .. }
     ));
+    // The fake CLI prints `@trap-armed` right after installing its SIGINT trap (fake-claude.sh),
+    // which the translator reports as a malformed line. Waiting for it here is a deterministic
+    // handshake: cancel() below can never race the trap's own installation (#149), unlike waiting
+    // for a wall-clock margin.
+    assert!(matches!(
+        next(&mut events).await,
+        Event::Warning {
+            warning: WarningKind::MalformedLine,
+            ..
+        }
+    ));
     assert!(matches!(next(&mut events).await, Event::Text { .. }));
+    let started = Instant::now();
     run.cancel();
     run.cancel();
     let all = rest(&mut events).await;
@@ -839,6 +833,7 @@ async fn cancel_interrupts_the_cli_with_sigint() {
             usage_totals: Vec::new()
         }]
     );
+    assert!(started.elapsed() < Duration::from_secs(5));
     assert_eq!(fake.recorded("signals"), "SIGINT\n");
 }
 
