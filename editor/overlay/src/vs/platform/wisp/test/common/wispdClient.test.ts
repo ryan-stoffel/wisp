@@ -384,12 +384,28 @@ suite('WispdClient', () => {
 		cts.dispose();
 	});
 
-	test('skips lines that are not JSON', async () => {
+	test('skips lines that are not JSON before initialize answers', async () => {
 		const client = createClient();
 		client.start();
 		wispd.current.receiveLine('Last login: today');
 		wispd.current.receiveLine('');
 		await settle();
 		assert.strictEqual(client.state.kind, 'connected');
+	});
+
+	test('a non-JSON line after initialize is a protocol error', async () => {
+		const client = await connect();
+		const line = 'Last login: today';
+		wispd.current.receiveLine(line);
+		await settle();
+		assert.deepStrictEqual(client.state, {
+			kind: 'disconnected',
+			command: 'wispd attach',
+			reason: 'protocolError',
+			message: `wispd sent a line that is not JSON (${line.length} characters). Quiet the host's shell startup files so only wisp's protocol reaches stdout.`,
+			exitCode: undefined,
+			stderr: undefined,
+			retryAt: 1000,
+		});
 	});
 });
