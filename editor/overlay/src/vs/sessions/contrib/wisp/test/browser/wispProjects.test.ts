@@ -3,6 +3,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { mainWindow } from '../../../../../base/browser/window.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { IDisposable, toDisposable } from '../../../../../base/common/lifecycle.js';
 import Severity from '../../../../../base/common/severity.js';
@@ -13,7 +14,7 @@ import { IFileDialogService } from '../../../../../platform/dialogs/common/dialo
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { IQuickInputService } from '../../../../../platform/quickinput/common/quickInput.js';
 import { Registry } from '../../../../../platform/registry/common/platform.js';
-import { WispdError } from '../../../../../platform/wisp/common/wispd.js';
+import { WispdError, WispdUnavailableError } from '../../../../../platform/wisp/common/wispd.js';
 import type { ProjectCreateParams } from '../../../../../platform/wisp/common/wispProtocol.js';
 import { IViewContainersRegistry, IViewsRegistry, ViewContainerLocation, Extensions as ViewExtensions, WindowEnablement } from '../../../../../workbench/common/views.js';
 import { IChatSessionContentProvider, IChatSessionsExtensionPoint, IChatSessionsService } from '../../../../../workbench/contrib/chat/common/chatSessionsService.js';
@@ -24,8 +25,8 @@ import { WISP_PROJECT_CAPABILITIES } from '../../../providers/wisp/browser/wispP
 import { WISP_SESSIONS_PROVIDER_ID } from '../../../providers/wisp/browser/wispSessionsProvider.js';
 import { compactAge, projectGlyph, projectIdOf, projectResource, tildify, WISP_PROJECT_SESSION_TYPE } from '../../../providers/wisp/common/wispProjects.js';
 import { WISP_COMPOSER_BRANCH_ACTION, WISP_COMPOSER_HOST_ACTION } from '../../browser/wispComposerFooter.js';
-import { WispNewProjectFlow } from '../../browser/wispNewProject.js';
-import { WISP_PROJECT_CONTAINER_ID, WISP_PROJECT_VIEW_ID, projectFacts } from '../../browser/wispProjectView.js';
+import { hasDotSegment, WispNewProjectFlow } from '../../browser/wispNewProject.js';
+import { factAriaLabel, WISP_PROJECT_CONTAINER_ID, WISP_PROJECT_VIEW_ID, projectFacts } from '../../browser/wispProjectView.js';
 import '../../browser/wispProject.contribution.js';
 import { searchPicks } from '../../browser/wispSearch.js';
 import { WISP_THREADS_VIEW_ID, WispThreadsView } from '../../browser/wispThreadsView.js';
@@ -280,6 +281,32 @@ suite('wisp: projects', () => {
 			assert.deepStrictEqual(rows(view).map(row => row.getAttribute('aria-current')), [null, 'true']);
 		});
 
+		test('the rows are one tab stop, and the arrow keys, Home, and End move between them', async () => {
+			const { view, wispd, active, provider } = renderSidebar();
+			wispd.setState(connected());
+			await settle();
+			assert.deepStrictEqual(rows(view).map(row => row.tabIndex), [0, -1]);
+			active.set(provider.getSessions().find(s => s.title.get() === 'magic-link'), undefined);
+			assert.deepStrictEqual(rows(view).map(row => row.tabIndex), [-1, 0], 'the open project is the tab stop');
+
+			mainWindow.document.body.appendChild(view.element);
+			try {
+				const key = (key: string) => mainWindow.document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+				rows(view)[1].focus();
+				key('ArrowUp');
+				assert.strictEqual(mainWindow.document.activeElement, rows(view)[0]);
+				assert.deepStrictEqual(rows(view).map(row => row.tabIndex), [0, -1]);
+				key('End');
+				assert.strictEqual(mainWindow.document.activeElement, rows(view)[1]);
+				key('ArrowDown');
+				assert.strictEqual(mainWindow.document.activeElement, rows(view)[1], 'stops at the last row');
+				key('Home');
+				assert.strictEqual(mainWindow.document.activeElement, rows(view)[0]);
+			} finally {
+				view.element.remove();
+			}
+		});
+
 		test('+ and the empty state\'s New Project run the new-project command once a host connects', async () => {
 			const context = services('local', []);
 			const view = disposables.add(context.instantiationService.createInstance(WispThreadsView, { id: WISP_THREADS_VIEW_ID, title: 'Wisp' }));
@@ -379,6 +406,37 @@ suite('wisp: projects', () => {
 			assert.strictEqual(created?.repoPath, '/Users/ryan/src/notes');
 		});
 
+		test('a create lost to a disconnect is retried with the same id', async () => {
+			const { instantiationService, wispd } = services();
+			wispd.setState(connected());
+			await settle();
+			const handler = wispd.handler!;
+			let failures = 1;
+			wispd.handler = async (method, params) => {
+				if (method === 'project/create' && failures-- > 0) {
+					throw new WispdUnavailableError('the connection to wispd was lost');
+				}
+				return handler(method, params);
+			};
+			const prompts: string[] = [];
+			instantiationService.stub(INotificationService, {
+				prompt: (_severity: Severity, message: string, choices: Array<{ run: () => void }>) => { prompts.push(message); choices[0].run(); return undefined; },
+			} as unknown as INotificationService);
+			instantiationService.stub(IFileDialogService, { showOpenDialog: async () => [URI.file('/Users/ryan/src/billing-service')] } as unknown as IFileDialogService);
+			instantiationService.stub(IQuickInputService, quickInput(['billing-service'], []));
+			const created = await instantiationService.createInstance(WispNewProjectFlow).run();
+
+			assert.strictEqual(prompts.length, 1);
+			const creates = wispd.requests.filter(([method]) => method === 'project/create').map(([, params]) => (params as ProjectCreateParams).id);
+			assert.strictEqual(creates.length, 2);
+			assert.strictEqual(creates[0], creates[1], 'the retry sends the same id');
+			assert.strictEqual(created?.id, creates[0]);
+		});
+
+		test('paths with . or .. segments are refused before wispd sees them', () => {
+			assert.deepStrictEqual(['/src/../etc', '/src/./app', '/src/app/..', '/src/app/.', '/src/app', '/src/.config/app', '/src/app..x'].map(hasDotSegment), [true, true, true, true, false, false, false]);
+		});
+
 		test('without a host, it says so and asks nothing', async () => {
 			const { instantiationService, wispd } = services();
 			const infos: string[] = [];
@@ -422,6 +480,10 @@ suite('wisp: projects', () => {
 				['Coordinator account', 'Not set', false],
 			]);
 			assert.strictEqual(projectFacts(project(ONE, 'billing', { branch: undefined, repoPath: '/srv/billing' }), 'mac-mini', undefined)[0].detail, '/srv/billing on mac-mini');
+			assert.deepStrictEqual(projectFacts(project(ONE, 'billing'), 'this Mac', '/Users/ryan').slice(0, 2).map(factAriaLabel), [
+				'Repository, ~/src/billing on this Mac, branch main, done',
+				'Plan, None yet, not yet',
+			], 'screen readers hear whether each fact is done, not just the mark');
 		});
 
 		test('the composer footer shows the branch and host in wisp.project threads only', () => {

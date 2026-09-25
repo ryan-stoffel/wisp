@@ -12,7 +12,7 @@ import { IInstantiationService, ServicesAccessor } from '../../../../platform/in
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import { generateUuidV7 } from '../../../../platform/wisp/common/uuidv7.js';
-import { WispdError } from '../../../../platform/wisp/common/wispd.js';
+import { WispdError, WispdUnavailableError } from '../../../../platform/wisp/common/wispd.js';
 import { isLocalHost } from '../../../../platform/wisp/common/wispdConfiguration.js';
 import type { Project } from '../../../../platform/wisp/common/wispProtocol.js';
 import { ISessionsService } from '../../../services/sessions/browser/sessionsService.js';
@@ -27,6 +27,11 @@ const MAX_NAME_BYTES = 256;
 const MAX_PATH_BYTES = 1024;
 
 const encoder = new TextEncoder();
+
+/** wispd refuses a `repoPath` with a `.` or `..` segment, so one folder has one spelling. */
+export function hasDotSegment(path: string): boolean {
+	return path.split('/').some(segment => segment === '.' || segment === '..');
+}
 
 interface IAskOptions {
 	readonly title: string;
@@ -83,18 +88,49 @@ export class WispNewProjectFlow {
 				project = await this.projectsService.create({ id, name, repoPath: path });
 			} catch (error) {
 				if (error instanceof WispdError && error.kind === 'notARepository') {
-					path = await this.askPath(host, path, error.message);
+					if (local) {
+						this.notificationService.warn(error.message);
+						path = await this.pickFolder();
+					} else {
+						path = await this.askPath(host, path, error.message);
+					}
 					if (path === undefined) {
 						return undefined;
 					}
 					continue;
 				}
-				this.notificationService.error(localize('wispNewProject.failed', "Couldn't create the project: {0}", error instanceof Error ? error.message : String(error)));
+				// wispd may have made the project before the connection went, so a retry sends the
+				// same id and gets that project back rather than a second one.
+				if (error instanceof WispdUnavailableError && await this.offerRetry(error.message)) {
+					continue;
+				}
+				if (!(error instanceof WispdUnavailableError)) {
+					this.notificationService.error(localize('wispNewProject.failed', "Couldn't create the project: {0}", error instanceof Error ? error.message : String(error)));
+				}
 				return undefined;
 			}
 			await this.sessionsService.openSession(projectResource(project.id));
 			return project;
 		}
+	}
+
+	/** Says the connection went, and resolves to whether the user chose Retry. */
+	private offerRetry(reason: string): Promise<boolean> {
+		return new Promise<boolean>(resolve => {
+			let answered = false;
+			const answer = (retry: boolean) => {
+				if (!answered) {
+					answered = true;
+					resolve(retry);
+				}
+			};
+			this.notificationService.prompt(
+				Severity.Error,
+				localize('wispNewProject.lost', "Lost the connection to wispd before the project was created: {0}", reason),
+				[{ label: localize('wispNewProject.retry', "Retry"), run: () => answer(true) }],
+				{ onCancel: () => answer(false) },
+			);
+		});
 	}
 
 	private async pickFolder(): Promise<string | undefined> {
@@ -121,6 +157,9 @@ export class WispNewProjectFlow {
 				}
 				if (text.includes('\0') || encoder.encode(text).length > MAX_PATH_BYTES) {
 					return localize('wispNewProject.pathLength', "Enter a path of at most {0} bytes.", MAX_PATH_BYTES);
+				}
+				if (hasDotSegment(text)) {
+					return localize('wispNewProject.pathDots', "Enter the path without . or .. segments.");
 				}
 				return undefined;
 			},

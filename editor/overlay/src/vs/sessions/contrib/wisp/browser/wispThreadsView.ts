@@ -106,6 +106,27 @@ export class WispThreadsView extends ViewPane {
 		const rowStore = this._register(new DisposableStore());
 		const emptyStore = this._register(new DisposableStore());
 
+		let tabStop: string | undefined;
+		this._register(addDisposableListener(list, EventType.KEY_DOWN, event => {
+			const rows = [...list.querySelectorAll<HTMLButtonElement>('button.wisp-threads-row')];
+			const current = rows.indexOf(event.target as HTMLButtonElement);
+			if (current === -1) {
+				return;
+			}
+			let next: number;
+			switch (event.key) {
+				case 'ArrowDown': next = Math.min(current + 1, rows.length - 1); break;
+				case 'ArrowUp': next = Math.max(current - 1, 0); break;
+				case 'Home': next = 0; break;
+				case 'End': next = rows.length - 1; break;
+				default: return;
+			}
+			event.preventDefault();
+			rows[current].tabIndex = -1;
+			rows[next].tabIndex = 0;
+			rows[next].focus();
+		}));
+
 		const sessionsChanged = observableSignalFromEvent(this, this.sessionsManagementService.onDidChangeSessions);
 		const tick = observableSignal(this);
 		const interval = getWindow(section).setInterval(() => tick.trigger(undefined), AGE_REFRESH_MS);
@@ -132,11 +153,17 @@ export class WispThreadsView extends ViewPane {
 			rowStore.clear();
 			clearNode(list);
 			const now = Date.now();
-			for (const session of sessions) {
-				const row = this.renderRow(list, session, now, active?.resource.toString() === session.resource.toString(), rowStore);
-				if (focused === session.resource.toString()) {
-					row.focus();
-				}
+			const rendered = sessions.map(session => this.renderRow(list, session, now, active?.resource.toString() === session.resource.toString(), rowStore));
+			// One tab stop for the list: the row last focused, else the open project, else the first.
+			const stop = rendered.find(row => row.dataset.session === (focused ?? tabStop))
+				?? rendered.find(row => row.classList.contains('selected'))
+				?? rendered[0];
+			for (const row of rendered) {
+				row.tabIndex = row === stop ? 0 : -1;
+				rowStore.add(addDisposableListener(row, EventType.FOCUS, () => tabStop = row.dataset.session));
+			}
+			if (focused !== undefined) {
+				stop?.focus();
 			}
 			list.hidden = sessions.length === 0;
 

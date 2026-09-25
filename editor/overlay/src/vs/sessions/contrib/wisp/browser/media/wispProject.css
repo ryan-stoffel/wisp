@@ -64,6 +64,16 @@
 	color: var(--vscode-charts-green);
 }
 
+/* Read by screen readers only: the fact and whether it is done. */
+.wisp-project-fact-spoken {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+
 .wisp-project-fact-text {
 	display: flex;
 	flex-direction: column;

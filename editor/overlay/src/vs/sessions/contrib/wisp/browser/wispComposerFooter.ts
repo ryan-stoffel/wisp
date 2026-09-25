@@ -3,7 +3,6 @@
  *--------------------------------------------------------------------------------------------*/
 
 import './media/wispProject.css';
-import './media/wispProject.css';
 import { $, append } from '../../../../base/browser/dom.js';
 import { BaseActionViewItem } from '../../../../base/browser/ui/actionbar/actionViewItems.js';
 import { IAction } from '../../../../base/common/actions.js';

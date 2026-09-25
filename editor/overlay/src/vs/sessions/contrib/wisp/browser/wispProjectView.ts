@@ -60,6 +60,13 @@ export function projectFacts(project: Project, host: string, home: string | unde
 	];
 }
 
+/** A fact's accessible name: "Repository, ~/src/app on this Mac, done". */
+export function factAriaLabel(fact: IWispProjectFact): string {
+	return fact.done
+		? localize('wispProject.factDone', "{0}, {1}, done", fact.label, fact.detail)
+		: localize('wispProject.factNotYet', "{0}, {1}, not yet", fact.label, fact.detail);
+}
+
 /**
  * The right panel's Project tab: the open project's name, where its coordinator runs, and a
  * checklist of facts. It follows the active session, and says so when that isn't a project.
@@ -119,9 +126,11 @@ export class WispProjectView extends ViewPane {
 			const item = append(list, $('li.wisp-project-fact', { 'data-fact': fact.id, 'data-done': String(fact.done) }));
 			const icon = fact.done ? Codicon.check : Codicon.circleLargeOutline;
 			append(item, $(`span.wisp-project-fact-icon${ThemeIcon.asCSSSelector(icon)}`, { 'aria-hidden': 'true' }));
-			const text = append(item, $('.wisp-project-fact-text'));
+			// The mark is hidden from screen readers, so the text they read says whether the fact is in place.
+			const text = append(item, $('.wisp-project-fact-text', { 'aria-hidden': 'true' }));
 			append(text, $('span.wisp-project-fact-label', undefined, fact.label));
 			append(text, $('span.wisp-project-fact-detail', undefined, fact.detail));
+			append(item, $('span.wisp-project-fact-spoken', undefined, factAriaLabel(fact)));
 		}
 	}
 }

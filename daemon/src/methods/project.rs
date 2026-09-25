@@ -1,6 +1,6 @@
 //! `project/list` and `project/create`.
 
-use std::path::Path;
+use std::path::{Component, Path};
 use std::sync::Arc;
 
 use tracing::info;
@@ -117,6 +117,19 @@ fn check(params: &ProjectCreateParams) -> Result<(), ErrorObject> {
             "repoPath must be an absolute path",
         ));
     }
+    // One folder has one spelling, so the stored path names the folder that was checked and a
+    // retry spelled differently is a conflict. `components()` drops a `.` inside the path, so
+    // the text is checked for those too.
+    let has_dot_segment = Path::new(repo_path)
+        .components()
+        .any(|component| matches!(component, Component::ParentDir | Component::CurDir))
+        || repo_path.contains("/./")
+        || repo_path.ends_with("/.");
+    if has_dot_segment {
+        return Err(ErrorObject::invalid_params(
+            "repoPath must not contain . or .. segments",
+        ));
+    }
     Ok(())
 }
 
@@ -152,13 +165,17 @@ mod tests {
     }
 
     #[test]
-    fn names_must_not_be_blank_and_paths_must_be_absolute() {
+    fn names_must_not_be_blank_and_paths_must_be_absolute_without_dot_segments() {
         assert!(check(&params("wisp", "/src/wisp")).is_ok());
         for (name, repo_path) in [
             ("", "/src"),
             ("  ", "/src"),
             ("wisp", "src/wisp"),
             ("wisp", ""),
+            ("wisp", "/src/../etc"),
+            ("wisp", "/src/./app"),
+            ("wisp", "/src/app/.."),
+            ("wisp", "/src/app/."),
         ] {
             let error = check(&params(name, repo_path)).unwrap_err();
             assert_eq!(error.code, INVALID_PARAMS, "{name:?} {repo_path:?}");
