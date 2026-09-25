@@ -1,5 +1,6 @@
 //! `initialize`, `host/health`, and `host/version`.
 
+use std::collections::BTreeMap;
 use std::fs;
 
 use tracing::info;
@@ -70,9 +71,12 @@ pub(crate) fn initialize(
     Ok((session, result))
 }
 
-/// The capabilities this wispd advertises. M1 has none; M3 adds `agents`.
+/// The capabilities this wispd advertises. `agentClis` (#114) is the first; M3 adds `agents`.
 fn capabilities_advertised() -> Capabilities {
-    Capabilities::default()
+    Capabilities(BTreeMap::from([(
+        "agentClis".to_owned(),
+        serde_json::Map::new(),
+    )]))
 }
 
 pub(crate) fn health(context: &Context, _: HostHealthParams) -> HostHealthResult {

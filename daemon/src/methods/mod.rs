@@ -4,6 +4,7 @@
 //! Later milestones add a module here for each capability (M3 `agents`: agents and context; M4
 //! `coordinator`), and `host.rs` advertises the capability in `initialize`.
 
+mod accounts;
 mod events;
 mod host;
 mod project;
@@ -16,8 +17,8 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use wisp_protocol::jsonrpc::{ErrorObject, INVALID_REQUEST, Request, RequestId, Response};
 use wisp_protocol::methods::{
-    EventsSubscribe, EventsUnsubscribe, HostHealth, HostVersion, Initialize, ProjectCreate,
-    ProjectList, RequestMethod,
+    AccountsList, AccountsRefresh, EventsSubscribe, EventsUnsubscribe, HostHealth, HostVersion,
+    Initialize, ProjectCreate, ProjectList, RequestMethod,
 };
 use wisp_protocol::{EventsSubscribeResult, EventsUnsubscribeResult, SubscriptionId};
 
@@ -67,6 +68,12 @@ pub(crate) async fn dispatch(context: Context, request: Request) -> Reply {
         }
         ProjectCreate::NAME => {
             handle::<ProjectCreate, _, _>(&request, |p| project::create(&context, p)).await
+        }
+        AccountsList::NAME => {
+            handle::<AccountsList, _, _>(&request, |p| accounts::list(&context, p)).await
+        }
+        AccountsRefresh::NAME => {
+            handle::<AccountsRefresh, _, _>(&request, |p| accounts::refresh(&context, p)).await
         }
         EventsSubscribe::NAME => {
             let subscribed = match request.params() {
