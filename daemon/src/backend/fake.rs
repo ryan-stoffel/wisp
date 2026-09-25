@@ -13,7 +13,9 @@
 //! The child gets its arguments as the vendor CLIs would: the resume id, the prompt as a JSON
 //! string, the policy, and the model. Follow-ups reach it on stdin, one JSON string per line.
 //! With an API key account, the key is in `FAKE_API_KEY`; with a subscription it is scrubbed, as
-//! 0004 has the Claude backend do with Anthropic's variables.
+//! 0004 has the Claude backend do with Anthropic's variables. Like every backend, it refuses a
+//! workspace-write run without a [`WorkerSandbox`](super::WorkerSandbox) (0013), though it
+//! enforces none of it.
 
 use std::collections::VecDeque;
 use std::fmt::Write as _;
@@ -29,6 +31,7 @@ use super::event::{Event, Failure, FailureKind, ModelUsage, Outcome, WarningKind
 use super::process::{
     CancelPolicy, Exit, Launcher, Output, OutputLimits, Process, ProcessSpec, StdinMode,
 };
+use super::sandbox::worker_sandbox;
 use super::{
     Backend, CancelSwitch, Capabilities, Credential, EVENT_BUFFER, EventSink, FollowUp, RunHandle,
     RunRequest, StartError, Started, ToolPolicy, TurnId,
@@ -190,6 +193,7 @@ impl Backend for FakeBackend {
                 resume.session_id
             )));
         }
+        worker_sandbox(&request)?;
         let script = compile(&self.script).map_err(StartError::Invalid)?;
 
         let mut spec = ProcessSpec::new("sh", &request.cwd);

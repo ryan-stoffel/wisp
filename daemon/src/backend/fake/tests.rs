@@ -11,7 +11,7 @@ use crate::backend::process::{CancelPolicy, Environment, Launcher, OutputLimits}
 use crate::backend::{
     AccountRef, ApiKey, Backend, Credential, Event, EventStream, FailureKind, FollowUp,
     LimitStatus, ModelUsage, Outcome, Resume, RunId, RunRequest, SendError, StartError, Started,
-    ToolPolicy, ToolStatus, TurnId, Usage, WarningKind,
+    ToolPolicy, ToolStatus, TurnId, Usage, WarningKind, WorkerSandbox,
 };
 use crate::paths::DataDir;
 
@@ -62,6 +62,7 @@ fn request(cwd: &Path) -> RunRequest {
         cwd: cwd.to_owned(),
         prompt: "Summarize the README.".into(),
         policy: ToolPolicy::NoWrite,
+        sandbox: None,
         account: subscription(),
         turn_id: None,
         resume: None,
@@ -149,6 +150,14 @@ async fn start_passes_the_task_to_the_cli() {
 async fn an_api_key_account_gets_its_key_and_a_subscription_its_config_home() {
     let mut request = request(&root());
     request.policy = ToolPolicy::WorkspaceWrite;
+    assert!(
+        matches!(
+            backend("context").start(request.clone()),
+            Err(StartError::Invalid(message)) if message.contains("0013")
+        ),
+        "a worker needs its sandbox"
+    );
+    request.sandbox = Some(WorkerSandbox::default());
     request.account.credential = Credential::ApiKey(ApiKey::new("sk-fake-123".into()));
     let mut events = launch(&backend("context"), request.clone()).await.events;
     let all = rest(&mut events).await;

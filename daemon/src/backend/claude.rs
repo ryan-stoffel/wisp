@@ -8,19 +8,21 @@
 //! - **No-write** is exactly 0004's: [`NO_WRITE_ARGS`]. As a second check, a no-write run whose
 //!   `system/init` lists any tool outside [`NO_WRITE_TOOLS`] fails with
 //!   [`FailureKind::PolicyViolation`].
-//! - **Workspace-write** is [`WORKSPACE_WRITE_ARGS`], `--permission-mode acceptEdits`, and it is
-//!   not a sandbox (the permission modes and headless docs):
-//!   - Edits, and `mkdir`, `touch`, `rm`, `rmdir`, `mv`, `cp`, and `sed`, are approved for paths
-//!     inside the working directory (and `additionalDirectories`), except protected paths.
-//!   - The read-only command set (`cat`, `ls`, `grep`, `git log`, and so on) runs without
-//!     approval, on any path, including outside the working directory.
-//!   - Every other command would prompt, and `-p` has no one to ask, so it is denied. A worker
-//!     therefore can't run `cargo test` or `git commit`.
-//!   - Worker runs load the user's and the project's settings, so a repository's
-//!     `.claude/settings.json` can widen all of this with `permissions.allow` rules,
-//!     `additionalDirectories`, and hooks, and `-p` connects the servers in its `.mcp.json`.
+//! - **Workspace-write** is 0013's worker sandbox: [`WORKSPACE_WRITE_ARGS`], then
+//!   [`worker_settings`] as `--settings`, then `--add-dir` for each writable folder:
+//!   - `--restricted` loads no user, project, or local settings files, so a repository's
+//!     `.claude/settings.json` can't add allow rules, hooks, or an `env` block (#134), and it
+//!     confines the file tools to the working directories.
+//!   - `--tools` names exactly [`WORKER_TOOLS`]. `Bash` is among them because Claude Code's own
+//!     Seatbelt sandbox holds every command: writes only to the working directories and the
+//!     session temp folder, no reads of the sandbox's `unreadable` paths, no writes to git
+//!     metadata, and no network. `failIfUnavailable` and `allowUnsandboxedCommands: false` keep a
+//!     command from ever running outside it.
+//!   - `--strict-mcp-config` connects no MCP servers, including the repository's `.mcp.json`.
 //!
-//!   Which sandbox workers get is #137's decision, before real workers run in M3.
+//!   As a second check, a worker whose `system/init` lists a tool outside [`WORKER_TOOLS`]
+//!   fails with [`FailureKind::PolicyViolation`]. The flags need Claude Code
+//!   [`WORKER_MIN_VERSION`] or later.
 //!
 //! # Messages go on stdin
 //!
@@ -64,10 +66,12 @@ mod tests;
 
 use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use rustix::process::Signal;
+use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 use tokio::net::unix::pipe;
 use tokio::sync::{Notify, mpsc};
@@ -78,9 +82,11 @@ use super::process::{
     CancelPolicy, Environment, Exit, Launcher, Output, OutputLimits, Process, ProcessSpec,
     StdinMode,
 };
+use super::sandbox::worker_sandbox;
 use super::{
     Backend, CancelSwitch, Capabilities, Credential, EVENT_BUFFER, EventSink, FollowUp, Run,
     RunHandle, RunId, RunRequest, SendError, StartError, Started, ToolPolicy, TurnId,
+    WorkerSandbox,
 };
 
 /// The CLI's program name, looked up on the launcher's `PATH`.
@@ -116,9 +122,38 @@ pub const NO_WRITE_ARGS: &[&str] = &[
 /// this list in M4.
 pub const NO_WRITE_TOOLS: &[&str] = &["Read", "Glob", "Grep", "EndConversation"];
 
-/// [`ToolPolicy::WorkspaceWrite`]'s arguments. See the module docs for what they allow; #137
-/// decides the worker sandbox.
-pub const WORKSPACE_WRITE_ARGS: &[&str] = &["--permission-mode", "acceptEdits"];
+/// The built-in tools a worker gets (0013): no web tools, subagents, skills, or MCP tools, and no
+/// tool that runs code except `Bash`, which Claude Code's sandbox confines. `EndConversation`
+/// may appear in `system/init` as well, as for a no-write run.
+pub const WORKER_TOOLS: &[&str] = &[
+    "Read",
+    "Edit",
+    "Write",
+    "Glob",
+    "Grep",
+    "NotebookEdit",
+    "Bash",
+    "TodoWrite",
+];
+
+/// [`WORKER_TOOLS`] as `--tools` takes them.
+pub const WORKER_TOOL_LIST: &str = "Read,Edit,Write,Glob,Grep,NotebookEdit,Bash,TodoWrite";
+
+/// [`ToolPolicy::WorkspaceWrite`]'s fixed arguments (0013). [`arguments`] adds the run's
+/// [`worker_settings`] and `--add-dir` folders after them.
+pub const WORKSPACE_WRITE_ARGS: &[&str] = &[
+    "--restricted",
+    "--tools",
+    WORKER_TOOL_LIST,
+    "--strict-mcp-config",
+    "--permission-mode",
+    "acceptEdits",
+];
+
+/// The oldest Claude Code that has every flag and setting a worker relies on: `--restricted`
+/// arrived in 2.1.248, the last of them (0013). An older CLI rejects the unknown flag and the run
+/// fails as it starts, so #156 checks the detected version before it starts a worker.
+pub const WORKER_MIN_VERSION: &str = "2.1.248";
 
 /// Prefixes of inherited variables no run gets: Anthropic credentials, endpoints, profiles, and
 /// federation (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`,
@@ -197,13 +232,33 @@ impl ClaudeBackend {
 ///
 /// # Errors
 ///
-/// [`StartError::Invalid`] if the model or the resume id could be read as an option.
+/// [`StartError::Invalid`] if the model or the resume id could be read as an option, or if a
+/// worker has no usable [`WorkerSandbox`].
 pub fn arguments(request: &RunRequest) -> Result<Vec<OsString>, StartError> {
     let policy = match request.policy {
         ToolPolicy::NoWrite => NO_WRITE_ARGS,
         ToolPolicy::WorkspaceWrite => WORKSPACE_WRITE_ARGS,
     };
     let mut args: Vec<OsString> = BASE_ARGS.iter().chain(policy).map(Into::into).collect();
+    if let Some(sandbox) = worker_sandbox(request)? {
+        let config_home = match &request.account.credential {
+            Credential::Subscription { config_home } => config_home.as_deref(),
+            Credential::ApiKey(_) => None,
+        };
+        for path in std::iter::once(request.cwd.as_path()).chain(config_home) {
+            if !path.is_absolute() || path.to_str().is_none() {
+                return Err(StartError::Invalid(format!(
+                    "a worker's {} is not an absolute UTF-8 path",
+                    path.display()
+                )));
+            }
+        }
+        let settings = worker_settings(sandbox, &request.cwd, config_home);
+        args.extend(["--settings".into(), settings.to_string().into()]);
+        for dir in &sandbox.writable {
+            args.extend(["--add-dir".into(), dir.into()]);
+        }
+    }
     if let Some(model) = &request.model {
         check_value("model", model)?;
         args.extend(["--model".into(), model.into()]);
@@ -213,6 +268,51 @@ pub fn arguments(request: &RunRequest) -> Result<Vec<OsString>, StartError> {
         args.extend(["--resume".into(), resume.session_id.clone().into()]);
     }
     Ok(args)
+}
+
+/// The `--settings` a worker runs with (0013): hooks off, and Claude Code's Bash sandbox on, with
+/// no way around it, no network, and `sandbox`'s paths. `cwd` and the writable folders stay
+/// readable inside an unreadable path, such as wispd's data folder, which holds both. A second
+/// account's `config_home` is unreadable too.
+#[must_use]
+pub fn worker_settings(sandbox: &WorkerSandbox, cwd: &Path, config_home: Option<&Path>) -> Value {
+    let unreadable = strings(
+        sandbox
+            .unreadable
+            .iter()
+            .map(PathBuf::as_path)
+            .chain(config_home),
+    );
+    let readable =
+        strings(std::iter::once(cwd).chain(sandbox.writable.iter().map(PathBuf::as_path)));
+    let read_only = strings(sandbox.read_only.iter().map(PathBuf::as_path));
+    serde_json::json!({
+        "disableAllHooks": true,
+        "sandbox": {
+            "enabled": true,
+            "failIfUnavailable": true,
+            "autoAllowBashIfSandboxed": true,
+            "allowUnsandboxedCommands": false,
+            "excludedCommands": [],
+            "network": {
+                "strictAllowlist": true,
+                "allowedDomains": [],
+                "allowLocalBinding": false,
+            },
+            "filesystem": {
+                "denyRead": unreadable,
+                "allowRead": readable,
+                "denyWrite": read_only,
+            },
+        },
+    })
+}
+
+/// Paths as settings strings. [`arguments`] has already refused any that isn't UTF-8.
+fn strings<'a>(paths: impl Iterator<Item = &'a Path>) -> Vec<String> {
+    paths
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect()
 }
 
 fn check_value(what: &str, value: &str) -> Result<(), StartError> {

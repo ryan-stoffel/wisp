@@ -22,6 +22,7 @@ pub mod event;
 pub mod fake;
 pub mod key_account;
 pub mod process;
+pub mod sandbox;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -41,6 +42,7 @@ pub use self::event::{
     Outcome, TodoItem, TodoStatus, ToolStatus, Usage, WarningKind,
 };
 use self::process::{CancelPolicy, Signals, SpawnError};
+pub use self::sandbox::WorkerSandbox;
 
 /// How many events a run buffers before its backend waits for the consumer.
 pub const EVENT_BUFFER: usize = 256;
@@ -122,6 +124,9 @@ pub struct RunRequest {
     pub prompt: String,
     /// What the agent's tools may do.
     pub policy: ToolPolicy,
+    /// Where a [`ToolPolicy::WorkspaceWrite`] run may write and what it may not read (0013).
+    /// Required for a worker, which is refused without one; a no-write run ignores it.
+    pub sandbox: Option<WorkerSandbox>,
     /// The account the run is charged to.
     pub account: AccountRef,
     /// The vendor's session to resume, or a new session.
@@ -167,7 +172,8 @@ pub struct FollowUp {
 pub enum ToolPolicy {
     /// Read-only tools, no hooks, no project settings: the coordinator's policy.
     NoWrite,
-    /// Edits inside the working directory: a worker's policy.
+    /// Edits inside the working directory, and commands in the vendor's OS sandbox: a worker's
+    /// policy, bounded by the run's [`WorkerSandbox`] (0013).
     ///
     /// Backends never commit. Codex's `workspace-write` sandbox keeps `.git` read-only, even in a
     /// linked worktree (0004), so M3's runner commits a worker's changes after its run's
