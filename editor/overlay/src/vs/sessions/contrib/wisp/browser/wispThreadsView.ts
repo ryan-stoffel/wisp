@@ -29,6 +29,7 @@ import { ISession } from '../../../services/sessions/common/session.js';
 import { ISessionsManagementService } from '../../../services/sessions/common/sessionsManagement.js';
 import { IWispProjectsService } from '../../providers/wisp/browser/wispProjectsService.js';
 import { compactAge, projectGlyph, projectIdOf } from '../../providers/wisp/common/wispProjects.js';
+import { WISP_SHOW_ACCOUNTS_COMMAND } from './wispAccountsEditor.js';
 import { WISP_SHOW_HOST_MENU_COMMAND } from './wispHostMenu.js';
 import { IWispHostStatusService } from './wispHostStatusService.js';
 import { WISP_NEW_PROJECT_COMMAND } from './wispNewProject.js';
@@ -85,7 +86,7 @@ export class WispThreadsView extends ViewPane {
 		this.firstAction = this.renderAction(actions, Codicon.edit, localize('wispThreads.newChat', "New Chat"), { disabledReason: localize('wispThreads.newChatDisabled', "Chats outside a project are not available yet.") });
 		this.renderAction(actions, Codicon.search, localize('wispThreads.search', "Search"), { run: () => this.commandService.executeCommand(WISP_SEARCH_COMMAND), keybinding: WISP_SEARCH_COMMAND });
 		// Automations stays hidden until wisp decides on triggers (M6).
-		this.renderAction(actions, Codicon.settings, localize('wispThreads.customize', "Customize"), { disabledReason: localize('wispThreads.customizeDisabled', "Host and account settings are not available yet.") });
+		this.renderAction(actions, Codicon.settings, localize('wispThreads.customize', "Customize"), { run: () => this.commandService.executeCommand(WISP_SHOW_ACCOUNTS_COMMAND) });
 
 		const lists = append(root, $('.wisp-threads-lists'));
 		this.renderProjects(lists, `${idPrefix}-projects`);
