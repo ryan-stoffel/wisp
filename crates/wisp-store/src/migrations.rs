@@ -40,6 +40,47 @@ const MIGRATIONS: &[Migration] = &[
             created_at TEXT NOT NULL
         );",
     },
+    // Per-account usage (#120): append-only token/cost deltas, one replaced snapshot per account
+    // limit window, and one replaced running total per session and model, so a resumed session
+    // can pass its baseline (#113's `Resume::usage_totals`). `model` uses `''`, not `NULL`, as the
+    // "no model reported" sentinel: SQLite treats two `NULL`s as distinct, which would stop
+    // `session_usage_totals` from replacing an existing row for the unnamed model.
+    Migration {
+        version: 4,
+        sql: "CREATE TABLE usage_deltas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            input_tokens INTEGER NOT NULL,
+            output_tokens INTEGER NOT NULL,
+            cache_read_tokens INTEGER NOT NULL,
+            cache_write_tokens INTEGER NOT NULL,
+            cost_usd_micros INTEGER,
+            at TEXT NOT NULL
+        );
+        CREATE INDEX usage_deltas_account_at ON usage_deltas (account_id, at);
+
+        CREATE TABLE limit_snapshots (
+            account_id TEXT NOT NULL,
+            window TEXT NOT NULL,
+            used_percent REAL,
+            resets_at TEXT,
+            captured_at TEXT NOT NULL,
+            PRIMARY KEY (account_id, window)
+        );
+
+        CREATE TABLE session_usage_totals (
+            session_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            input_tokens INTEGER NOT NULL,
+            output_tokens INTEGER NOT NULL,
+            cache_read_tokens INTEGER NOT NULL,
+            cache_write_tokens INTEGER NOT NULL,
+            cost_usd_micros INTEGER,
+            PRIMARY KEY (session_id, model)
+        );",
+    },
 ];
 
 /// Bootstraps the `schema_version` table and applies any migration whose

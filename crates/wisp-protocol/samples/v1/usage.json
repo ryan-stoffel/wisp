@@ -1,0 +1,57 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "usage/get",
+    "params": {}
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "accounts": [
+        {
+          "accountId": "claude-max",
+          "today": {
+            "inputTokens": 1200,
+            "outputTokens": 340,
+            "cacheReadTokens": 500,
+            "cacheWriteTokens": 0,
+            "costUsdMicros": 45000
+          },
+          "week": {
+            "inputTokens": 9000,
+            "outputTokens": 2100,
+            "cacheReadTokens": 4000,
+            "cacheWriteTokens": 100,
+            "costUsdMicros": 310000
+          },
+          "limits": [
+            {
+              "window": "five_hour",
+              "usedPercent": 42.5,
+              "resetsAt": "2026-09-24T17:00:00Z",
+              "capturedAt": "2026-09-24T12:00:00Z"
+            }
+          ]
+        },
+        {
+          "accountId": "codex-work",
+          "today": {
+            "inputTokens": 500,
+            "outputTokens": 120,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0
+          },
+          "week": {
+            "inputTokens": 500,
+            "outputTokens": 120,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0
+          },
+          "limits": []
+        }
+      ]
+    }
+  }
+]
