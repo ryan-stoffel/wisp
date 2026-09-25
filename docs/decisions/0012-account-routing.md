@@ -7,9 +7,11 @@
 ## Context
 
 M2 needs a task to resolve to a backend and an account: named outright, or the task's role's
-stored default. #114 (detecting installed CLIs and their sign-in state) has not shipped yet, so
-wisp has no store-backed notion of a "subscription account" distinct from the backend that runs
-it. #119 still has to let a task name one.
+stored default. #114 (detecting installed CLIs and their sign-in state) had not shipped when this
+was written, so wisp had no store-backed notion of a "subscription account" distinct from the
+backend that runs it, and #119 had to let a task name one anyway. #114 has since shipped, but
+wiring `accounts/defaults/set` to its detection and giving a subscription account a real identity
+is #170's job, not this one's.
 
 ## Decision
 
@@ -51,8 +53,15 @@ it. #119 still has to let a task name one.
   untracked file, both still count as a change even though the tree was never clean.
 - **`accounts/defaults/set` validates before it writes.** A `Key` choice must be a real row in
   `accounts`; a `Subscription` choice's backend must be in a fixed list of vendor CLIs 0004 commits
-  to (`claude`, `codex`, `cursor`) until #114 lands real detection. Either failure is
-  `invalidParams`, naming the account or backend.
+  to (`claude`, `codex`, `cursor`) until #170 wires this check to #114's real detection instead.
+  Either failure is `invalidParams`, naming the account or backend.
+- **The post-turn check has a known blind spot: gitignored writes.** `routing::snapshot` and
+  `routing::check` hash `git status` and `git diff`, so a write to a file `.gitignore` excludes —
+  `.env`, `.vscode/`, build output — passes uncaught. 0004 accepts this ("The check misses writes
+  outside the repo and to ignored files"): the tool allowlist, not this check, is the main guard,
+  and hashing every ignored file (`node_modules`, `target`, and the like) would be too expensive to
+  run after every turn. A caller of `check` sees only what this check actually covers, not "any
+  write."
 
 ## Consequences
 
@@ -64,9 +73,8 @@ it. #119 still has to let a task name one.
   `routing::snapshot` before a coordinator's turn and `routing::check` after it (stopping the run
   and reporting `policyViolation` on a violation). #24 (Epic: M4: Coordinator) lists "Coordinator
   planning loop" as a planned task; that is where this belongs once M4's task issues are filed.
-- #114 lands a real, listable subscription account identity later, and a real list of installed
-  CLIs to validate `accounts/defaults/set`'s `Subscription` choices against, replacing the fixed
-  `claude`/`codex`/`cursor` list. `AccountChoice::Subscription` keeps working as today's
-  one-account-per-backend meaning until then, and #114 should account for `role_defaults` rows and
-  usage rows already keyed by a backend name such as `"claude"` needing to migrate to that real
-  identity rather than being orphaned by it.
+- #170 gives subscription accounts a real, listable identity, validates `accounts/defaults/set`'s
+  `Subscription` choices against #114's `DetectedCli` instead of the fixed `claude`/`codex`/`cursor`
+  list, and migrates `role_defaults` rows and usage rows already keyed by a backend name such as
+  `"claude"` to that real identity rather than orphaning them. `AccountChoice::Subscription` keeps
+  working as today's one-account-per-backend meaning until #170 lands.

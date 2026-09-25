@@ -308,9 +308,10 @@ pub(crate) fn account_choice(default: RoleDefault) -> Result<AccountChoice, Erro
     }
 }
 
-/// Vendor CLIs wispd ships or plans an adapter for (0004), ahead of #114's real detection of which
-/// are actually installed and signed in. `role_default` checks a `Subscription` choice's backend
-/// name against this fixed list; #114 replaces it with something wispd has actually probed.
+/// Vendor CLIs wispd ships or plans an adapter for (0004), ahead of #170's real detection of which
+/// are actually installed and signed in (#114). `role_default` checks a `Subscription` choice's
+/// backend name against this fixed list; #170 replaces it with something wispd has actually
+/// probed.
 const KNOWN_BACKENDS: &[&str] = &["claude", "codex", "cursor"];
 
 /// An `accounts/defaults/set` choice as the store's [`RoleDefault`], checked against `db_store`
