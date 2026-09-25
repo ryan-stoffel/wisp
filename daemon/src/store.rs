@@ -21,8 +21,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use uuid::Uuid;
 use wisp_protocol::jsonrpc::ErrorObject;
-use wisp_protocol::{ErrorKind, Project, ProjectCreateParams, ProjectId, StoreState};
-use wisp_store::{ProjectFields, Store, StoreError};
+use wisp_protocol::{
+    AccountId, ErrorKind, KeyAccount, Project, ProjectCreateParams, ProjectId, Provider, StoreState,
+};
+use wisp_store::{AccountFields, ProjectFields, Store, StoreError};
 
 use crate::repo;
 
@@ -225,6 +227,83 @@ pub(crate) fn project(row: wisp_store::Project) -> Result<Project, ErrorObject> 
     })
 }
 
+/// The protocol error for an accounts-table store error.
+///
+/// Unlike [`store_error`], a missing row is `accountNotFound`, not `projectNotFound`: the two
+/// tables share [`StoreError`], but not its meaning.
+pub(crate) fn account_store_error(error: &StoreError) -> ErrorObject {
+    match error {
+        StoreError::IdConflict { id } => ErrorObject::wisp(
+            ErrorKind::IdConflict,
+            format!("key account {id} exists with a different provider, label, or key"),
+        ),
+        StoreError::NotFound { id } => ErrorObject::wisp(
+            ErrorKind::AccountNotFound,
+            format!("no key account has id {id}"),
+        ),
+        other => {
+            error!(error = %other, "the project store failed");
+            ErrorObject::internal_error(format!("the project store failed: {other}"))
+        }
+    }
+}
+
+/// `provider`'s text for the `accounts.provider` column.
+pub(crate) fn provider_text(provider: Provider) -> &'static str {
+    match provider {
+        Provider::Anthropic => "anthropic",
+        Provider::Openai => "openai",
+        Provider::Cursor => "cursor",
+        Provider::Unknown => "unknown",
+    }
+}
+
+/// A stored provider string as the protocol's [`Provider`]. Anything this build does not
+/// recognize decodes as [`Provider::Unknown`], the same forward-compatibility rule the protocol
+/// itself uses.
+fn provider_from_text(text: &str) -> Provider {
+    match text {
+        "anthropic" => Provider::Anthropic,
+        "openai" => Provider::Openai,
+        "cursor" => Provider::Cursor,
+        _ => Provider::Unknown,
+    }
+}
+
+/// The store's fields for an `accounts/keys/add`, with `provider` as its stored text.
+pub(crate) fn account_fields(
+    provider: Provider,
+    label: String,
+    masked_key: String,
+) -> AccountFields {
+    AccountFields {
+        provider: provider_text(provider).to_owned(),
+        label,
+        masked_key,
+    }
+}
+
+/// A store row as the protocol's key account.
+///
+/// wispd writes only version 7 ids, so a row with another kind of id was written by something
+/// else, and the request fails rather than hide the row.
+pub(crate) fn key_account(row: wisp_store::Account) -> Result<KeyAccount, ErrorObject> {
+    let id = AccountId::try_from(row.id).map_err(|_| {
+        error!(id = %row.id, "a stored key account's id is not a UUIDv7");
+        ErrorObject::internal_error(format!(
+            "the stored key account {} has an invalid id",
+            row.id
+        ))
+    })?;
+    Ok(KeyAccount {
+        id,
+        provider: provider_from_text(&row.provider),
+        label: row.label,
+        created_at: row.created_at,
+        masked_key: row.masked_key,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -232,10 +311,14 @@ mod tests {
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
     use wisp_protocol::jsonrpc::{INTERNAL_ERROR, REQUEST_CANCELLED, WISP_ERROR};
-    use wisp_protocol::{ErrorKind, ProjectCreateParams, ProjectId, StoreState};
+    use wisp_protocol::{
+        AccountId, ErrorKind, ProjectCreateParams, ProjectId, Provider, StoreState,
+    };
     use wisp_store::StoreError;
 
-    use super::{StoreHandle, fields, project, store_error};
+    use super::{
+        StoreHandle, account_fields, account_store_error, fields, key_account, project, store_error,
+    };
 
     fn row(id: Uuid) -> wisp_store::Project {
         wisp_store::Project {
@@ -289,6 +372,62 @@ mod tests {
         );
         let other = store_error(&StoreError::JournalMode("delete".to_owned()));
         assert_eq!(other.code, INTERNAL_ERROR);
+    }
+
+    fn account_row(id: Uuid) -> wisp_store::Account {
+        wisp_store::Account {
+            id,
+            provider: "anthropic".to_owned(),
+            label: "Personal".to_owned(),
+            masked_key: "sk-ant-...abcd".to_owned(),
+            created_at: "2026-09-24T12:00:00.5Z".parse().unwrap(),
+        }
+    }
+
+    #[test]
+    fn account_rows_map_to_protocol_key_accounts_field_for_field() {
+        let id = AccountId::generate();
+        let mapped = key_account(account_row(id.into())).unwrap();
+        assert_eq!(mapped.id, id);
+        assert_eq!(mapped.provider, Provider::Anthropic);
+        assert_eq!(mapped.label, "Personal");
+        assert_eq!(mapped.masked_key, "sk-ant-...abcd");
+        assert_eq!(mapped.created_at, account_row(id.into()).created_at);
+
+        let fields = account_fields(
+            Provider::Openai,
+            "Work".to_owned(),
+            "sk-proj-...wxyz".to_owned(),
+        );
+        assert_eq!(fields.provider, "openai");
+        assert_eq!(fields.label, "Work");
+        assert_eq!(fields.masked_key, "sk-proj-...wxyz");
+    }
+
+    #[test]
+    fn an_account_row_whose_id_is_not_v7_is_an_internal_error() {
+        let error = key_account(account_row(Uuid::nil())).unwrap_err();
+        assert_eq!(error.code, INTERNAL_ERROR);
+    }
+
+    #[test]
+    fn an_unrecognized_stored_provider_decodes_as_unknown() {
+        let mut row = account_row(Uuid::now_v7());
+        row.provider = "gemini".to_owned();
+        let mapped = key_account(row).unwrap();
+        assert_eq!(mapped.provider, Provider::Unknown);
+    }
+
+    #[test]
+    fn missing_accounts_are_account_not_found_not_project_not_found() {
+        let id = Uuid::now_v7();
+        let conflict = account_store_error(&StoreError::IdConflict { id });
+        assert_eq!(conflict.wisp_data().unwrap().kind, ErrorKind::IdConflict);
+        let missing = account_store_error(&StoreError::NotFound { id });
+        assert_eq!(
+            missing.wisp_data().unwrap().kind,
+            ErrorKind::AccountNotFound
+        );
     }
 
     #[tokio::test]

@@ -249,7 +249,7 @@ mod tests {
         let generated = generate();
         assert!(!generated.contains("bigint"));
         assert!(!generated.contains("\"unknown\""));
-        assert!(generated.contains("export type ErrorKind = \"notInitialized\" | \"incompatibleProtocol\" | \"resyncRequired\" | \"projectNotFound\" | \"idConflict\" | \"notARepository\";"));
+        assert!(generated.contains("export type ErrorKind = \"notInitialized\" | \"incompatibleProtocol\" | \"resyncRequired\" | \"projectNotFound\" | \"accountNotFound\" | \"keychainUnavailable\" | \"idConflict\" | \"notARepository\";"));
         assert!(
             generated.contains(
                 "\"initialize\": { params: InitializeParams, result: InitializeResult },"

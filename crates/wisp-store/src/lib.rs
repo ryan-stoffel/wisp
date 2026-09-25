@@ -1,9 +1,13 @@
-//! SQLite-backed storage for wisp projects.
+//! SQLite-backed storage for wisp projects and key accounts.
 //!
 //! [`Store`] owns one SQLite connection and applies its own versioned
 //! migrations on open. The caller chooses the database path; this crate
 //! never constructs wisp's application data directory itself.
+//!
+//! A key account ([`Account`]) is metadata only: its API key lives in the macOS Keychain, never
+//! in this database (#117).
 
+mod accounts;
 mod error;
 mod migrations;
 mod project;
@@ -16,6 +20,7 @@ use std::time::{Duration, Instant};
 
 use rusqlite::{Connection, Error as SqliteError, ErrorCode};
 
+pub use accounts::{Account, AccountFields};
 pub use error::StoreError;
 pub use project::{Project, ProjectFields};
 
