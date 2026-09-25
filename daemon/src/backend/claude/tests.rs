@@ -40,9 +40,30 @@ fn fixture(name: &str) -> &'static str {
         "follow-up-turns" => include_str!("fixtures/follow-up-turns.jsonl"),
         "cancel" => include_str!("fixtures/cancel.jsonl"),
         "stubborn" => include_str!("fixtures/stubborn.jsonl"),
+        "follow-up-no-echo" => include_str!("fixtures/follow-up-no-echo.jsonl"),
+        "provider" => include_str!("fixtures/provider.jsonl"),
         other => panic!("no fixture {other}"),
     }
 }
+
+/// Inherited variables that could pick Claude's credentials, provider, endpoint, or account, one
+/// of each kind. None may reach the CLI, whatever the run's account or policy.
+const INHERITED_CREDENTIALS: &[(&str, &str)] = &[
+    ("ANTHROPIC_API_KEY", "wisp-test-not-a-key"),
+    ("ANTHROPIC_AUTH_TOKEN", "wisp-test-not-a-bearer"),
+    ("CLAUDE_CODE_OAUTH_TOKEN", "wisp-test-not-a-token"),
+    ("CLAUDE_CODE_OAUTH_REFRESH_TOKEN", "wisp-test-not-a-token"),
+    ("CLAUDE_CODE_USE_BEDROCK", "1"),
+    ("CLAUDE_CODE_USE_VERTEX", "1"),
+    ("CLAUDE_CODE_USE_FOUNDRY", "1"),
+    ("ANTHROPIC_BASE_URL", "https://example.invalid"),
+    ("ANTHROPIC_UNIX_SOCKET", "/tmp/wisp-test.sock"),
+    ("ANTHROPIC_PROFILE", "work"),
+    ("ANTHROPIC_FEDERATION_RULE_ID", "wisp-test-rule"),
+    ("ANTHROPIC_ORGANIZATION_ID", "wisp-test-org"),
+    ("AWS_BEARER_TOKEN_BEDROCK", "wisp-test-not-a-token"),
+    ("CLAUDE_CONFIG_DIR", "/tmp/wisp-test-inherited-config"),
+];
 
 fn turn(id: &str) -> TurnId {
     id.parse().unwrap()
@@ -69,13 +90,15 @@ impl Fake {
             ("PATH", format!("{}:/usr/bin:/bin", bin.display())),
             ("FAKE_CLAUDE_DIR", root.display().to_string()),
             ("FAKE_CLAUDE_FIXTURE", fixture_path.display().to_string()),
-            ("ANTHROPIC_API_KEY", "wisp-test-not-a-key".into()),
-            ("ANTHROPIC_AUTH_TOKEN", "wisp-test-not-a-bearer".into()),
-            ("CLAUDE_CODE_OAUTH_TOKEN", "wisp-test-not-a-token".into()),
             ("SSH_CONNECTION", "10.0.0.2 50000 10.0.0.1 22".into()),
             ("KEPT", "yes".into()),
         ]
         .into_iter()
+        .chain(
+            INHERITED_CREDENTIALS
+                .iter()
+                .map(|(name, value)| (*name, (*value).to_owned())),
+        )
         .collect();
         let launcher = Launcher::new(DataDir::new(root.join("data")).unwrap(), base);
         Self {
@@ -98,6 +121,25 @@ impl Fake {
 
     fn env(&self) -> Vec<String> {
         self.recorded("env").lines().map(str::to_owned).collect()
+    }
+
+    /// Checks that no inherited credential reached the CLI. `CLAUDE_CONFIG_DIR` may only have
+    /// the value wisp set on purpose.
+    fn assert_no_inherited_credentials(&self, config_dir: Option<&str>) {
+        let env = self.env();
+        for (name, value) in INHERITED_CREDENTIALS {
+            let prefix = format!("{name}=");
+            let leaked: Vec<&String> = env
+                .iter()
+                .filter(|var| var.starts_with(&prefix))
+                .filter(|var| *name != "CLAUDE_CONFIG_DIR" || var.ends_with(value))
+                .collect();
+            assert!(leaked.is_empty(), "{name} leaked: {leaked:?}");
+        }
+        let config = env
+            .iter()
+            .find_map(|var| var.strip_prefix("CLAUDE_CONFIG_DIR="));
+        assert_eq!(config, config_dir);
     }
 
     /// The user messages the CLI read from stdin.
@@ -274,18 +316,8 @@ async fn a_read_only_run_maps_the_stream_and_uses_the_no_write_policy() {
     let env = fake.env();
     let working_dir = format!("PWD={}", cwd.display());
     assert!(env.contains(&working_dir), "{env:?}");
-    for scrubbed in [
-        "ANTHROPIC_API_KEY=",
-        "ANTHROPIC_AUTH_TOKEN=",
-        "CLAUDE_CODE_OAUTH_TOKEN=",
-        "SSH_CONNECTION=",
-        "CLAUDE_CONFIG_DIR=",
-    ] {
-        assert!(
-            !env.iter().any(|var| var.starts_with(scrubbed)),
-            "{scrubbed} leaked: {env:?}"
-        );
-    }
+    fake.assert_no_inherited_credentials(None);
+    assert!(!env.iter().any(|var| var.starts_with("SSH_CONNECTION=")));
     for set in [
         "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1",
         "CLAUDE_CODE_STARTUP_FAILURE_RESULTS=1",
@@ -319,11 +351,7 @@ fn assert_worker_invocation(fake: &Fake) {
         ]
     );
     assert!(!argv.iter().any(|arg| arg == "--tools"), "{argv:?}");
-    assert!(
-        fake.env()
-            .iter()
-            .any(|var| var == "CLAUDE_CONFIG_DIR=/tmp/claude-second-account")
-    );
+    fake.assert_no_inherited_credentials(Some("/tmp/claude-second-account"));
 }
 
 #[tokio::test]
@@ -486,9 +514,60 @@ async fn rate_limits_are_reported_and_a_rejected_one_fails_the_run() {
                 status: LimitStatus::Rejected,
                 resets_at: Some("2026-09-25T19:00:00Z".parse().unwrap()),
             },
+            &LimitWindow {
+                window: "seven_day_opus".into(),
+                duration_minutes: Some(10_080),
+                used_percent: Some(40.0),
+                status: LimitStatus::Allowed,
+                resets_at: Some("2026-09-30T00:00:00.5Z".parse().unwrap()),
+            },
         ]
     );
-    assert_eq!(failure(&all).0, FailureKind::RateLimited);
+    assert_eq!(
+        failure(&all).0,
+        FailureKind::RateLimited,
+        "a later allowed window doesn't clear the rejected one"
+    );
+}
+
+#[tokio::test]
+async fn a_model_served_by_another_provider_fails_the_run() {
+    let fake = Fake::new("provider");
+    let all = run(&fake, request(&fake.root())).await;
+    let (kind, message) = failure(&all);
+    assert_eq!(kind, FailureKind::UnexpectedApiKey);
+    assert!(message.contains("bedrock"), "{message}");
+    assert!(
+        !all.iter()
+            .any(|event| matches!(event, Event::Usage(_) | Event::TurnFinished { .. })),
+        "usage billed elsewhere isn't the account's: {all:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_result_without_ids_or_a_queue_count_ends_every_turn() {
+    let fake = Fake::new("follow-up-no-echo");
+    let Started { run, mut events } = launch(&fake.backend, request(&fake.root())).await;
+    assert!(matches!(
+        next(&mut events).await,
+        Event::SessionStarted { .. }
+    ));
+    assert!(matches!(next(&mut events).await, Event::Text { .. }));
+    run.send(FollowUp {
+        turn_id: turn(TURN_2),
+        text: "Fix the tests too.".into(),
+    })
+    .unwrap();
+    let all = rest(&mut events).await;
+    let finished: Vec<Option<TurnId>> = all
+        .iter()
+        .filter_map(|event| match event {
+            Event::TurnFinished { turn_id, .. } => Some(*turn_id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(finished, [Some(turn(TURN_1)), Some(turn(TURN_2))]);
+    assert!(matches!(outcome(&all), Outcome::Completed { .. }));
 }
 
 #[tokio::test]
@@ -824,4 +903,88 @@ fn output_before_the_init_is_refused() {
         translator.line(assistant).as_slice(),
         [Step::Violation(failure)] if failure.failure == FailureKind::UnexpectedApiKey
     ));
+}
+
+fn init_line(tools: &str) -> Vec<u8> {
+    format!(
+        r#"{{"type":"system","subtype":"init","session_id":"s","apiKeySource":"none","tools":{tools}}}"#
+    )
+    .into_bytes()
+}
+
+fn violation_kind(steps: &[Step]) -> Option<FailureKind> {
+    steps.iter().find_map(|step| match step {
+        Step::Violation(failure) => Some(failure.failure),
+        _ => None,
+    })
+}
+
+#[test]
+fn a_no_write_run_allows_only_the_read_tools() {
+    let allowed = init_line(r#"["Read","Glob","Grep","EndConversation"]"#);
+    let mut translator = Translator::new(ToolPolicy::NoWrite, "none");
+    assert_eq!(violation_kind(&translator.line(&allowed)), None);
+    for extra in [
+        r#"["Read","WebFetch"]"#,
+        r#"["Read","Task"]"#,
+        r#"["Read","mcp__github__create_issue"]"#,
+        r#"["Read",7]"#,
+    ] {
+        let mut translator = Translator::new(ToolPolicy::NoWrite, "none");
+        assert_eq!(
+            violation_kind(&translator.line(&init_line(extra))),
+            Some(FailureKind::PolicyViolation),
+            "{extra}"
+        );
+    }
+    let mut translator = Translator::new(ToolPolicy::NoWrite, "none");
+    let no_tools = br#"{"type":"system","subtype":"init","session_id":"s","apiKeySource":"none"}"#;
+    assert_eq!(
+        violation_kind(&translator.line(no_tools)),
+        Some(FailureKind::PolicyViolation)
+    );
+}
+
+fn failed_result() -> &'static [u8] {
+    br#"{"type":"result","subtype":"success","is_error":true,"result":"API Error"}"#
+}
+
+fn last_failure(translator: &Translator) -> FailureKind {
+    translator.last_failure.as_ref().unwrap().failure
+}
+
+#[test]
+fn retries_and_rejected_limits_name_a_failed_turn_s_kind_until_it_ends() {
+    let mut translator = Translator::new(ToolPolicy::WorkspaceWrite, "none");
+    translator.line(&init_line(r#"["Read"]"#));
+    for (error, kind) in [
+        ("rate_limit", FailureKind::RateLimited),
+        ("authentication_failed", FailureKind::NotSignedIn),
+        ("overloaded", FailureKind::VendorError),
+    ] {
+        let retry = format!(r#"{{"type":"system","subtype":"api_retry","error":"{error}"}}"#);
+        translator.line(retry.as_bytes());
+        translator.line(failed_result());
+        assert_eq!(last_failure(&translator), kind, "{error}");
+    }
+
+    let rejected = br#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour"}}"#;
+    translator.line(rejected);
+    translator.line(failed_result());
+    assert_eq!(last_failure(&translator), FailureKind::RateLimited);
+    translator.line(failed_result());
+    assert_eq!(
+        last_failure(&translator),
+        FailureKind::VendorError,
+        "the next turn starts clean"
+    );
+
+    translator.line(rejected);
+    let max_turns = br#"{"type":"result","subtype":"error_max_turns","is_error":true}"#;
+    translator.line(max_turns);
+    assert_eq!(
+        last_failure(&translator),
+        FailureKind::VendorError,
+        "a limit the run set says nothing about the account"
+    );
 }

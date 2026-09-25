@@ -8,20 +8,21 @@ use std::collections::HashSet;
 use jiff::Timestamp;
 use serde_json::{Map, Value};
 
+use super::NO_WRITE_TOOLS;
 use crate::backend::ToolPolicy;
 use crate::backend::event::{
     Event, Failure, FailureKind, LimitStatus, LimitWindow, ModelUsage, TodoItem, TodoStatus,
     ToolStatus, Usage, WarningKind,
 };
 
-/// Tools that change files or run commands, which a no-write run's `system/init` must not list.
-const WRITE_TOOLS: &[&str] = &[
-    "Bash",
-    "Edit",
-    "MultiEdit",
-    "NotebookEdit",
-    "PowerShell",
-    "Write",
+/// The provider `result.modelUsage` names for Anthropic's own API, which a subscription uses.
+const FIRST_PARTY: &str = "firstParty";
+
+/// `result` subtypes for limits the run set itself, which say nothing about the account.
+const RUN_LIMITS: &[&str] = &[
+    "error_max_turns",
+    "error_max_budget_usd",
+    "error_max_structured_output_retries",
 ];
 
 /// Message types that carry nothing wisp shows, and are skipped without a warning.
@@ -142,6 +143,7 @@ impl Translator {
             }
             Some("api_retry") => {
                 let error = text(message, "error").unwrap_or("unknown");
+                self.turn_error = Some(api_error_kind(error));
                 let attempt = message.get("attempt").and_then(Value::as_u64);
                 let max = message.get("max_retries").and_then(Value::as_u64);
                 let detail = match (attempt, max) {
@@ -190,15 +192,20 @@ impl Translator {
         }
         if self.policy == ToolPolicy::NoWrite {
             let tools = message.get("tools").and_then(Value::as_array);
+            let Some(tools) = tools else {
+                let message = "Claude Code did not list its tools in a no-write run".to_owned();
+                steps.push(violation(FailureKind::PolicyViolation, message));
+                return steps;
+            };
             let offered: Vec<&str> = tools
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .filter(|tool| WRITE_TOOLS.contains(tool))
+                .iter()
+                .map(|tool| tool.as_str().unwrap_or("<not a string>"))
+                .filter(|tool| !NO_WRITE_TOOLS.contains(tool))
                 .collect();
             if !offered.is_empty() {
                 let message = format!(
-                    "Claude Code offered write tools in a no-write run: {}",
+                    "Claude Code offered tools beyond {} in a no-write run: {}",
+                    NO_WRITE_TOOLS.join(", "),
                     offered.join(", ")
                 );
                 steps.push(violation(FailureKind::PolicyViolation, message));
@@ -308,10 +315,24 @@ impl Translator {
         if !self.verified && !failed {
             return vec![unverified()];
         }
+        let totals = message.get("modelUsage").and_then(Value::as_object);
+        let providers: Vec<&str> = totals
+            .into_iter()
+            .flatten()
+            .filter_map(|(_, usage)| usage.get("provider").and_then(Value::as_str))
+            .filter(|provider| *provider != FIRST_PARTY)
+            .collect();
+        if !providers.is_empty() {
+            let message = format!(
+                "Claude Code used the model through {} instead of Anthropic's API, so the run was \
+                 not charged to the account",
+                providers.join(", ")
+            );
+            return vec![violation(FailureKind::UnexpectedApiKey, message)];
+        }
         self.results += 1;
         let result = text(message, "result").map(str::to_owned);
         let mut steps = Vec::new();
-        let totals = message.get("modelUsage").and_then(Value::as_object);
         for (model, usage) in totals.into_iter().flatten() {
             let usage = model_usage(usage);
             if !is_zero(&usage) {
@@ -322,7 +343,9 @@ impl Translator {
             }
         }
         if failed {
-            let failure = if self.limit_rejected {
+            let failure = if RUN_LIMITS.contains(&subtype) {
+                FailureKind::VendorError
+            } else if self.limit_rejected {
                 FailureKind::RateLimited
             } else if let Some(kind) = self.turn_error {
                 kind
@@ -355,6 +378,7 @@ impl Translator {
             self.last_result.clone_from(&result);
         }
         self.turn_error = None;
+        self.limit_rejected = false;
         let uuids = match message.get("user_message_uuids").and_then(Value::as_array) {
             Some(uuids) => uuids
                 .iter()
@@ -387,7 +411,7 @@ impl Translator {
             Some("rejected") => LimitStatus::Rejected,
             _ => LimitStatus::Unknown,
         };
-        self.limit_rejected = status == LimitStatus::Rejected;
+        self.limit_rejected |= status == LimitStatus::Rejected;
         let window = text(info, "rateLimitType").unwrap_or("unknown");
         let duration_minutes = match window {
             "five_hour" => Some(5 * 60),
@@ -399,10 +423,7 @@ impl Translator {
             duration_minutes,
             used_percent: info.get("utilization").and_then(Value::as_f64).map(percent),
             status,
-            resets_at: info
-                .get("resetsAt")
-                .and_then(Value::as_i64)
-                .and_then(|seconds| Timestamp::from_second(seconds).ok()),
+            resets_at: info.get("resetsAt").and_then(timestamp),
         }))]
     }
 }
@@ -527,6 +548,19 @@ fn percent(utilization: f64) -> f64 {
     } else {
         utilization
     }
+}
+
+/// Epoch seconds, whole or fractional, to millisecond precision.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a finite number of milliseconds since 1970 fits in i64 for any date jiff accepts"
+)]
+fn timestamp(seconds: &Value) -> Option<Timestamp> {
+    if let Some(seconds) = seconds.as_i64() {
+        return Timestamp::from_second(seconds).ok();
+    }
+    let seconds = seconds.as_f64().filter(|seconds| seconds.is_finite())?;
+    Timestamp::from_millisecond((seconds * 1000.0).round() as i64).ok()
 }
 
 fn truncate(text: &str) -> String {

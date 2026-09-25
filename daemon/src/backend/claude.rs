@@ -6,12 +6,21 @@
 //! the run's cwd, plus the policy's flags, `--model`, and `--resume <session id>` (0004 [10]):
 //!
 //! - **No-write** is exactly 0004's: [`NO_WRITE_ARGS`]. As a second check, a no-write run whose
-//!   `system/init` lists a write tool fails with [`FailureKind::PolicyViolation`].
-//! - **Workspace-write** is [`WORKSPACE_WRITE_ARGS`], `--permission-mode acceptEdits`. That mode
-//!   approves file edits, and `mkdir`, `touch`, `rm`, `rmdir`, `mv`, `cp`, and `sed`, only for
-//!   paths inside the working directory, and never for protected paths. Any other call that would
-//!   prompt is denied under `-p`, which has no one to ask (the permission modes and headless
-//!   docs).
+//!   `system/init` lists any tool outside [`NO_WRITE_TOOLS`] fails with
+//!   [`FailureKind::PolicyViolation`].
+//! - **Workspace-write** is [`WORKSPACE_WRITE_ARGS`], `--permission-mode acceptEdits`, and it is
+//!   not a sandbox (the permission modes and headless docs):
+//!   - Edits, and `mkdir`, `touch`, `rm`, `rmdir`, `mv`, `cp`, and `sed`, are approved for paths
+//!     inside the working directory (and `additionalDirectories`), except protected paths.
+//!   - The read-only command set (`cat`, `ls`, `grep`, `git log`, and so on) runs without
+//!     approval, on any path, including outside the working directory.
+//!   - Every other command would prompt, and `-p` has no one to ask, so it is denied. A worker
+//!     therefore can't run `cargo test` or `git commit`.
+//!   - Worker runs load the user's and the project's settings, so a repository's
+//!     `.claude/settings.json` can widen all of this with `permissions.allow` rules,
+//!     `additionalDirectories`, and hooks, and `-p` connects the servers in its `.mcp.json`.
+//!
+//!   Which sandbox workers get is #137's decision, before real workers run in M3.
 //!
 //! # Messages go on stdin
 //!
@@ -25,12 +34,18 @@
 //!
 //! # Credentials
 //!
-//! A subscription run scrubs [`SUBSCRIPTION_SCRUBBED`], which all outrank the CLI's own login,
-//! and points `CLAUDE_CONFIG_DIR` at the account's configuration folder when it has one. A
-//! project's `env` block can still set a key for a worker (0004), so every `system/init` is
-//! checked: an `apiKeySource` other than `none`, or none at all, kills the CLI's process group at
-//! once and fails the run with [`FailureKind::UnexpectedApiKey`]. API key runs are #118's, which
-//! fills in [`apply_credential`].
+//! Every run, whatever its account, drops each inherited variable that could choose Claude's
+//! credentials, provider, or endpoint: names starting with one of [`SCRUBBED_PREFIXES`], plus
+//! [`SCRUBBED_VARS`]. Those include the three that outrank the login (0004), the cloud provider
+//! switches, `ANTHROPIC_BASE_URL`, which would send the login's token elsewhere, and the profile
+//! and federation variables. `CLAUDE_CONFIG_DIR` is dropped too, and set only to the account's
+//! own configuration folder. [`apply_credential`] then injects only what the account needs;
+//! API key runs are #118's, which fills it in.
+//!
+//! A project's `env` block can still set variables for a worker (0004, #134), so the output is
+//! checked as well. A `system/init` whose `apiKeySource` isn't the account's, or is missing, and
+//! a `result` whose `modelUsage` names a provider other than `firstParty`, kill the CLI's process
+//! group at once and fail the run with [`FailureKind::UnexpectedApiKey`].
 //!
 //! # Cancel
 //!
@@ -43,7 +58,7 @@ mod stream;
 mod tests;
 
 use std::collections::VecDeque;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -55,7 +70,8 @@ use tokio::sync::{Notify, mpsc};
 use self::stream::{Step, Translator, TurnDone};
 use super::event::{Event, Failure, FailureKind, Outcome, WarningKind};
 use super::process::{
-    CancelPolicy, Exit, Launcher, Output, OutputLimits, Process, ProcessSpec, StdinMode,
+    CancelPolicy, Environment, Exit, Launcher, Output, OutputLimits, Process, ProcessSpec,
+    StdinMode,
 };
 use super::{
     Backend, CancelSwitch, Capabilities, Credential, EVENT_BUFFER, EventSink, FollowUp, Run,
@@ -90,15 +106,24 @@ pub const NO_WRITE_ARGS: &[&str] = &[
     "dontAsk",
 ];
 
-/// [`ToolPolicy::WorkspaceWrite`]'s arguments: edits inside the working directory only.
+/// The only tools a no-write run's `system/init` may list. `EndConversation` stays whatever
+/// `--tools` says (the CLI reference), and only ends the session. wispd's own MCP tools join
+/// this list in M4.
+pub const NO_WRITE_TOOLS: &[&str] = &["Read", "Glob", "Grep", "EndConversation"];
+
+/// [`ToolPolicy::WorkspaceWrite`]'s arguments. See the module docs for what they allow; #137
+/// decides the worker sandbox.
 pub const WORKSPACE_WRITE_ARGS: &[&str] = &["--permission-mode", "acceptEdits"];
 
-/// Variables a subscription run doesn't pass on, since each outranks the CLI's login (0004).
-pub const SUBSCRIPTION_SCRUBBED: &[&str] = &[
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-];
+/// Prefixes of inherited variables no run gets: Anthropic credentials, endpoints, profiles, and
+/// federation (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`,
+/// `ANTHROPIC_PROFILE`, ...), the cloud provider switches (`CLAUDE_CODE_USE_BEDROCK`, ...), and
+/// OAuth tokens (`CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_OAUTH_REFRESH_TOKEN`).
+pub const SCRUBBED_PREFIXES: &[&str] = &["ANTHROPIC_", "CLAUDE_CODE_USE_", "CLAUDE_CODE_OAUTH_"];
+
+/// Inherited variables no run gets, besides [`SCRUBBED_PREFIXES`]: Bedrock's API key, and the
+/// configuration folder, which [`apply_credential`] sets only to the account's own.
+pub const SCRUBBED_VARS: &[&str] = &["AWS_BEARER_TOKEN_BEDROCK", CONFIG_DIR_ENV];
 
 /// The variable that picks a second account's configuration folder.
 pub const CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
@@ -190,8 +215,23 @@ fn check_value(what: &str, value: &str) -> Result<(), StartError> {
     Ok(())
 }
 
-/// Sets up `spec`'s environment for `credential`, and returns the `apiKeySource` that
-/// `system/init` must then report.
+/// The variables of `base` that no run gets: [`SCRUBBED_PREFIXES`] and [`SCRUBBED_VARS`].
+#[must_use]
+pub fn scrubbed(base: &Environment) -> Vec<OsString> {
+    base.names()
+        .filter(|name| {
+            let bytes = name.as_encoded_bytes();
+            SCRUBBED_PREFIXES
+                .iter()
+                .any(|prefix| bytes.starts_with(prefix.as_bytes()))
+                || SCRUBBED_VARS.iter().any(|var| var.as_bytes() == bytes)
+        })
+        .map(OsStr::to_owned)
+        .collect()
+}
+
+/// Injects what `credential` needs into `spec`, after [`scrubbed`] removed every inherited
+/// credential, and returns the `apiKeySource` that `system/init` must then report.
 ///
 /// # Errors
 ///
@@ -203,8 +243,6 @@ pub fn apply_credential(
 ) -> Result<&'static str, StartError> {
     match credential {
         Credential::Subscription { config_home } => {
-            spec.scrub
-                .extend(SUBSCRIPTION_SCRUBBED.iter().map(Into::into));
             if let Some(home) = config_home {
                 spec.inject.set(CONFIG_DIR_ENV, home);
             }
@@ -237,6 +275,7 @@ impl Backend for ClaudeBackend {
         }
         let mut spec = ProcessSpec::new(self.program.clone(), &request.cwd);
         spec.args = arguments(&request)?;
+        spec.scrub = scrubbed(self.launcher.base());
         let expected_key_source = apply_credential(&request.account.credential, &mut spec)?;
         for (name, value) in ALWAYS_SET {
             spec.inject.set(name, value);
@@ -529,11 +568,13 @@ impl Driver {
             .turns
             .iter()
             .rposition(|(_, uuid)| done.uuids.contains(uuid));
-        let count = match named {
-            Some(index) => index + 1,
-            // A CLI that echoes no ids: with nothing queued, every turn sent so far is done.
-            None if done.uuids.is_empty() && done.queued == Some(0) => self.turns.len(),
-            None => 1,
+        let count = match (named, done.queued) {
+            (Some(index), _) => index + 1,
+            // With no ids to go by and nothing queued, or no count either, every turn sent so far
+            // is taken as done. At worst a folded follow-up finishes early; ending only one turn
+            // could leave stdin open and the run waiting forever.
+            (None, Some(0) | None) if done.uuids.is_empty() => self.turns.len(),
+            (None, _) => 1,
         };
         let count = count.min(self.turns.len());
         self.turns

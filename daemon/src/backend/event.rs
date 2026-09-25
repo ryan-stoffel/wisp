@@ -259,8 +259,9 @@ pub enum FailureKind {
     /// The run broke the tool policy: for example a no-write run whose CLI offered write tools,
     /// or a no-write turn that changed the repository.
     PolicyViolation,
-    /// The CLI took credentials other than the account's: a subscription run whose Claude
-    /// `apiKeySource` is not `none`, so it would bill an API key instead (0004). The backend
+    /// The CLI took credentials or a provider other than the account's, so the run would be
+    /// billed elsewhere: for example a subscription run whose Claude `apiKeySource` is not
+    /// `none` (0004), or whose `modelUsage` names a provider other than `firstParty`. The backend
     /// stops the CLI as soon as it reports them.
     UnexpectedApiKey,
     /// The CLI reported an error of its own, such as Claude's `error_max_turns`.
