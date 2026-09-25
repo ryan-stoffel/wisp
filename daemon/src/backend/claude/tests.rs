@@ -69,9 +69,9 @@ impl Fake {
             ("PATH", format!("{}:/usr/bin:/bin", bin.display())),
             ("FAKE_CLAUDE_DIR", root.display().to_string()),
             ("FAKE_CLAUDE_FIXTURE", fixture_path.display().to_string()),
-            ("ANTHROPIC_API_KEY", "sk-ant-api03-leaked".into()),
-            ("ANTHROPIC_AUTH_TOKEN", "leaked-bearer".into()),
-            ("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-leaked".into()),
+            ("ANTHROPIC_API_KEY", "wisp-test-not-a-key".into()),
+            ("ANTHROPIC_AUTH_TOKEN", "wisp-test-not-a-bearer".into()),
+            ("CLAUDE_CODE_OAUTH_TOKEN", "wisp-test-not-a-token".into()),
             ("SSH_CONNECTION", "10.0.0.2 50000 10.0.0.1 22".into()),
             ("KEPT", "yes".into()),
         ]
@@ -788,7 +788,7 @@ async fn bad_requests_are_refused_before_spawning() {
         );
     }
     let mut api_key = request(&cwd);
-    api_key.account.credential = Credential::ApiKey(ApiKey::new("sk-ant-api03-x".into()));
+    api_key.account.credential = Credential::ApiKey(ApiKey::new("wisp-test-not-a-key".into()));
     assert!(matches!(
         fake.backend.start(api_key),
         Err(StartError::Unsupported(_))
