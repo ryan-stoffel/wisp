@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::id::uuid_v7_id;
-use crate::{Project, ProjectId};
+use crate::{ContextFile, Project, ProjectId};
 
 uuid_v7_id! {
     /// Identifies one `events/subscribe` on one connection. wispd generates it.
@@ -85,6 +85,13 @@ pub enum WispEvent {
     ProjectCreated {
         /// The new project.
         project: Project,
+    },
+    /// A shared context file was created or changed (0005, #155): from `context/write`, or from
+    /// an agent's own write, detected on disk. Project-scoped.
+    #[serde(rename = "context.changed")]
+    ContextChanged {
+        /// The changed file.
+        file: ContextFile,
     },
     /// A kind this version does not know yet.
     #[serde(other)]

@@ -13,6 +13,9 @@
 //! - [`attach`]: reaching the server and bridging stdio to it, behind `wispd attach`.
 //! - [`backend`]: the interface over the vendor CLIs that run agents (0004), and the process
 //!   supervision they share.
+//! - `context`: each project's shared context folder (0005, #155): `context/list`, `context/read`,
+//!   `context/write`, and a watcher that turns an agent's own writes on disk into
+//!   `context.changed` events.
 //! - `detect`: detecting which vendor CLIs are installed and signed in, without touching their
 //!   credentials (#114).
 //! - [`launch_agent`]: the launch agent that `attach` starts wispd through, when it is installed.
@@ -26,6 +29,7 @@
 
 pub mod attach;
 pub mod backend;
+mod context;
 mod detect;
 mod event_log;
 pub mod keystore;
