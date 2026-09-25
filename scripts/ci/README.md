@@ -15,10 +15,10 @@ Each script finds the repo root on its own, so it runs from any directory.
 | `screenshots` | Captures every scenario in `ci/screenshots/` from the built app into a directory (see [Screenshots](#screenshots)) | `screenshots.yml` (#4), `capture` job |
 | `publish-screenshots` | Checks a capture directory, commits its PNGs to the `ci-screenshots` branch, and creates or updates the PR comment. It needs Actions' environment; locally, `--dry-run` prints the comment | `screenshots.yml` (#4), `publish` job |
 | `check-screenshots` | `npm ci`, then lint, type-check, and test `ci/screenshots/` | Not yet: #39 adds it to `ci.yml` |
-| `package-app` | Builds `wisp.app` with a version stamped in, ad-hoc signs it, zips it, and prints the bundle path (see [package-app](#package-app)) | `release.yml` (#5), `build` job |
+| `package-app` | Builds `Wisp.app` from source with a version stamped in, zips it, checks the zip with `check-app`, and prints the bundle path (see [package-app](#package-app)) | `release.yml` (#5), `build` job |
 | `next-version` | Prints the version the next release gets, from tags and Conventional Commits (see [Releases](#releases)) | `release.yml` (#5), `build` job |
 | `generate-cask` | Prints the Homebrew cask for a version and its zips, from `release/wisp.rb.template` | `release.yml` (#5), `build` job |
-| `audit-cask` | Runs `brew style` and `brew audit` on a cask in a throwaway tap, then installs and uninstalls it | `release.yml` (#5), `build` job |
+| `audit-cask` | Runs `brew style` and `brew audit` on a cask in a throwaway tap, then installs it, runs the `wisp` command it links, and uninstalls it | `release.yml` (#5), `build` job |
 | `check-release-artifact` | Checks that a downloaded release artifact holds exactly the expected zips and a `wisp.rb` that matches them | `release.yml` (#5), `release` job |
 | `publish-cask` | Commits the cask to `ryan-stoffel/homebrew-taps` with `TAP_GITHUB_TOKEN`, and refuses to replace a newer version; `--check` only tests the token | `release.yml` (#5), `release` job |
 | `check-release` | Unit tests for the release scripts | `release.yml` (#5), `build` job |
@@ -150,14 +150,20 @@ Never ship the cached app. `release.yml` builds the release app from source and 
 
 ## package-app
 
-`scripts/ci/package-app <version> [arm64|x64]` packages for this Mac's architecture unless you name one. It prints the bundle's absolute path as the only line on stdout, for `WISP_APP_BUNDLE`, and sends everything else to stderr. Steps:
+`scripts/ci/package-app <version> [arm64|x64]` packages for this Mac's architecture unless you name one. It prints the bundle's absolute path as the only line on stdout, for `WISP_APP_BUNDLE`, and sends everything else to stderr. It always builds from source. Steps:
 
-1. Stamp `<version>` into the fixture with `npm version <version> --no-git-tag-version --allow-same-version`, which updates `package.json` and `package-lock.json` together, and set `productName` to `wisp`, so the app keeps its data in `~/Library/Application Support/wisp` ([0003](../../docs/decisions/0003-naming.md)). Both files are restored on exit, so the version is never committed and publishing never pushes to `main`.
-2. Run `build-app`, then `@electron/packager`, into `dist/wisp-darwin-<arch>/wisp.app` with the bundle id `io.github.ryan-stoffel.wisp`.
-3. Ad-hoc sign the whole bundle and check its signature, version, and bundle id. Packager keeps Electron's per-binary signatures, which no longer match the renamed bundle. Gatekeeper then reports the app as damaged and offers no Open Anyway. #7 replaces this step with Developer ID signing and notarization.
-4. Zip the bundle with `ditto` to `dist/wisp-<version>-<arch>.zip`, the name the cask's `url` expects.
+1. Run `scripts/editor/build-app --app-version <version> <arch>`, which builds `editor/VSCode-darwin-<arch>/Wisp.app`:
+   - It runs `prepare`, and installs `node_modules` for the architecture unless it already matches.
+   - Just before gulp, it sets `version` in `editor/vscode/package.json`, and gulp copies it into the app. It puts `package.json` back on exit, even after a failure or an interrupt. So the version is never committed, the next `prepare` finds a clean tree, and publishing never pushes to `main`.
+   - It ad-hoc signs the whole bundle and checks that every Mach-O file is built for the architecture. Renaming Electron's bundle breaks its signature, and Gatekeeper reports an app with a broken signature as damaged, with no Open Anyway. #7 replaces the ad-hoc signature with Developer ID signing and notarization.
+2. Check the bundle id `io.github.ryan-stoffel.wisp` and the version in each place it went:
+   - `CFBundleShortVersionString` and `CFBundleVersion` in `Info.plist`, which Finder and Homebrew read.
+   - `version` in the app's `product.json`, which the About dialog and `wisp --version` show, and in its `package.json`.
+3. Zip the bundle with `ditto` to `dist/wisp-<version>-<arch>.zip`, the name the cask's `url` expects, and run `check-app` on the zip: its signature, branding, and `wisp --version`.
 
-When #43 points it at the fork, only steps 1 and 2 change: stamp the version into `editor/vscode` and run `scripts/editor/build-app` instead of `@electron/packager`. Once `wispd` ships inside the bundle, stamp it too: after setting `version` in `[workspace.package]` in `Cargo.toml`, run `cargo update --workspace --offline`. Otherwise `Cargo.lock` keeps the old version, and every `--locked` build, `check-rust` included, fails with "cannot update the lock file".
+On an M3 Pro, `package-app 0.1.0 arm64` took 5 min 51 s with `node_modules` already installed. Without the stamp, `build-app` builds with upstream's version (1.139.0).
+
+Once `wispd` ships inside the bundle (#44, #62), stamp it too: after setting `version` in `[workspace.package]` in `Cargo.toml`, run `cargo update --workspace --offline`. Otherwise `Cargo.lock` keeps the old version, and every `--locked` build, `check-rust` included, fails with "cannot update the lock file".
 
 ## Releases
 
@@ -165,7 +171,7 @@ When #43 points it at the fork, only steps 1 and 2 change: stamp the version int
 
 It has two jobs, split the way `screenshots.yml` is:
 
-- **`build`** runs on `macos-26` with `contents: read` and no secrets. It runs the steps below, writes the version, the zip's sha256, and the cask to the job summary, and uploads the zips and `wisp.rb` as an artifact:
+- **`build`** runs on `macos-26` with `contents: read` and no secrets. Only its build step gets the job's read-only `GITHUB_TOKEN`, for upstream's GitHub downloads. It restores nothing from Actions' cache, not even `~/.npm`, so the release is built from source every time ([The app job](#the-app-job) says why). It runs the steps below, writes the version, the zip's sha256, and the cask to the job summary, and uploads the zips and `wisp.rb` as an artifact:
   - While the PR is open, that is the whole dry run, and the artifact is `wisp-<version>-dry-run`. Nothing is published.
   - When Ryan merges the PR, `build` runs on the merge commit and uploads `wisp-<version>`. First, it stops unless the PR was merged with a merge commit, whose second parent is the PR's head. A squash merge would make the version count the wrong commits. It also refuses a `v<version>` tag that sits on another commit. If `v<version>` is already released, it reuses the published zips instead of building new ones.
 - **`release`** runs on `ubuntu-24.04` and only after a merge. It is the only job with `contents: write` and `TAP_GITHUB_TOKEN`, and it installs and builds nothing. It checks out only `scripts/ci/`. The scripts it runs use only Node built-ins, which `release/builtins.test.js` enforces. Before anything is tagged, it does the following:
@@ -203,8 +209,8 @@ scripts/ci/audit-cask dist/wisp.rb dist/wisp-"$version"-*.zip
 | --- | --- |
 | `brew style --cask` | `brew audit` does not run RuboCop on casks, so the `desc` rules, stanza order, and `depends_on` style are only checked here. |
 | `brew audit --cask --strict --arch=all` | Every offline audit, including the strict-only ones, for both architectures. |
-| `brew audit --cask --online --only=min_os,artifact_case,rosetta`, per zip | The zip is copied into Homebrew's download cache first. That lets these audits check the real artifact without a network download, although the release asset does not exist yet. They cover `depends_on macos` against the bundle's `LSMinimumSystemVersion`, the case of the `app` name, and the arm64 binary. |
-| `brew install --cask`, then `brew uninstall --cask` | Proves the cask installs `wisp.app` at the right version and that Homebrew quarantines it, as users get it. |
+| `brew audit --cask --online --only=min_os,artifact_case,rosetta`, per zip | The zip is copied into Homebrew's download cache first. That lets these audits check the real artifact without a network download, although the release asset does not exist yet. They cover `depends_on macos` against the bundle's `LSMinimumSystemVersion`, the case of the `app` and `binary` paths, and the arm64 binary. |
+| `brew install --cask`, then `brew uninstall --cask` | Proves the cask installs `Wisp.app` at the right version, that Homebrew quarantines it, as users get it, and that it links `$(brew --prefix)/bin/wisp` into the app. Then it removes the quarantine, as the README tells users to, and checks that `wisp --version` prints the version. After the uninstall, the link must be gone. |
 
 Left out:
 
@@ -212,7 +218,9 @@ Left out:
 - A plain `--online`: the release URL returns 404 until the release exists.
 - `--signing`: disabled in Homebrew 7.
 
-`audit-cask` uses a throwaway tap (`wisp-ci/dry-run`) and a throwaway download cache, and it never zaps. It skips the install check when a `wisp` cask is already installed, so running it on a dev Mac leaves Homebrew as it was.
+`audit-cask` uses a throwaway tap (`wisp-ci/dry-run`), a throwaway download cache, and a throwaway `--appdir`, so it never touches `/Applications`, and it never zaps. It skips the install check when a `wisp` cask is already installed or `$(brew --prefix)/bin/wisp` already exists, so running it on a dev Mac leaves Homebrew as it was. In Actions, where nothing should be installed, any skip fails the job instead.
+
+The cask's `depends_on macos` must match the app's `LSMinimumSystemVersion`, or the `min_os` audit fails. Electron sets that value: 12.0 in Electron 43, which Code - OSS 1.139.0 uses. Every other Mach-O file in the app needs 12.0 or less, except the Microsoft account broker in the built-in `microsoft-authentication` extension, which needs macOS 15. Before 15, that extension signs in through the browser instead. When an upgrade raises Electron's minimum, change `depends_on macos` in `release/wisp.rb.template` and the minimum in the README's Install section together.
 
 If a run fails after the release exists, re-run it, but only while no newer release has shipped. The re-run reuses the tag and the release's zips, and `publish-cask` skips the commit when the tap already has the same cask. Once the tap has a newer version, `publish-cask` refuses to replace it and exits 1, so re-running an old run cannot downgrade users. If a failed run left a draft release, delete the draft first; the `release` job says so.
 
