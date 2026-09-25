@@ -1,0 +1,6 @@
+# Synthetic: checks that a tool subprocess the CLI spawns never sees the account's key, honoring
+# CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 the way the real CLI is documented to (0004 Consequences,
+# #118). Not recorded from a real run.
+{"type":"system","subtype":"init","cwd":"/Users/dev/repo","session_id":"5b1e3c9a-8f2d-4c6e-9a1b-3d7f0e2c4a68","tools":["Read","Glob","Grep"],"mcp_servers":[],"model":"claude-opus-4-7","permissionMode":"dontAsk","slash_commands":["compact","review"],"apiKeySource":"ANTHROPIC_API_KEY","claude_code_version":"2.1.281","output_style":"default","agents":["general-purpose"],"skills":[],"plugins":[],"capabilities":["interrupt_receipt_v1"],"uuid":"a0000000-0000-4000-8000-000000000071"}
+@spawn-child
+@exit 0

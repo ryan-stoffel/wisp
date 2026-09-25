@@ -30,7 +30,8 @@ use crate::{
     AccountsKeysRemoveParams, AccountsKeysRemoveResult, EventsEventParams, EventsSubscribeParams,
     EventsSubscribeResult, EventsUnsubscribeParams, EventsUnsubscribeResult, HostHealthParams,
     HostHealthResult, HostVersionParams, HostVersionResult, InitializeParams, InitializeResult,
-    ProjectCreateParams, ProjectCreateResult, ProjectListParams, ProjectListResult,
+    ProjectCreateParams, ProjectCreateResult, ProjectListParams, ProjectListResult, UsageGetParams,
+    UsageGetResult,
 };
 
 /// A method that is called with a request and answered with a response.
@@ -129,6 +130,9 @@ method_table! {
         /// `accounts/keys/remove`: removes a key account's key from the Keychain, and its
         /// record. Fails with `accountNotFound` if the id does not exist.
         AccountsKeysRemove = "accounts/keys/remove": AccountsKeysRemoveParams => AccountsKeysRemoveResult;
+        /// `usage/get`: per-account tokens and cost for today and this week (local time on this
+        /// host), and the latest limit windows.
+        UsageGet = "usage/get": UsageGetParams => UsageGetResult;
     }
     notifications {
         /// `$/cancelRequest`: cancels a request, which still gets exactly one response. Either
@@ -177,6 +181,7 @@ mod tests {
                 "accounts/keys/add",
                 "accounts/keys/list",
                 "accounts/keys/remove",
+                "usage/get",
                 "$/cancelRequest",
                 "events/event",
             ]
