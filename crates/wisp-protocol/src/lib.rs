@@ -29,6 +29,7 @@
 
 #![warn(missing_docs)]
 
+mod account;
 mod agent;
 mod error;
 mod events;
@@ -44,6 +45,11 @@ pub mod typescript;
 #[cfg(test)]
 mod samples;
 
+pub use account::{
+    AccountId, AccountsKeysAddParams, AccountsKeysAddResult, AccountsKeysListParams,
+    AccountsKeysListResult, AccountsKeysRemoveParams, AccountsKeysRemoveResult, KeyAccount,
+    Provider, RawKey,
+};
 pub use agent::{RunId, TurnId};
 pub use error::{ErrorData, ErrorKind, IncompatibleProtocolDetail};
 pub use events::{
@@ -92,6 +98,16 @@ mod tests {
             repo_path: "/Users/me/src/wisp".to_owned(),
             created_at: "2026-09-24T12:00:00Z".parse().unwrap(),
             updated_at: "2026-09-24T12:05:00.125Z".parse().unwrap(),
+        }
+    }
+
+    fn key_account() -> KeyAccount {
+        KeyAccount {
+            id: AccountId::generate(),
+            provider: Provider::Anthropic,
+            label: "Personal".to_owned(),
+            created_at: "2026-09-24T12:00:00Z".parse().unwrap(),
+            masked_key: "sk-ant-...abcd".to_owned(),
         }
     }
 
@@ -178,5 +194,22 @@ mod tests {
             supported: ProtocolRange::SUPPORTED,
             wispd: "0.1.0".to_owned(),
         });
+        round_trip(&AccountsKeysAddParams {
+            id: AccountId::generate(),
+            provider: Provider::Anthropic,
+            label: "Personal".to_owned(),
+            key: serde_json::from_value(json!("sk-ant-secret")).unwrap(),
+        });
+        round_trip(&AccountsKeysAddResult {
+            account: key_account(),
+        });
+        round_trip(&AccountsKeysListParams {});
+        round_trip(&AccountsKeysListResult {
+            accounts: vec![key_account(), key_account()],
+        });
+        round_trip(&AccountsKeysRemoveParams {
+            id: AccountId::generate(),
+        });
+        round_trip(&AccountsKeysRemoveResult {});
     }
 }

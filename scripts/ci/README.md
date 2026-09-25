@@ -102,6 +102,7 @@ Add an entry to `scenarios` in `ci/screenshots/src/scenarios.ts`. The workflow d
 
 - `name`: the file name, in lowercase words joined by hyphens.
 - `title`: the heading and alt text in the comment. Plain text: letters, digits, spaces, and `, . : ; ' " ( ) / + & = _ -`.
+- `settings` (optional): user settings the scenario starts with, written to its throwaway profile's `settings.json`, such as `wisp.host`.
 - `args(dir)` (optional): returns extra app arguments, such as a folder and a file to open. `dir` is an empty directory for the scenario's own files, deleted afterwards. Copy fixtures into it rather than opening them in the checkout, so the app never writes into the repo. A test checks that every absolute path it returns is inside `dir`.
 - `run({ app, window })`: drives the app and returns `screenshot(window)`. If this build does not have the view yet, it returns `notAvailable(reason)` instead: the comment lists the view as not available, and the job still passes. The reason follows the same plain-text rule as `title`, so it cannot hold `#123` or `@name`, which would notify that issue or person from every PR. If the view exists but breaks, `run` throws. The `capture` job then fails, and the comment shows the error and a screenshot of the window at that moment.
 
@@ -115,13 +116,16 @@ After `app-launch`'s `args`, the harness passes these arguments, then the scenar
 
 - `--user-data-dir` and `--extensions-dir` in a new temp directory.
 - `--skip-welcome`, `--skip-release-notes`, `--disable-workspace-trust`, and `--use-inmemory-secretstorage`, the flags upstream's smoke tests use. A run then never reads the machine's extensions or keychain.
+- `WISPD_DATA_DIR` in the same temp directory, so the wispd a scenario starts never touches the machine's own data folder. The harness stops that wispd when the scenario ends, using the pid in its `wispd.lock`.
 - Not `--enable-smoke-test-driver`, because it hides notification toasts, and the screenshots should show what a user sees.
 
 Launching gets 60 seconds for the process and 60 for the first window, then waiting for the window plus `run` gets 180 seconds. The `capture` step has 20 minutes, and when a step times out, `publish` still reports it.
 
 The shipped scenarios wait for these elements, using the classes and attributes that upstream's smoke tests use, never pixel positions:
 
-- `agents-window` launches with no arguments, which opens the Agents window (0011). It waits for the title bar, wisp's sidebar view in the sidebar part, and the no-host view (`.part.titlebar`, `.part.sidebar .wisp-threads`, `.wisp-agents-no-host`), then fails unless the no-host composer is `readonly` with `aria-disabled="true"` and its Send button has `aria-disabled="true"`.
+- `agents-window` launches with no arguments, which opens the Agents window (0011), and the app's bundled wispd starts through `wispd attach` as it does for a user. It waits for the title bar and wisp's sidebar view (`.part.titlebar`, `.part.sidebar .wisp-threads`), then for the sidebar's host chip to be connected (`button.wisp-threads-host[data-kind="connected"]`, labeled "Host: this Mac, connected") and the no-host view to be gone.
+- `agents-window-disconnected` starts with `wisp.host` set to `ssh://127.0.0.1:9`, a port nothing listens on, so ssh fails at once with "connection refused". (An unresolvable name can wait 30 s or more on DNS, past the handshake timeout.) It waits for the chip's error state and fails unless the no-host view says "Can't reach ssh://127.0.0.1:9.", its composer reads "Reconnect to send messages", and the composer and Send are `aria-disabled`.
+- `agents-window-host-menu` waits for the connected state, clicks the host chip, and waits for the host menu's Quick Pick with the current host and Reconnect.
 - `startup` opens an empty editor window with `--new-window` and waits for the title bar, activity bar, editor, and status bar parts.
 - `editor-file-open` copies `ci/screenshots/fixtures/workspace/` into its directory and opens that folder with `src/tasks.ts`. It waits for three things:
   - the editor, `.monaco-editor[data-uri$="/src/tasks.ts"]`

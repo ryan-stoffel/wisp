@@ -70,9 +70,13 @@ pub(crate) fn initialize(
     Ok((session, result))
 }
 
-/// The capabilities this wispd advertises. M1 has none; M3 adds `agents`.
+/// The capabilities this wispd advertises. M1 has none; M2 adds `accounts` (#117); M3 adds
+/// `agents`.
 fn capabilities_advertised() -> Capabilities {
-    Capabilities::default()
+    Capabilities(std::collections::BTreeMap::from([(
+        "accounts".to_owned(),
+        serde_json::Map::new(),
+    )]))
 }
 
 pub(crate) fn health(context: &Context, _: HostHealthParams) -> HostHealthResult {

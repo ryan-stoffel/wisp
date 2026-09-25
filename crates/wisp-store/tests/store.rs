@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use rusqlite::Connection;
 use uuid::Uuid;
-use wisp_store::{ProjectFields, Store, StoreError};
+use wisp_store::{AccountFields, ProjectFields, Store, StoreError};
 
 fn temp_db_path() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().expect("create temp dir");
@@ -17,6 +17,14 @@ fn sample_fields() -> ProjectFields {
     ProjectFields {
         name: "wisp".to_string(),
         repo_path: "/Users/ryan/dev/wisp".to_string(),
+    }
+}
+
+fn sample_account_fields() -> AccountFields {
+    AccountFields {
+        provider: "anthropic".to_string(),
+        label: "Personal".to_string(),
+        masked_key: "sk-ant-...abcd".to_string(),
     }
 }
 
@@ -418,5 +426,139 @@ fn a_version_1_database_migrates_and_keeps_its_projects() {
             row.get(0)
         })
         .expect("read schema version");
-    assert_eq!(version, 2);
+    assert_eq!(version, 3, "migration 3 (accounts) should also have run");
+    let account_columns: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('accounts')")
+        .expect("prepare")
+        .query_map([], |row| row.get(0))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("collect");
+    assert_eq!(
+        account_columns,
+        ["id", "provider", "label", "masked_key", "created_at"]
+    );
+}
+
+#[test]
+fn creating_an_account_with_the_same_id_and_fields_is_idempotent() {
+    let (_dir, path) = temp_db_path();
+    let mut store = Store::open(&path).expect("open");
+    let id = Uuid::now_v7();
+
+    let first = store
+        .create_account(id, &sample_account_fields())
+        .expect("first create should succeed");
+    let second = store
+        .create_account(id, &sample_account_fields())
+        .expect("repeat create with identical fields should succeed");
+
+    assert_eq!(first, second);
+    assert_eq!(first.masked_key, "sk-ant-...abcd");
+    assert_eq!(store.list_accounts().expect("list").len(), 1);
+}
+
+#[test]
+fn creating_an_account_with_the_same_id_and_different_fields_conflicts() {
+    let (_dir, path) = temp_db_path();
+    let mut store = Store::open(&path).expect("open");
+    let id = Uuid::now_v7();
+    let mut other = sample_account_fields();
+    other.label = "Work".to_string();
+
+    store
+        .create_account(id, &sample_account_fields())
+        .expect("first create should succeed");
+    let err = store
+        .create_account(id, &other)
+        .expect_err("repeat create with different fields should fail");
+
+    match err {
+        StoreError::IdConflict { id: conflicting } => assert_eq!(conflicting, id),
+        other => panic!("expected IdConflict, got {other:?}"),
+    }
+    assert_eq!(
+        store.list_accounts().expect("list").len(),
+        1,
+        "a rejected conflicting create must not change the stored row"
+    );
+}
+
+#[test]
+fn accounts_list_oldest_first_and_delete_removes_them_idempotently() {
+    let (_dir, path) = temp_db_path();
+    let mut store = Store::open(&path).expect("open");
+    let first_id = Uuid::now_v7();
+    store
+        .create_account(first_id, &sample_account_fields())
+        .expect("create first");
+    let second_id = Uuid::now_v7();
+    let mut second_fields = sample_account_fields();
+    second_fields.provider = "openai".to_string();
+    second_fields.label = "Work".to_string();
+    second_fields.masked_key = "sk-proj-...wxyz".to_string();
+    store
+        .create_account(second_id, &second_fields)
+        .expect("create second");
+
+    let listed: Vec<Uuid> = store
+        .list_accounts()
+        .expect("list")
+        .into_iter()
+        .map(|a| a.id)
+        .collect();
+    assert_eq!(listed, [first_id, second_id]);
+
+    let deleted_first = store.delete_account(first_id).expect("delete");
+    let deleted_second = store
+        .delete_account(first_id)
+        .expect("deleting twice should not error");
+    assert!(deleted_first, "the first delete should report a removal");
+    assert!(
+        !deleted_second,
+        "the second delete should report nothing removed"
+    );
+    assert_eq!(store.get_account(first_id).expect("get"), None);
+    assert_eq!(store.list_accounts().expect("list").len(), 1);
+}
+
+/// A key account's row never holds the key itself: only its masked display form.
+#[test]
+fn account_rows_never_hold_more_than_the_masked_key() {
+    let (_dir, path) = temp_db_path();
+    let mut store = Store::open(&path).expect("open");
+    let id = Uuid::now_v7();
+    let secret = "sk-ant-api03-thisisaveryrealsecretabcd";
+    store
+        .create_account(
+            id,
+            &AccountFields {
+                provider: "anthropic".to_string(),
+                label: "Personal".to_string(),
+                masked_key: "sk-ant-...abcd".to_string(),
+            },
+        )
+        .expect("create");
+
+    let conn = Connection::open(&path).expect("open raw connection");
+    let columns: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('accounts')")
+        .expect("prepare")
+        .query_map([], |row| row.get(0))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("collect");
+    assert_eq!(
+        columns,
+        ["id", "provider", "label", "masked_key", "created_at"],
+        "no column exists for the real key"
+    );
+    let stored: String = conn
+        .query_row(
+            "SELECT masked_key FROM accounts WHERE id = ?1",
+            [id.to_string()],
+            |row| row.get(0),
+        )
+        .expect("read the stored masked_key");
+    assert_ne!(stored, secret, "the real key must never be stored");
 }

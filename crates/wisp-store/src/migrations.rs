@@ -28,6 +28,18 @@ const MIGRATIONS: &[Migration] = &[
         version: 2,
         sql: "ALTER TABLE projects DROP COLUMN host;",
     },
+    // A key account's record: metadata only. The API key itself lives in the Keychain and never
+    // reaches this database (#117); `masked_key` is the display form, such as `sk-ant-...abcd`.
+    Migration {
+        version: 3,
+        sql: "CREATE TABLE accounts (
+            id TEXT NOT NULL PRIMARY KEY,
+            provider TEXT NOT NULL,
+            label TEXT NOT NULL,
+            masked_key TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );",
+    },
 ];
 
 /// Bootstraps the `schema_version` table and applies any migration whose

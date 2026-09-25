@@ -4,7 +4,10 @@
 
 import './media/wispThreads.css';
 import { $, addDisposableListener, append, EventType } from '../../../../base/browser/dom.js';
+import { status as ariaStatus } from '../../../../base/browser/ui/aria/aria.js';
 import { Codicon } from '../../../../base/common/codicons.js';
+import { MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { autorun } from '../../../../base/common/observable.js';
 import { basename } from '../../../../base/common/resources.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
@@ -21,6 +24,8 @@ import { IThemeService } from '../../../../platform/theme/common/themeService.js
 import { IViewPaneOptions, ViewPane } from '../../../../workbench/browser/parts/views/viewPane.js';
 import { IViewDescriptorService } from '../../../../workbench/common/views.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
+import { WISP_SHOW_HOST_MENU_COMMAND } from './wispHostMenu.js';
+import { IWispHostStatusService } from './wispHostStatusService.js';
 
 export const WISP_THREADS_CONTAINER_ID = 'wisp.threads';
 export const WISP_THREADS_VIEW_ID = 'wisp.threads.view';
@@ -30,8 +35,8 @@ let instanceCount = 0;
 /**
  * wisp's left sidebar in the Agents window (decision record 0011, docs/design/agents-window.md in
  * wisp): actions, then Projects, Repositories, and No Repo, then a footer with the user, the host,
- * and settings. Until the Agents window connects to wispd, no host is connected, so there are no
- * projects or threads, and New Chat is disabled.
+ * and settings. The host chip follows the wispd connection. Projects and threads come with #104,
+ * so until then there are none, and New Chat is disabled.
  */
 export class WispThreadsView extends ViewPane {
 
@@ -52,6 +57,7 @@ export class WispThreadsView extends ViewPane {
 		@ICommandService private readonly commandService: ICommandService,
 		@IQuickInputService private readonly quickInputService: IQuickInputService,
 		@IPathService private readonly pathService: IPathService,
+		@IWispHostStatusService private readonly hostStatusService: IWispHostStatusService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 	}
@@ -123,20 +129,45 @@ export class WispThreadsView extends ViewPane {
 			avatar.textContent = accountName.charAt(0).toUpperCase();
 		});
 
-		// Static until wisp connects to a host (M1), when it becomes the host button and menu.
-		const host = append(footer, $('.wisp-threads-host', {
-			role: 'status',
-			'aria-live': 'polite',
-			'aria-label': localize('wispThreads.hostNotConnected', "Host: not connected"),
-		}));
-		append(host, $('span.wisp-threads-host-dot', { 'aria-hidden': 'true' }));
-		append(host, $('span.wisp-threads-host-label', { 'aria-hidden': 'true' }, localize('wispThreads.notConnected', "Not connected")));
+		this.renderHostChip(footer);
 
 		const settingsLabel = localize('wispThreads.settings', "Settings");
 		const settings = append(footer, $<HTMLButtonElement>('button.wisp-threads-icon-button.wisp-threads-settings', { type: 'button', 'aria-label': settingsLabel }));
 		append(settings, $(`span${ThemeIcon.asCSSSelector(Codicon.settingsGear)}`, { 'aria-hidden': 'true' }));
 		this._register(this.hoverService.setupDelayedHover(settings, { content: settingsLabel }));
 		this._register(addDisposableListener(settings, EventType.CLICK, () => this.commandService.executeCommand('workbench.action.openSettings')));
+	}
+
+	/**
+	 * The host and its state, live from the wispd connection. The button's name carries both, so
+	 * the visible parts are hidden from screen readers, and a change is announced once, politely.
+	 */
+	private renderHostChip(footer: HTMLElement): void {
+		const chip = append(footer, $<HTMLButtonElement>('button.wisp-threads-host', { type: 'button' }));
+		append(chip, $('span.wisp-threads-host-dot', { 'aria-hidden': 'true' }));
+		const name = append(chip, $('span.wisp-threads-host-name', { 'aria-hidden': 'true' }));
+		const state = append(chip, $('span.wisp-threads-host-state', { 'aria-hidden': 'true' }));
+		const hover = this._register(new MutableDisposable());
+		this._register(addDisposableListener(chip, EventType.CLICK, () => this.commandService.executeCommand(WISP_SHOW_HOST_MENU_COMMAND)));
+
+		let announced: string | undefined;
+		this._register(autorun(reader => {
+			const status = this.hostStatusService.status.read(reader);
+			chip.dataset.mark = status.mark;
+			chip.dataset.kind = status.kind;
+			chip.setAttribute('aria-label', status.ariaLabel);
+			name.textContent = status.kind === 'notConnected' ? localize('wispThreads.notConnected', "Not connected") : status.host;
+			state.textContent = status.showState && status.kind !== 'notConnected' ? status.state : '';
+			hover.value = this.hoverService.setupDelayedHover(chip, { content: status.kind === 'error' ? `${status.ariaLabel}. ${status.heading}` : status.ariaLabel });
+			// Connecting passes in a moment, so only where it lands is announced.
+			if (status.kind === 'connecting') {
+				return;
+			}
+			if (announced !== undefined && announced !== status.ariaLabel) {
+				ariaStatus(status.ariaLabel);
+			}
+			announced = status.ariaLabel;
+		}));
 	}
 
 	private async search(): Promise<void> {

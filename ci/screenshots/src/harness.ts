@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -19,6 +19,8 @@ export interface Scenario {
   name: string;
   title: string;
   args?: (dir: string) => Promise<readonly string[]>;
+  /** User settings to start with, written to the throwaway profile's settings.json. */
+  settings?: Readonly<Record<string, unknown>>;
   run(context: ScenarioContext): Promise<Buffer | NotAvailable>;
 }
 
@@ -36,6 +38,8 @@ const workbenchSelector = '.monaco-workbench';
 const workbenchRestoredMark = 'code/didStartWorkbench';
 const appFlags = ['--skip-welcome', '--skip-release-notes', '--disable-workspace-trust', '--use-inmemory-secretstorage'];
 const execFileAsync = promisify(execFile);
+/** wispd's data folder (daemon/src/paths.rs). */
+const WISPD_DATA_DIR_ENV = 'WISPD_DATA_DIR';
 
 export function notAvailable(reason: string): NotAvailable {
   return { notAvailable: reason };
@@ -78,8 +82,9 @@ export async function appLaunchOptions(): Promise<LaunchOptions> {
   }
 }
 
-export async function launch(options: LaunchOptions, scenarioArgs?: Scenario['args']): Promise<Session> {
+export async function launch(options: LaunchOptions, scenario: Pick<Scenario, 'args' | 'settings'> = {}): Promise<Session> {
   const root = await mkdtemp(join(tmpdir(), 'wisp-screenshots-'));
+  const wispdDataDir = join(root, 'wispd');
   let app: ElectronApplication | undefined;
   const close = async (): Promise<void> => {
     if (app) {
@@ -89,22 +94,30 @@ export async function launch(options: LaunchOptions, scenarioArgs?: Scenario['ar
         child.kill('SIGKILL');
       }
     }
+    await stopWispd(wispdDataDir);
     await rm(root, { recursive: true, force: true, maxRetries: 3 });
   };
   try {
     const files = join(root, 'files');
     await mkdir(files);
-    const extraArgs = (await scenarioArgs?.(files)) ?? [];
+    const extraArgs = (await scenario.args?.(files)) ?? [];
+    const userData = join(root, 'user-data');
+    if (scenario.settings) {
+      await mkdir(join(userData, 'User'), { recursive: true });
+      await writeFile(join(userData, 'User', 'settings.json'), `${JSON.stringify(scenario.settings, null, 2)}\n`);
+    }
     app = await _electron.launch({
       ...options,
       args: [
         ...(options.args ?? []),
-        `--user-data-dir=${join(root, 'user-data')}`,
+        `--user-data-dir=${userData}`,
         `--extensions-dir=${join(root, 'extensions')}`,
         ...appFlags,
         ...extraArgs,
       ],
-      env: { ...inheritedEnv(), ...options.env },
+      // The app's bundled wispd starts on demand (0010). Its own data folder keeps it away from
+      // the machine's real wispd, and lets close() stop the one this run started.
+      env: { ...inheritedEnv(), ...options.env, [WISPD_DATA_DIR_ENV]: wispdDataDir },
       timeout: TIMEOUT_MS,
     });
     const window = await firstRealWindow(app);
@@ -191,6 +204,35 @@ async function fitWindow(app: ElectronApplication, window: Page): Promise<void> 
     }
     const actual = await window.evaluate(() => `${String(innerWidth)}x${String(innerHeight)}`);
     console.log(`window content is ${actual}, not ${String(WINDOW_SIZE.width)}x${String(WINDOW_SIZE.height)}`);
+  }
+}
+
+/**
+ * Stops the `wispd serve` that `wispd attach` started for this run. It outlives the app by design
+ * (0007: a disconnect never stops agents), and its lock file holds its pid.
+ */
+async function stopWispd(dataDir: string): Promise<void> {
+  let pid: number;
+  try {
+    pid = Number.parseInt((await readFile(join(dataDir, 'wispd.lock'), 'utf8')).trim(), 10);
+  } catch {
+    return;
+  }
+  if (!Number.isSafeInteger(pid) || pid <= 1) {
+    return;
+  }
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch {
+    return;
+  }
+  for (let i = 0; i < 50; i++) {
+    await delay(100);
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return;
+    }
   }
 }
 
