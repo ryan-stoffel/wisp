@@ -1,0 +1,174 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": 22,
+    "method": "context/write",
+    "params": {
+      "id": "01a0d357-6a40-7f6e-9b7a-2c9b6b9d5e01",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "path": "notes.md",
+      "content": "# Notes\n\nAsk Ryan about the release date.",
+      "writer": "editor"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 22,
+    "result": {
+      "file": {
+        "path": "notes.md",
+        "size": 42,
+        "modifiedAt": "2026-09-24T12:00:00Z",
+        "lastWriter": "editor"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 23,
+    "method": "context/write",
+    "params": {
+      "id": "01a0d357-6a40-7f6e-9b7a-2c9b6b9d5e01",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "path": "notes.md",
+      "content": "# Notes\n\nAsk Ryan about the release date.",
+      "writer": "editor"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 23,
+    "result": {
+      "file": {
+        "path": "notes.md",
+        "size": 42,
+        "modifiedAt": "2026-09-24T12:00:00Z",
+        "lastWriter": "editor"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 24,
+    "method": "context/write",
+    "params": {
+      "id": "01a0d357-6a40-7f6e-9b7a-2c9b6b9d5e01",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "path": "notes.md",
+      "content": "# Notes\n\nSomething else entirely."
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 24,
+    "error": {
+      "code": -32000,
+      "message": "context write 01a0d357-6a40-7f6e-9b7a-2c9b6b9d5e01 exists with different content or writer",
+      "data": { "kind": "idConflict" }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 25,
+    "method": "context/write",
+    "params": {
+      "id": "01a0d357-6a40-7f6e-9b7a-2c9b6b9d5e02",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "path": "too-big.md",
+      "content": "way too much content"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 25,
+    "error": {
+      "code": -32000,
+      "message": "too-big.md would be over the shared context size cap",
+      "data": { "kind": "contextTooLarge" }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 26,
+    "method": "context/read",
+    "params": {
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "path": "notes.md"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 26,
+    "result": {
+      "file": {
+        "path": "notes.md",
+        "size": 42,
+        "modifiedAt": "2026-09-24T12:00:00Z",
+        "lastWriter": "editor"
+      },
+      "content": "# Notes\n\nAsk Ryan about the release date."
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 27,
+    "method": "context/read",
+    "params": {
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "path": "missing.md"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 27,
+    "error": {
+      "code": -32000,
+      "message": "no shared context file has path missing.md",
+      "data": { "kind": "contextNotFound" }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 28,
+    "method": "context/list",
+    "params": { "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae" }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 28,
+    "result": {
+      "files": [
+        {
+          "path": "notes.md",
+          "size": 42,
+          "modifiedAt": "2026-09-24T12:00:00Z",
+          "lastWriter": "editor"
+        },
+        {
+          "path": "research.md",
+          "size": 128,
+          "modifiedAt": "2026-09-24T11:00:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0d34a-5860-7ee2-a66a-aef2367abe02",
+      "seq": 2,
+      "time": "2026-09-24T12:00:00Z",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "event": {
+        "kind": "context.changed",
+        "file": {
+          "path": "notes.md",
+          "size": 42,
+          "modifiedAt": "2026-09-24T12:00:00Z",
+          "lastWriter": "editor"
+        }
+      }
+    }
+  }
+]

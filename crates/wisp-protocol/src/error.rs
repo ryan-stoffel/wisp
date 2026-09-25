@@ -29,6 +29,10 @@ pub enum ErrorKind {
     KeychainUnavailable,
     /// A create reused an existing id with different params.
     IdConflict,
+    /// No shared context file has the given path (#155).
+    ContextNotFound,
+    /// The content would be over `context/write`'s per-file or per-project size cap (#155).
+    ContextTooLarge,
     /// A kind this version does not know yet.
     #[serde(other)]
     #[ts(skip)]
@@ -121,6 +125,8 @@ mod tests {
             (ErrorKind::AccountNotFound, "accountNotFound"),
             (ErrorKind::KeychainUnavailable, "keychainUnavailable"),
             (ErrorKind::IdConflict, "idConflict"),
+            (ErrorKind::ContextNotFound, "contextNotFound"),
+            (ErrorKind::ContextTooLarge, "contextTooLarge"),
         ] {
             assert_eq!(serde_json::to_value(kind).unwrap(), json!(name));
             assert_eq!(
