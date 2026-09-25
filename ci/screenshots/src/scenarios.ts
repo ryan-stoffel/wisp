@@ -6,8 +6,11 @@ import { screenshot, visible, type Scenario } from './harness.ts';
 const workspace = join(import.meta.dirname, '..', 'fixtures', 'workspace');
 const openFile = 'tasks.ts';
 
-/** An ssh destination that can never resolve (RFC 2606), so ssh fails at once with no route. */
-const unreachableHost = 'wisp-screenshots.invalid';
+/**
+ * An ssh destination nothing listens on, so ssh fails at once with "connection refused" (no
+ * route). An unresolvable name can take a DNS timeout of 30 s or more, longer than the handshake.
+ */
+const unreachableHost = 'ssh://127.0.0.1:9';
 
 const hostChip = '.part.sidebar button.wisp-threads-host';
 
@@ -103,8 +106,7 @@ export const scenarios: readonly Scenario[] = [
       await window.locator(hostChip).click();
       const menu = window.locator('.quick-input-widget');
       await menu.waitFor({ state: 'visible' });
-      await visible(window, '.quick-input-widget .monaco-list-row[aria-label="Host: this Mac, connected"]');
-      await menu.getByText('Reconnect', { exact: true }).waitFor({ state: 'visible' });
+      await visible(window, '.quick-input-widget [data-quick-input-id="current"]', '.quick-input-widget [data-quick-input-id="reconnect"]');
       return screenshot(window);
     },
   },

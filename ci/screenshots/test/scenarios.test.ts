@@ -19,7 +19,7 @@ test('captures the host connected, unreachable, and its menu', () => {
   assert.ok(names.includes('agents-window-disconnected'));
   assert.ok(names.includes('agents-window-host-menu'));
   const disconnected = scenarios.find((scenario) => scenario.name === 'agents-window-disconnected');
-  assert.match(String(disconnected?.settings?.['wisp.host']), /\.invalid$/, 'a host that can never resolve, so ssh fails fast');
+  assert.match(String(disconnected?.settings?.['wisp.host']), /^ssh:\/\/127\.0\.0\.1:\d+$/, 'a closed local port, so ssh fails fast');
 });
 
 test('names are unique and titles are text the comment accepts', () => {
