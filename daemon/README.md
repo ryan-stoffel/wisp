@@ -2,7 +2,7 @@
 
 wisp's host daemon. Each macOS user runs their own, and it keeps projects, and later agents, running while the editor is closed. The editor reaches it through `wispd attach`, either on the same Mac or on a host over SSH.
 
-The `wisp` cask installs `wispd` at `Wisp.app/Contents/Resources/app/bin/wispd`, next to the `wisp` launcher, and links it into Homebrew's `bin` folder too (#62), so `wispd` on its own is a released build, and `wispd --version` prints the release's version. `scripts/editor/build-app` builds it with `cargo build --release -p wispd` for the app's architecture and copies it in before the bundle is signed; for a release, it also sets `WISP_VERSION`, which `daemon/src/main.rs` reads with `option_env!` at compile time (0006). A plain `cargo build -p wispd` outside that script has no `WISP_VERSION`, so `wispd --version` prints `Cargo.toml`'s own placeholder instead.
+The `wisp` cask installs `wispd` at `Wisp.app/Contents/Resources/app/bin/wispd`, next to the `wisp` launcher, and links it into Homebrew's `bin` folder too (#62), so `wispd` on its own is a released build, and `wispd --version` prints the release's version. `scripts/editor/build-app` builds it with `cargo build --release -p wispd` for the app's architecture and copies it in before the bundle is signed; for a release, it also sets `WISP_VERSION`, which `daemon/src/lib.rs` reads with `option_env!` at compile time (0006). A plain `cargo build -p wispd` outside that script has no `WISP_VERSION`, so `wispd --version` prints `Cargo.toml`'s own placeholder instead.
 
 The decisions behind it:
 

@@ -26,7 +26,7 @@ scripts/ci/check-app checks the branding of the result, including wispd's.
                          wisp --version show, and in CFBundleShortVersionString
                          and CFBundleVersion. editor/vscode/package.json holds it
                          only while gulp runs. The same version becomes wispd's
-                         WISP_VERSION (daemon/src/main.rs), so wispd --version
+                         WISP_VERSION (daemon/src/lib.rs), so wispd --version
                          matches (#44); without --app-version, wispd keeps its
                          own Cargo.toml placeholder.
 EOF
@@ -119,7 +119,7 @@ bundle="$root/editor/VSCode-darwin-$arch/$(node -p 'require("./product.json").na
 
 # wispd goes in before signing, so the ad-hoc signature below covers it too, the same as the
 # wisp launcher gulp already put in Contents/Resources/app/bin (#62). WISP_VERSION is read by
-# daemon/src/main.rs through option_env!, which Cargo tracks: changing it alone still rebuilds.
+# daemon/src/lib.rs through option_env!, which Cargo tracks: changing it alone still rebuilds.
 echo "${0##*/}: building wispd for $rust_target" >&2
 (
   cd "$root"
