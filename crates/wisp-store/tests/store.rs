@@ -480,7 +480,7 @@ fn a_version_3_database_from_develop_migrates_to_usage_tables_and_keeps_its_acco
     .expect("write a version 3 database, as develop's #117 leaves it");
     drop(conn);
 
-    let mut store = Store::open(&path).expect("open should migrate to version 4");
+    let store = Store::open(&path).expect("open should migrate to version 4");
     let account = store
         .get_account(account_id)
         .expect("get")

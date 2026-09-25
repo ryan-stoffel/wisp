@@ -129,6 +129,49 @@ mod tests {
         }
     }
 
+    /// `local_bounds` has to resolve each date's own UTC offset, not carry over `now`'s: America's
+    /// fall-back from PDT (UTC-7) to PST (UTC-8) happened at 2 a.m. on Sunday, November 1, 2026,
+    /// so a week that starts on the preceding Monday, October 26, spans the transition.
+    #[test]
+    fn local_bounds_are_correct_across_a_dst_transition_in_an_observing_zone() {
+        let tz =
+            jiff::tz::TimeZone::get("America/Los_Angeles").expect("zoneinfo for the test zone");
+
+        // Sunday, the day the clocks fall back. Local midnight is still before the 2 a.m.
+        // transition, so it's PDT (UTC-7).
+        let before = date(2026, 11, 1)
+            .at(3, 0, 0, 0)
+            .to_zoned(tz.clone())
+            .unwrap();
+        let (day_start, week_start) = local_bounds(&before).unwrap();
+        assert_eq!(
+            day_start,
+            "2026-11-01T07:00:00Z".parse().unwrap(),
+            "2026-11-01T00:00:00 PDT (UTC-7)"
+        );
+        assert_eq!(
+            week_start,
+            "2026-10-26T07:00:00Z".parse().unwrap(),
+            "the preceding Monday, also PDT: the week spans the transition"
+        );
+
+        // The next day: local midnight is now PST (UTC-8).
+        let after = date(2026, 11, 2)
+            .at(10, 0, 0, 0)
+            .to_zoned(tz.clone())
+            .unwrap();
+        let (day_start, week_start) = local_bounds(&after).unwrap();
+        assert_eq!(
+            day_start,
+            "2026-11-02T08:00:00Z".parse().unwrap(),
+            "2026-11-02T00:00:00 PST (UTC-8)"
+        );
+        assert_eq!(
+            day_start, week_start,
+            "Monday's own midnight is the week start"
+        );
+    }
+
     #[test]
     fn a_report_covers_every_account_with_usage_or_limits_and_omits_unreported_cost() {
         let (_dir, store) = open();
