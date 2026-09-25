@@ -308,16 +308,53 @@ pub(crate) fn account_choice(default: RoleDefault) -> Result<AccountChoice, Erro
     }
 }
 
-/// An `accounts/defaults/set` choice as the store's [`RoleDefault`], or an `invalidParams` error
-/// for a kind this build does not know.
-pub(crate) fn role_default(choice: &AccountChoice) -> Result<RoleDefault, ErrorObject> {
+/// Vendor CLIs wispd ships or plans an adapter for (0004), ahead of #114's real detection of which
+/// are actually installed and signed in. `role_default` checks a `Subscription` choice's backend
+/// name against this fixed list; #114 replaces it with something wispd has actually probed.
+const KNOWN_BACKENDS: &[&str] = &["claude", "codex", "cursor"];
+
+/// An `accounts/defaults/set` choice as the store's [`RoleDefault`], checked against `db_store`
+/// first: a `Key` must be a real row in `accounts` (#117), and a `Subscription`'s backend must be
+/// one of [`KNOWN_BACKENDS`]. Unvalidated, a typo or a removed key account would only surface
+/// later, as a `RoutingError` when a task tries to start (#119).
+///
+/// # Errors
+///
+/// `invalidParams`, naming the missing account or backend, or an internal error if the check
+/// itself fails.
+pub(crate) fn role_default(
+    db_store: &wisp_store::Store,
+    choice: &AccountChoice,
+) -> Result<RoleDefault, ErrorObject> {
     match choice {
-        AccountChoice::Subscription { backend } => Ok(RoleDefault::Subscription {
-            backend: backend.clone(),
-        }),
-        AccountChoice::Key { id } => Ok(RoleDefault::Key {
-            account_id: (*id).into(),
-        }),
+        AccountChoice::Subscription { backend } => {
+            if KNOWN_BACKENDS.contains(&backend.as_str()) {
+                Ok(RoleDefault::Subscription {
+                    backend: backend.clone(),
+                })
+            } else {
+                Err(ErrorObject::invalid_params(format!(
+                    "{backend:?} is not a backend wispd knows"
+                )))
+            }
+        }
+        AccountChoice::Key { id } => {
+            let uuid = (*id).into();
+            let exists = db_store
+                .get_account(uuid)
+                .map_err(|error| {
+                    error!(error = %error, "the project store failed checking a key account");
+                    ErrorObject::internal_error(format!("the project store failed: {error}"))
+                })?
+                .is_some();
+            if exists {
+                Ok(RoleDefault::Key { account_id: uuid })
+            } else {
+                Err(ErrorObject::invalid_params(format!(
+                    "no key account {id} exists"
+                )))
+            }
+        }
         AccountChoice::Unknown => Err(ErrorObject::invalid_params(
             "account must be a subscription or a key",
         )),
