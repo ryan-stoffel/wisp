@@ -28,11 +28,12 @@ use crate::jsonrpc::CancelRequestParams;
 use crate::{
     AccountsKeysAddParams, AccountsKeysAddResult, AccountsKeysListParams, AccountsKeysListResult,
     AccountsKeysRemoveParams, AccountsKeysRemoveResult, AccountsListParams, AccountsListResult,
-    AccountsRefreshParams, AccountsRefreshResult, EventsEventParams, EventsSubscribeParams,
-    EventsSubscribeResult, EventsUnsubscribeParams, EventsUnsubscribeResult, HostHealthParams,
-    HostHealthResult, HostVersionParams, HostVersionResult, InitializeParams, InitializeResult,
-    ProjectCreateParams, ProjectCreateResult, ProjectListParams, ProjectListResult, UsageGetParams,
-    UsageGetResult,
+    AccountsRefreshParams, AccountsRefreshResult, ContextListParams, ContextListResult,
+    ContextReadParams, ContextReadResult, ContextWriteParams, ContextWriteResult,
+    EventsEventParams, EventsSubscribeParams, EventsSubscribeResult, EventsUnsubscribeParams,
+    EventsUnsubscribeResult, HostHealthParams, HostHealthResult, HostVersionParams,
+    HostVersionResult, InitializeParams, InitializeResult, ProjectCreateParams,
+    ProjectCreateResult, ProjectListParams, ProjectListResult, UsageGetParams, UsageGetResult,
 };
 
 /// A method that is called with a request and answered with a response.
@@ -141,6 +142,15 @@ method_table! {
         /// `usage/get`: per-account tokens and cost for today and this week (local time on this
         /// host), and the latest limit windows.
         UsageGet = "usage/get": UsageGetParams => UsageGetResult;
+        /// `context/list`: a project's shared context files (0005), each with its size, when it
+        /// was last modified, and who last wrote it, if known.
+        ContextList = "context/list": ContextListParams => ContextListResult;
+        /// `context/read`: one shared context file's content. Fails with `contextNotFound` if it
+        /// does not exist.
+        ContextRead = "context/read": ContextReadParams => ContextReadResult;
+        /// `context/write`: writes a shared context file in full, idempotent on its
+        /// client-generated id. The last write to a path wins when two race.
+        ContextWrite = "context/write": ContextWriteParams => ContextWriteResult;
     }
     notifications {
         /// `$/cancelRequest`: cancels a request, which still gets exactly one response. Either
@@ -192,6 +202,9 @@ mod tests {
                 "accounts/list",
                 "accounts/refresh",
                 "usage/get",
+                "context/list",
+                "context/read",
+                "context/write",
                 "$/cancelRequest",
                 "events/event",
             ]
