@@ -34,6 +34,12 @@ suite('wispdConfiguration', () => {
 		assert.strictEqual(parser.configurationModel.getValue(WISP_HOST_SETTING), undefined);
 	});
 
+	test('a workspace settings.json cannot set wisp.remoteWispdPath', () => {
+		const parser = new ConfigurationModelParser('.vscode/settings.json', new NullLogService());
+		parser.parse(JSON.stringify({ [WISP_REMOTE_WISPD_PATH_SETTING]: '/tmp/wispd' }), { scopes: WORKSPACE_SCOPES });
+		assert.strictEqual(parser.configurationModel.getValue(WISP_REMOTE_WISPD_PATH_SETTING), undefined);
+	});
+
 	test('a user settings.json can set wisp.host', () => {
 		const parser = new ConfigurationModelParser('settings.json', new NullLogService());
 		parser.parse(JSON.stringify({ [WISP_HOST_SETTING]: 'mac-mini.local' }), { scopes: APPLICATION_AND_WORKSPACE_SCOPES });

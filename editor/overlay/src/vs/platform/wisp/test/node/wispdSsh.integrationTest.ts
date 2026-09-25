@@ -45,6 +45,9 @@ switch (mode) {
 	case 'host-key':
 		fail(255, 'Host key verification failed.');
 		break;
+	case 'host-key-changed':
+		fail(255, '@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\\n@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @\\n@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\\nHost key verification failed.');
+		break;
 	case 'no-route':
 		fail(255, 'ssh: connect to host fake port 22: Operation timed out');
 		break;
@@ -53,6 +56,13 @@ switch (mode) {
 		break;
 	case 'path-fallback':
 		if (remoteCommand !== process.env.FAKE_SSH_GOOD_REMOTE) {
+			fail(127, 'bash: line 1: ' + remoteCommand + ': command not found');
+			break;
+		}
+	// falls through
+	case 'noisy-path-fallback':
+		if (remoteCommand !== process.env.FAKE_SSH_GOOD_REMOTE) {
+			process.stdout.write('Last login: Tue Sep 24 on ttys000\\n');
 			fail(127, 'bash: line 1: ' + remoteCommand + ': command not found');
 			break;
 		}
@@ -137,6 +147,13 @@ suite('wispd over ssh (integration)', function () {
 		assert.strictEqual(connected.protocol, 1);
 	});
 
+	test('B1: still falls back and completes the handshake when the first candidate prints a noisy line before exit 127', async () => {
+		const c = client('noisy-path-fallback', { FAKE_SSH_GOOD_REMOTE: '/opt/homebrew/bin/wispd' }, ['wispd', '/opt/homebrew/bin/wispd', '/usr/local/bin/wispd']);
+		c.start();
+		const connected = await whenState(c, 'connected');
+		assert.strictEqual(connected.protocol, 1);
+	});
+
 	test('reports wispdNotFound once every candidate is exhausted', async () => {
 		const c = client('wispd-missing', {}, ['wispd', '/opt/homebrew/bin/wispd']);
 		c.start();
@@ -156,6 +173,14 @@ suite('wispd over ssh (integration)', function () {
 		c.start();
 		const disconnected = await whenState(c, 'disconnected');
 		assert.strictEqual(disconnected.reason, 'hostKeyUnknown');
+	});
+
+	test('maps a changed host key as hostKeyChanged, distinct from an unknown one', async () => {
+		const c = client('host-key-changed');
+		c.start();
+		const disconnected = await whenState(c, 'disconnected');
+		assert.strictEqual(disconnected.reason, 'hostKeyChanged');
+		assert.match(disconnected.message, /possible attack/);
 	});
 
 	test('maps no route to host', async () => {
