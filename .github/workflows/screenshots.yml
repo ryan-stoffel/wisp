@@ -18,9 +18,11 @@ jobs:
   capture:
     name: capture
     runs-on: macos-26
-    timeout-minutes: 150
+    timeout-minutes: 120
     permissions:
       contents: read
+    env:
+      ZIP: dist/editor/wisp-darwin-arm64.zip
     outputs:
       same-repo: ${{ steps.source.outputs.same-repo }}
       build: ${{ steps.build.outcome }}
@@ -46,31 +48,62 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
+      # The same key as ci.yml's app (arm64) job, so a push that changes no fork input reuses its build.
+      # The cache only saves time, so without a key the job builds the app instead.
+      - name: Hash the inputs of the app build
+        id: inputs
+        if: steps.source.outputs.same-repo == 'true'
+        continue-on-error: true
+        timeout-minutes: 2
+        run: |
+          key=$(scripts/ci/app-cache-key arm64)
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      # Restore only: ci.yml's app job is the one writer of this cache, and it saves only builds that pass check-app.
+      - name: Restore the app that ci.yml built from the same inputs
+        id: cached
+        if: steps.source.outputs.same-repo == 'true' && steps.inputs.outputs.key != ''
+        timeout-minutes: 10
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.ZIP }}
+          key: ${{ steps.inputs.outputs.key }}
+
       - name: Set up Node
         if: steps.source.outputs.same-repo == 'true'
-        timeout-minutes: 5
+        timeout-minutes: 10
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
-          cache: npm
-          cache-dependency-path: '**/package-lock.json'
+          cache: ${{ steps.cached.outputs.cache-hit != 'true' && 'npm' || '' }}
+          # Upstream's lockfiles exist only after scripts/editor/prepare runs, and the pin decides them.
+          cache-dependency-path: editor/upstream.json
 
-      - name: Cache the Electron download
-        if: steps.source.outputs.same-repo == 'true'
-        timeout-minutes: 5
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/Library/Caches/electron
-          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: electron-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: Build the app
+      # On a miss, upstream's build calls GitHub's API, which rate-limits anonymous calls from shared runners.
+      # The token is this job's contents: read token, and it expires when the job ends, before publish reads the log.
+      - name: Build the app, or unpack the cached build
         id: build
         if: steps.source.outputs.same-repo == 'true'
-        timeout-minutes: 100
+        timeout-minutes: 60
+        env:
+          CACHED: ${{ steps.cached.outputs.cache-hit }}
+          KEY: ${{ steps.inputs.outputs.key }}
+          GITHUB_TOKEN: ${{ steps.cached.outputs.cache-hit != 'true' && github.token || '' }}
         run: |
-          mkdir -p "$RUNNER_TEMP/capture/logs"
-          scripts/ci/build-app 2>&1 | tee "$RUNNER_TEMP/capture/logs/build.log"
+          mkdir -p "$RUNNER_TEMP/capture/logs" "$RUNNER_TEMP/app"
+          log=$RUNNER_TEMP/capture/logs/build.log
+          if [ "$CACHED" = true ]; then
+            echo "Unpacking the app that ci.yml's app job built from the same inputs ($KEY)" | tee "$log"
+            ditto -x -k "$ZIP" "$RUNNER_TEMP/app" 2>&1 | tee -a "$log"
+            bundle=$RUNNER_TEMP/app/Wisp.app
+            echo "- App: restored from ci.yml's cache, key \`$KEY\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No cached build of these inputs (${KEY:-no key}); building the app" | tee "$log"
+            scripts/ci/build-app arm64 2>&1 > "$RUNNER_TEMP/app-path" | tee -a "$log"
+            bundle=$(cat "$RUNNER_TEMP/app-path")
+            echo "- App: built here, because ci.yml's cache had no build for key \`${KEY:-none}\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "WISP_APP_BUNDLE=$bundle" >> "$GITHUB_ENV"
 
       - name: Capture the scenarios
         id: capture

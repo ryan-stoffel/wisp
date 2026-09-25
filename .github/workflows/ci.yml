@@ -56,9 +56,10 @@ jobs:
       - name: Test the editor's wispd client
         run: scripts/editor/test-wisp target/debug/wispd
 
-  editor:
-    runs-on: macos-26
-    timeout-minutes: 120
+  # ci/screenshots holds screenshots.yml's harness and publish script, including the checks that keep publish's token safe.
+  screenshots:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -68,10 +69,10 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-          cache-dependency-path: ci/fixtures/electron-smoke/package-lock.json
+          cache-dependency-path: ci/screenshots/package-lock.json
 
-      - name: Lint, type-check, build, and test
-        run: scripts/ci/check-editor
+      - name: Lint, type-check, and test
+        run: scripts/ci/check-screenshots
 
   # The Code - OSS type-check needs about 6.4 GB, which swaps on the 7 GB macOS runner, and does not depend on the platform.
   fork:
@@ -121,6 +122,7 @@ jobs:
 
       - name: Check the pin and patches, and type-check the patched tree
         if: steps.decide.outputs.run == 'true'
+        timeout-minutes: 10
         run: scripts/ci/check-fork
 
       - name: Record the pass
@@ -149,14 +151,12 @@ jobs:
         with:
           persist-credentials: false
 
-      # The inputs are what scripts/editor/build-app reads, plus this job's own definition.
+      # The inputs are what scripts/editor/build-app reads, plus this job's own definition. screenshots.yml restores the same key.
       - name: Hash the inputs of the app build
         id: inputs
         run: |
-          inputs=$(git ls-files -s -- editor .nvmrc .gitattributes scripts/editor)
-          job=$(yq -o=json '.jobs.app' .github/workflows/ci.yml)
-          hash=$(printf '%s\n%s\n' "$inputs" "$job" | shasum -a 256 | cut -d' ' -f1)
-          echo "key=wisp-app-darwin-$ARCH-$hash" >> "$GITHUB_OUTPUT"
+          key=$(scripts/ci/app-cache-key "$ARCH")
+          echo "key=$key" >> "$GITHUB_OUTPUT"
 
       - name: Restore the app built from the same inputs
         id: cached
@@ -225,7 +225,7 @@ jobs:
   # Branch protection requires this job's name, ci, as the only check (#6). Renaming it blocks every merge.
   ci:
     if: always()
-    needs: [rust, editor, fork, app, actionlint]
+    needs: [rust, screenshots, fork, app, actionlint]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

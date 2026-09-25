@@ -41,7 +41,7 @@ npm run download-builtin-extensions     # 5 s
 ./scripts/code.sh                       # the development build
 ```
 
-The times are from an M3 Pro. `scripts/ci/build-app` with `WISP_APP=editor` runs the same steps. `WISP_APP=editor scripts/ci/app-launch` prints the Playwright launch options for the result (see [scripts/ci/README.md](../scripts/ci/README.md)).
+The times are from an M3 Pro. CI does not use the development build: its scripts build and launch the packaged app below.
 
 `npm ci` also downloads Playwright's Chromium (550 MB) for upstream's browser tests. Set `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` to skip it when you do not run those tests. `build-app` sets it.
 
@@ -53,9 +53,10 @@ The development build keeps upstream's `code-oss-dev` user data folder, which up
 scripts/editor/build-app          # this Mac's architecture, or: build-app arm64, build-app x64
 ```
 
-`build-app` runs `prepare`, then `npm ci` for the target architecture, unless `node_modules` already matches it. Then it downloads the built-in extensions, runs upstream's `gulp vscode-darwin-<arch>-min`, ad-hoc signs the bundle, and checks that every Mach-O file is built for that architecture. It prints the bundle's path, `editor/VSCode-darwin-<arch>/Wisp.app`. `scripts/ci/check-app <app or zip> <arch>` checks the bundle's branding, signature, and launcher, which CI's `app` job also runs.
+`build-app` runs `prepare`, then `npm ci` for the target architecture, unless `node_modules` already matches it. Then it downloads the built-in extensions, runs upstream's `gulp vscode-darwin-<arch>-min`, ad-hoc signs the bundle, and checks that every Mach-O file is built for that architecture. It prints the bundle's path, `editor/VSCode-darwin-<arch>/Wisp.app`. `scripts/ci/check-app <app or zip> <arch>` checks the bundle's branding, signature, and launcher, which CI's `app` job also runs. `scripts/ci/screenshots` captures the views that CI posts on each PR from that bundle ([scripts/ci/README.md](../scripts/ci/README.md#screenshots)).
 
-- **Launcher**: `Wisp.app/Contents/Resources/app/bin/wisp`. `wisp <folder>` opens the folder in the app. The command palette's **Shell Command: Install 'wisp' command in PATH** links `/usr/local/bin/wisp` to it.
+- **Launcher**: `Wisp.app/Contents/Resources/app/bin/wisp`. `wisp <folder>` opens the folder in the app. The command palette's **Shell Command: Install 'wisp' command in PATH** links `/usr/local/bin/wisp` to it. The Homebrew cask links it into Homebrew's `bin` instead.
+- **Version**: upstream's, 1.139.0, unless `--app-version <X.Y.Z>` names another. `scripts/ci/package-app` passes the release version, which then shows in the About dialog, in `wisp --version`, and in `Info.plist`. `build-app` sets it in `editor/vscode/package.json` only while gulp runs.
 - **x64** builds on Apple silicon, as in upstream's pipeline: `npm_config_arch=x64` makes npm build the native modules for x64. Switching architectures reinstalls `node_modules`, which takes about 2 minutes.
 - **Time**: on an M3 Pro, `npm ci` 2 min, gulp 3 min 30 s, and signing and checks about 1 min. On a `macos-26` runner, each architecture takes about 20 minutes (see [scripts/ci/README.md](../scripts/ci/README.md#the-app-job)).
 - **Size**: `du -sh` reports 921M for the arm64 app and 979M for x64. Their zips are 321 MB and 346 MB.
@@ -136,7 +137,7 @@ Move to the newest stable release about every four weeks, and within a week when
    scripts/editor/export-patches --check
    ```
 
-5. **Rebuild and smoke-test.** Run `fnm use` or `nvm use` in the repo root first, because `upgrade` may have changed `.nvmrc`, and upstream's `npm ci` rejects an older Node. Then run the build steps above and launch the development build. Open a folder, open a file from the tree, edit and save it, and open a terminal. `npm ci` is needed because upstream's lockfile changes with almost every release. Once #13 lands, run its Playwright smoke tests too.
+5. **Rebuild and smoke-test.** Run `fnm use` or `nvm use` in the repo root first, because `upgrade` may have changed `.nvmrc`, and upstream's `npm ci` rejects an older Node. Then run the build steps above and launch the development build. Open a folder, open a file from the tree, edit and save it, and open a terminal. `npm ci` is needed because upstream's lockfile changes with almost every release. Once #13 lands, run its Playwright smoke tests too. If Electron's major version changed, build the packaged app and read `LSMinimumSystemVersion` from its `Info.plist`. If it changed, change `depends_on macos` in `scripts/ci/release/wisp.rb.template` and the minimum macOS in the README's Install section to match. Otherwise the release dry run's `min_os` audit fails.
 6. **Review the diff.** In `git diff -- editor/patches`, changed line numbers and `index` lines are expected. Changed `+` or `-` lines are the conflicts you resolved, so check them again. The overlay never conflicts, so also read upstream's changes to the files it owns, in `editor/vscode/`: `git diff <old tag> <new tag> -- product.json resources/darwin/code.icns`. A new upstream key may need a value or a `null` in `editor/product.json`, such as a new telemetry or update endpoint.
 7. **Commit and open the PR.** Commit `editor/upstream.json`, `editor/patches/`, and `.nvmrc` with a message such as `chore: upgrade Code - OSS to 1.140.0 (#<issue>)`. In the PR body, list the Electron and Node versions if they changed, and any patch that needed more than a mechanical rebase.
 

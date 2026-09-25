@@ -1,35 +1,4 @@
 #!/bin/sh
 set -eu
 
-root=$(cd "$(dirname "$0")/../.." && pwd)
-want=$(cut -d. -f1 "$root/.nvmrc")
-have=$(node -p 'process.versions.node.split(".")[0]')
-if [ "$have" != "$want" ]; then
-  echo "${0##*/}: Node $want is required (.nvmrc pins $(cat "$root/.nvmrc")), but node is $(node --version)" >&2
-  exit 1
-fi
-
-case "${WISP_APP:-fixture}" in
-  fixture)
-    cd "$root/ci/fixtures/electron-smoke"
-    set -x
-    node --version
-    npm ci --no-audit --no-fund
-    npm run build
-    npx --no install-electron
-    ;;
-  editor)
-    "$root/scripts/editor/prepare"
-    cd "$root/editor/vscode"
-    set -x
-    node --version
-    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
-    npm run electron
-    npm run compile
-    npm run download-builtin-extensions
-    ;;
-  *)
-    echo "${0##*/}: WISP_APP=$WISP_APP is not supported; use fixture or editor" >&2
-    exit 1
-    ;;
-esac
+exec "$(dirname "$0")/../editor/build-app" "$@"

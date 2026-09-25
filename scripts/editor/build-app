@@ -3,7 +3,7 @@ set -eu
 
 usage() {
   cat <<'EOF'
-Usage: scripts/editor/build-app [arm64|x64]
+Usage: scripts/editor/build-app [--app-version <X.Y.Z>] [arm64|x64]
 
 Builds the packaged app for macOS on arm64 or x64 (default: this Mac's
 architecture) with upstream's gulp task vscode-darwin-<arch>-min, ad-hoc signs
@@ -16,6 +16,13 @@ of every Mach-O file's architecture. x64 builds on Apple silicon too, as
 upstream's pipeline does. GITHUB_TOKEN, if set, is passed to upstream's GitHub
 downloads (built-in extensions and Electron). scripts/ci/check-app checks the
 branding of the result.
+
+  --app-version <X.Y.Z>  build with this version instead of upstream's, as
+                         scripts/ci/package-app does for a release. Gulp puts it
+                         in the app's product.json, which the About dialog and
+                         wisp --version show, and in CFBundleShortVersionString
+                         and CFBundleVersion. editor/vscode/package.json holds it
+                         only while gulp runs.
 EOF
 }
 
@@ -24,16 +31,37 @@ fail() {
   exit 1
 }
 
-case "${1-}" in
-  -h | --help)
-    usage
-    exit 0
-    ;;
-esac
+app_version=
+while [ $# -gt 0 ]; do
+  case $1 in
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    --app-version)
+      [ $# -ge 2 ] || fail "--app-version needs a version"
+      app_version=$2
+      shift 2
+      ;;
+    --app-version=*)
+      app_version=${1#*=}
+      shift
+      ;;
+    -*)
+      usage >&2
+      exit 2
+      ;;
+    *) break ;;
+  esac
+done
 [ $# -le 1 ] || {
   usage >&2
   exit 2
 }
+if [ -n "$app_version" ]; then
+  printf '%s\n' "$app_version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' ||
+    fail "--app-version must be MAJOR.MINOR.PATCH, got '$app_version'"
+fi
 case ${1:-$(uname -m)} in
   arm64) arch=arm64 ;;
   x64 | x86_64) arch=x64 ;;
@@ -62,6 +90,16 @@ else
 fi
 
 npm run download-builtin-extensions >&2
+if [ -n "$app_version" ]; then
+  # Gulp takes the version from package.json. Put the file back afterwards, or the
+  # next prepare stops at its clean-tree check.
+  saved=$(mktemp)
+  cp package.json "$saved"
+  trap 'cp "$saved" "$root/editor/vscode/package.json"; rm -f "$saved"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  npm pkg set "version=$app_version" >&2
+fi
 # CI=true makes gulp leave source maps out of the bundle, as it does on any CI runner.
 CI=true npm run gulp "vscode-darwin-$arch-min" >&2
 

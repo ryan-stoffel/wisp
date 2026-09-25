@@ -1,0 +1,27 @@
+#!/bin/sh
+set -eu
+
+usage="usage: ${0##*/} <arm64|x64>"
+fail() {
+  echo "${0##*/}: $*" >&2
+  exit 1
+}
+
+[ $# -eq 1 ] || fail "$usage"
+case $1 in
+  arm64 | x64) arch=$1 ;;
+  *) fail "arch must be arm64 or x64, got '$1'" ;;
+esac
+case $(yq --version 2>&1 || true) in
+  *mikefarah*) ;;
+  *) fail "needs mikefarah's yq 4 (brew install yq), which GitHub's runners have" ;;
+esac
+
+root=$(cd "$(dirname "$0")/../.." && pwd)
+cd "$root"
+inputs=$(git ls-files -s -- editor .nvmrc .gitattributes scripts/editor)
+job=$(yq -o=json '.jobs.app' .github/workflows/ci.yml)
+[ -n "$inputs" ] && [ "$job" != null ] || fail "found no app build inputs or no app job in .github/workflows/ci.yml"
+hash=$(printf '%s\n%s\n' "$inputs" "$job" | shasum -a 256 | cut -d' ' -f1)
+printf '%s\n' "$hash" | grep -Eq '^[0-9a-f]{64}$' || fail "could not hash the inputs"
+printf 'wisp-app-darwin-%s-%s\n' "$arch" "$hash"
