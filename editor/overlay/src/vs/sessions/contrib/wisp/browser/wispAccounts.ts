@@ -349,6 +349,16 @@ export function formatResetTime(resetsAt: string | null | undefined): string {
 	return localize('wispAccounts.resets', "Resets {0}", fromNow(parsed, false));
 }
 
+/** A usage period's row in the Accounts view, such as "12,345 tokens · $0.42" or "0 tokens · Not reported". */
+export function formatPeriodValue(period: { readonly inputTokens: number; readonly outputTokens: number; readonly cacheReadTokens: number; readonly cacheWriteTokens: number; readonly costUsdMicros?: number | null }): string {
+	return localize('wispAccounts.periodValue', "{0} tokens · {1}", formatTokenTotal(period), formatCost(period.costUsdMicros));
+}
+
+/** A limit window's detail line, such as "38% used · Resets in 2 hr". */
+export function formatLimitDetail(limit: { readonly usedPercent?: number | null; readonly resetsAt?: string | null }): string {
+	return localize('wispAccounts.limitDetail', "{0} · {1}", formatUsedPercent(limit.usedPercent), formatResetTime(limit.resetsAt));
+}
+
 const NO_ACCOUNT = localize('wispAccounts.noAccount', "No account");
 
 /**

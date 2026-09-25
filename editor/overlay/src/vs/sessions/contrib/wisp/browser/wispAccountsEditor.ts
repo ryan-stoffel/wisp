@@ -32,7 +32,7 @@ import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPan
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import {
-	cliAccountLabel, formatCost, formatResetTime, formatTokenTotal, formatUsedPercent,
+	cliAccountLabel, formatLimitDetail, formatPeriodValue, formatUsedPercent,
 	IWispAccountsService, keyAccountLabel, matchUsageAccount, providerLabel, windowLabel,
 } from './wispAccounts.js';
 import { IWispHostStatusService } from './wispHostStatusService.js';
@@ -333,7 +333,7 @@ export class WispAccountsEditor extends EditorPane {
 					'aria-label': `${windowLabel(limit.window)}, ${formatUsedPercent(limit.usedPercent)}`,
 				}));
 				append(bar, $('.wisp-accounts-limit-fill', { style: `width: ${typeof limit.usedPercent === 'number' ? Math.max(0, Math.min(100, limit.usedPercent)) : 0}%` }));
-				append(row, $('span.wisp-accounts-limit-detail', { 'aria-hidden': 'true' }, `${formatUsedPercent(limit.usedPercent)} Β· ${formatResetTime(limit.resetsAt)}`));
+				append(row, $('span.wisp-accounts-limit-detail', { 'aria-hidden': 'true' }, formatLimitDetail(limit)));
 			}
 		}
 		return item;
@@ -342,7 +342,7 @@ export class WispAccountsEditor extends EditorPane {
 	private renderPeriod(label: string, period: { readonly inputTokens: number; readonly outputTokens: number; readonly cacheReadTokens: number; readonly cacheWriteTokens: number; readonly costUsdMicros?: number | null }): HTMLElement {
 		const row = $('.wisp-accounts-period');
 		append(row, $('span.wisp-accounts-period-label', undefined, label));
-		append(row, $('span.wisp-accounts-period-value', undefined, localize('wispAccounts.periodValue', "{0} tokens Β· {1}", formatTokenTotal(period), formatCost(period.costUsdMicros))));
+		append(row, $('span.wisp-accounts-period-value', undefined, formatPeriodValue(period)));
 		return row;
 	}
 

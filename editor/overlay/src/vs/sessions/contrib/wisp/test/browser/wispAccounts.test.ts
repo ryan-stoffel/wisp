@@ -10,7 +10,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import type { WispdState } from '../../../../../platform/wisp/common/wispd.js';
 import type { AccountUsage, Capabilities, DetectedCli, KeyAccount } from '../../../../../platform/wisp/common/wispProtocol.js';
 import {
-	cliAccountLabel, cliLabel, formatCost, formatResetTime, formatTokenTotal, formatUsedPercent,
+	cliAccountLabel, cliLabel, formatCost, formatLimitDetail, formatPeriodValue, formatResetTime, formatTokenTotal, formatUsedPercent,
 	keyAccountLabel, matchUsageAccount, providerLabel, resolveAccountLabel, windowLabel, WispAccountsService,
 } from '../../browser/wispAccounts.js';
 import { settle } from './wispAgentsTestServices.js';
@@ -101,6 +101,24 @@ suite('wisp: accounts', () => {
 			assert.strictEqual(formatResetTime(null), 'Not reported');
 			assert.strictEqual(formatResetTime('not a date'), 'Not reported');
 			assert.ok(formatResetTime(new Date(Date.now() + 3600_000).toISOString()).startsWith('Resets in'));
+		});
+
+		test('a usage period renders as "tokens · cost", joined by a single middle dot (U+00B7)', () => {
+			const rendered = formatPeriodValue({ inputTokens: 1000, outputTokens: 234, cacheReadTokens: 10, cacheWriteTokens: 5, costUsdMicros: 420000 });
+			assert.strictEqual(rendered, `${(1249).toLocaleString()} tokens · $0.42`);
+			// Guards against a mis-encoded separator (for example an extra character before it)
+			// slipping back in: exactly one middle dot, at U+00B7, with plain spaces around it.
+			const middleDot = rendered.indexOf('·');
+			assert.notStrictEqual(middleDot, -1);
+			assert.strictEqual(rendered.codePointAt(middleDot), 0xb7);
+			assert.strictEqual(rendered[middleDot - 1], ' ');
+			assert.strictEqual(rendered[middleDot + 1], ' ');
+			assert.strictEqual(rendered.indexOf('·', middleDot + 1), -1, 'exactly one middle dot');
+		});
+
+		test('a limit window renders as "used · reset", with "Not reported" on either side when absent', () => {
+			assert.strictEqual(formatLimitDetail({ usedPercent: 37.6, resetsAt: null }), '38% used · Not reported');
+			assert.strictEqual(formatLimitDetail({ usedPercent: undefined, resetsAt: undefined }), 'Not reported · Not reported');
 		});
 	});
 
