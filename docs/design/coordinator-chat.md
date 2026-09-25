@@ -1,6 +1,7 @@
 # Coordinator chat and workbench layout
 
-- Status: design for M0, from #11. The layout follows the proposed default in #14, which Ryan has not answered yet.
+- Status: **superseded** by [agents-window.md](agents-window.md) and decision [0011](../decisions/0011-agents-window-baseline.md). Ryan chose upstream's Agents window as the baseline on #14, so layout A below, a coordinator view in the editor window's secondary side bar, will not be built. The states, copy, and error table still apply, as agents-window.md describes. The rest is kept as the record of #11.
+- Original status: design for M0, from #11. The layout follows the proposed default in #14.
 - Builds on: #12 (M0 placeholder view), #10 (stripping the workbench), and decisions [0002](../decisions/0002-editor-fork-strategy.md), [0004](../decisions/0004-subscription-providers.md), and [0005](../decisions/0005-shared-context-folder.md).
 - Upstream: Code - OSS 1.139.0, with its default Modern UI.
 
