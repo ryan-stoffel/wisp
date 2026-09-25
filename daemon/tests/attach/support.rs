@@ -333,11 +333,16 @@ pub fn initialize_params() -> InitializeParams {
     }
 }
 
-pub fn create_params(name: &str) -> ProjectCreateParams {
+/// Params for a new project named `name`, on a repository made for it under `dir`, which looks
+/// like one on `main` as far as wispd checks.
+pub fn create_params(dir: &Path, name: &str) -> ProjectCreateParams {
+    let path = dir.join("repos").join(name);
+    std::fs::create_dir_all(path.join(".git")).expect("make the repository");
+    std::fs::write(path.join(".git").join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
     ProjectCreateParams {
         id: ProjectId::generate(),
         name: name.to_owned(),
-        repo_path: format!("/Users/me/src/{name}"),
+        repo_path: path.to_str().expect("a UTF-8 path").to_owned(),
     }
 }
 
