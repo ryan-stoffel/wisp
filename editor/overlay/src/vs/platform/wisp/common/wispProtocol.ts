@@ -69,6 +69,17 @@ export type WispRequests = {
 	 */
 	"accounts/keys/remove": { params: AccountsKeysRemoveParams, result: AccountsKeysRemoveResult },
 	/**
+	 * `accounts/list`: the vendor CLIs wispd detects (#114), installed, signed in, and their
+	 * plan where exposed. May answer from a short-lived cache. Gated on the `agentClis`
+	 * capability.
+	 */
+	"accounts/list": { params: AccountsListParams, result: AccountsListResult },
+	/**
+	 * `accounts/refresh`: like `accounts/list`, but always probes again instead of using the
+	 * cache. Gated on the `agentClis` capability.
+	 */
+	"accounts/refresh": { params: AccountsRefreshParams, result: AccountsRefreshResult },
+	/**
 	 * `usage/get`: per-account tokens and cost for today and this week (local time on this
 	 * host), and the latest limit windows.
 	 */
@@ -500,6 +511,105 @@ export type AccountsKeysRemoveParams = {
  * Result of `accounts/keys/remove`.
  */
 export type AccountsKeysRemoveResult = Record<symbol, never>;
+
+/**
+ * Params of `accounts/list`.
+ */
+export type AccountsListParams = Record<symbol, never>;
+
+/**
+ * Result of `accounts/list`.
+ */
+export type AccountsListResult = {
+	/**
+	 * Every CLI wispd knows how to detect, in a stable order (`claude`, `codex`, `cursor`).
+	 */
+	clis: Array<DetectedCli>,
+	/**
+	 * When these results were read. `accounts/list` may answer from a short-lived cache;
+	 * `accounts/refresh` always sets this to the time of a fresh probe.
+	 */
+	checkedAt: string,
+};
+
+/**
+ * One CLI's detected state.
+ *
+ * Every field but `cli` and `installed` is best-effort: the status commands 0004 lists are
+ * undocumented in places, so a field wispd could not read is `null` rather than a guess.
+ */
+export type DetectedCli = {
+	/**
+	 * Which CLI this is.
+	 */
+	cli: CliKind,
+	/**
+	 * Whether the binary resolves on the `PATH` wispd itself uses (#96).
+	 */
+	installed: boolean,
+	/**
+	 * The resolved absolute path, when installed.
+	 */
+	path?: string,
+	/**
+	 * The CLI's version, when the status command happened to expose it.
+	 */
+	version?: string,
+	/**
+	 * Whether the user is signed in. `null` when installed but wispd could not tell (a timeout,
+	 * unparseable output, or an exit code 0004 doesn't document).
+	 */
+	signedIn?: boolean,
+	/**
+	 * How a signed-in CLI authenticates. Only set when `signedIn` is `true`.
+	 */
+	authKind?: AuthKind,
+	/**
+	 * The subscription plan or tier, where the status commands expose it (0004: undocumented
+	 * for all three vendors).
+	 */
+	plan?: string,
+	/**
+	 * Why a field above is missing or uncertain, such as `"timed out after 5s"`. Never set on a
+	 * clean read.
+	 */
+	note?: string,
+};
+
+/**
+ * How a signed-in CLI authenticates.
+ *
+ * A newer wispd may send kinds that are not listed here. Treat those as unknown, so a `switch`
+ * over this type must not end in an exhaustiveness assertion.
+ */
+export type AuthKind = "subscription" | "apiKey";
+
+/**
+ * A vendor CLI wispd knows how to detect (0004).
+ *
+ * A newer wispd may send kinds that are not listed here. Treat those as unknown, so a `switch`
+ * over this type must not end in an exhaustiveness assertion.
+ */
+export type CliKind = "claude" | "codex" | "cursor";
+
+/**
+ * Params of `accounts/refresh`.
+ */
+export type AccountsRefreshParams = Record<symbol, never>;
+
+/**
+ * Result of `accounts/refresh`.
+ */
+export type AccountsRefreshResult = {
+	/**
+	 * Every CLI wispd knows how to detect, freshly probed.
+	 */
+	clis: Array<DetectedCli>,
+	/**
+	 * When this probe ran.
+	 */
+	checkedAt: string,
+};
 
 /**
  * Params of `usage/get`.

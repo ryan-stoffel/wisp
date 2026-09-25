@@ -23,6 +23,8 @@ pub use setup::prepare_data_dir;
 use setup::{InstanceLock, Socket};
 
 use crate::VERSION;
+use crate::backend::process::{Environment, Launcher};
+use crate::detect::CliDetector;
 use crate::event_log::EventLog;
 use crate::keystore::{KeyStore, KeychainStore};
 use crate::methods;
@@ -157,6 +159,8 @@ pub(crate) struct Daemon {
     /// The operating system and version, for `host/version`.
     pub os: String,
     pub limits: Limits,
+    /// Detects the vendor CLIs for `accounts/list` and `accounts/refresh` (#114).
+    pub cli_detector: CliDetector,
     /// Where key accounts' API keys live (#117): the real login Keychain, except in tests.
     pub keys: Arc<dyn KeyStore>,
 }
@@ -210,11 +214,13 @@ impl Server {
             );
         }
         let (socket, listener) = Socket::bind(&socket_path.path)?;
+        let launcher = Launcher::new(data_dir.clone(), Environment::inherited());
         let daemon = Arc::new(Daemon {
             started: Instant::now(),
             log: Arc::new(EventLog::new(config.event_retention)),
             store: StoreHandle::open(&data_dir.store_file()),
             os: methods::os_version(),
+            cli_detector: CliDetector::new(launcher, crate::detect::PROBE_TIMEOUT),
             limits: Limits {
                 idle_timeout: config.idle_timeout,
                 max_requests_in_flight: config.max_requests_in_flight.max(1),
@@ -385,11 +391,18 @@ impl Daemon {
         event_retention: usize,
         idle_timeout: Duration,
     ) -> Arc<Self> {
+        // An empty PATH, not `Environment::inherited()`: these tests exercise the server, not
+        // detection, and must never resolve or run whatever CLIs happen to be on this machine.
+        let launcher = Launcher::new(
+            DataDir::new(dir.join("cli-detect")).expect("resolve a data folder for the launcher"),
+            Environment::empty(),
+        );
         Arc::new(Self {
             started: Instant::now(),
             log: Arc::new(EventLog::new(event_retention)),
             store: StoreHandle::open(&dir.join("wispd.sqlite3")),
             os: "test".to_owned(),
+            cli_detector: CliDetector::new(launcher, crate::detect::PROBE_TIMEOUT),
             limits: Limits {
                 idle_timeout,
                 max_requests_in_flight: 32,
