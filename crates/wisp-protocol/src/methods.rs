@@ -29,7 +29,7 @@ use crate::{
     EventsEventParams, EventsSubscribeParams, EventsSubscribeResult, EventsUnsubscribeParams,
     EventsUnsubscribeResult, HostHealthParams, HostHealthResult, HostVersionParams,
     HostVersionResult, InitializeParams, InitializeResult, ProjectCreateParams,
-    ProjectCreateResult, ProjectListParams, ProjectListResult,
+    ProjectCreateResult, ProjectListParams, ProjectListResult, UsageGetParams, UsageGetResult,
 };
 
 /// A method that is called with a request and answered with a response.
@@ -120,6 +120,9 @@ method_table! {
         EventsSubscribe = "events/subscribe": EventsSubscribeParams => EventsSubscribeResult;
         /// `events/unsubscribe`: ends a subscription.
         EventsUnsubscribe = "events/unsubscribe": EventsUnsubscribeParams => EventsUnsubscribeResult;
+        /// `usage/get`: per-account tokens and cost for today and this week (local time on this
+        /// host), and the latest limit windows.
+        UsageGet = "usage/get": UsageGetParams => UsageGetResult;
     }
     notifications {
         /// `$/cancelRequest`: cancels a request, which still gets exactly one response. Either
@@ -152,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn the_table_has_every_m1_method_once() {
+    fn the_table_has_every_registered_method_once() {
         let mut names = Names::default();
         visit(&mut names);
         assert_eq!(
@@ -165,6 +168,7 @@ mod tests {
                 "project/create",
                 "events/subscribe",
                 "events/unsubscribe",
+                "usage/get",
                 "$/cancelRequest",
                 "events/event",
             ]

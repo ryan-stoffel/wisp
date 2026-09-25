@@ -40,6 +40,7 @@ pub mod jsonrpc;
 pub mod methods;
 mod project;
 pub mod typescript;
+mod usage;
 
 #[cfg(test)]
 mod samples;
@@ -61,6 +62,7 @@ pub use project::{
     Project, ProjectCreateParams, ProjectCreateResult, ProjectId, ProjectListParams,
     ProjectListResult,
 };
+pub use usage::{AccountUsage, UsageGetParams, UsageGetResult, UsageLimitWindow, UsagePeriod};
 
 /// The newest protocol version this crate speaks. Versions start at 1.
 ///
@@ -177,6 +179,48 @@ mod tests {
             requested: ProtocolRange { min: 2, max: 2 },
             supported: ProtocolRange::SUPPORTED,
             wispd: "0.1.0".to_owned(),
+        });
+    }
+
+    #[test]
+    fn usage_types_round_trip_and_omit_what_is_not_reported() {
+        round_trip(&UsageGetParams {});
+        for cost in [None, Some(45_000)] {
+            round_trip(&UsagePeriod {
+                input_tokens: 100,
+                output_tokens: 10,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                cost_usd_micros: cost,
+            });
+        }
+        for (used_percent, resets_at) in [(None, None), (Some(42.5), Some(project().created_at))] {
+            round_trip(&UsageLimitWindow {
+                window: "five_hour".to_owned(),
+                used_percent,
+                resets_at,
+                captured_at: project().created_at,
+            });
+        }
+        round_trip(&UsageGetResult {
+            accounts: vec![AccountUsage {
+                account_id: "claude-max".to_owned(),
+                today: UsagePeriod {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                    cost_usd_micros: None,
+                },
+                week: UsagePeriod {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                    cost_usd_micros: Some(1),
+                },
+                limits: Vec::new(),
+            }],
         });
     }
 }
