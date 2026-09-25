@@ -1,0 +1,26 @@
+/*---------------------------------------------------------------------------------------------
+ *  wisp: not part of Code - OSS. Edit editor/overlay in the wisp repo, not this copy.
+ *--------------------------------------------------------------------------------------------*/
+
+/* The host menu's marks. Each mark is its own codicon shape, so color is never the only cue. */
+
+.quick-input-list .codicon.wisp-host-mark-connected {
+	color: var(--vscode-charts-green);
+}
+
+.quick-input-list .codicon.wisp-host-mark-connecting {
+	color: var(--vscode-charts-yellow);
+}
+
+.quick-input-list .codicon.wisp-host-mark-idle {
+	color: var(--vscode-descriptionForeground);
+}
+
+.quick-input-list .codicon.wisp-host-mark-error {
+	color: var(--vscode-errorForeground);
+}
+
+/* The selected row's own foreground reads better than the mark colors on the selection background. */
+.quick-input-list .monaco-list-row.selected .codicon[class*="wisp-host-mark-"] {
+	color: inherit;
+}

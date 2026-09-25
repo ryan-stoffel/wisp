@@ -3,16 +3,16 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { autorun, constObservable, IObservable } from '../../../../base/common/observable.js';
+import { autorun, derived, IObservable } from '../../../../base/common/observable.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ICustomViewService } from '../../../services/customView/browser/customViewService.js';
+import { IWispHostStatusService } from './wispHostStatusService.js';
 import { WISP_NO_HOST_VIEW_ID, WispNoHostView } from './wispNoHostView.js';
 
 /**
- * Shows the no-host view over the session surface while no host is connected. The Agents window
- * has no wispd connection yet, so for now that is always. #104 replaces `hostConnected` with the
- * real connection state.
+ * Shows the no-host view over the session surface while no host is connected, and hides it once
+ * one is, uncovering the session surface.
  */
 export class WispNoHostContribution extends Disposable implements IWorkbenchContribution {
 
@@ -20,10 +20,11 @@ export class WispNoHostContribution extends Disposable implements IWorkbenchCont
 
 	constructor(
 		@ICustomViewService customViewService: ICustomViewService,
+		@IWispHostStatusService hostStatusService: IWispHostStatusService,
 	) {
 		super();
 
-		const hostConnected: IObservable<boolean> = constObservable(false);
+		const hostConnected: IObservable<boolean> = derived(reader => hostStatusService.status.read(reader).kind === 'connected');
 
 		this._register(customViewService.registerCustomView({
 			id: WISP_NO_HOST_VIEW_ID,
