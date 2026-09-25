@@ -26,6 +26,8 @@ describe('renderCask', () => {
     assert.ok(all.includes('  depends_on arch: :arm64'));
     assert.ok(all.includes('  app "Wisp.app"'));
     assert.ok(all.includes('  binary "#{appdir}/Wisp.app/Contents/Resources/app/bin/wisp"'));
+    assert.ok(all.includes('  binary "#{appdir}/Wisp.app/Contents/Resources/app/bin/wispd"'));
+    assert.ok(all.includes('  uninstall launchctl: "io.github.ryan-stoffel.wisp.wispd"'));
     assert.ok(
       all.includes(
         '  url "https://github.com/ryan-stoffel/wisp/releases/download/v#{version}/wisp-#{version}-#{arch}.zip"',
@@ -56,6 +58,9 @@ describe('renderCask', () => {
     const app = `${product.nameLong}.app`;
     assert.ok(all.includes(`  app "${app}"`));
     assert.ok(all.includes(`  binary "#{appdir}/${app}/Contents/Resources/app/bin/${product.applicationName}"`));
+    // wispd's LaunchAgent (docs/decisions/0010, #61): the cask must unload it before Homebrew
+    // removes the binary it points at, or uninstalling leaves a broken LaunchAgent behind.
+    assert.ok(all.includes('  uninstall launchctl: "io.github.ryan-stoffel.wisp.wispd"'));
     assert.ok(all.includes(`      xattr -dr com.apple.quarantine #{appdir}/${app}`));
 
     const zap = all.slice(all.indexOf('  zap trash: ['), all.indexOf('  ]'));
@@ -71,6 +76,8 @@ describe('renderCask', () => {
       '~/Library/Application Support/wisp',
       `~/Library/Caches/${id}`,
       `~/Library/HTTPStorages/${id}`,
+      // wispd's LaunchAgent plist (docs/decisions/0010, #61)
+      '~/Library/LaunchAgents/io.github.ryan-stoffel.wisp.wispd.plist',
       `~/Library/Preferences/${id}.plist`,
       `~/Library/Saved Application State/${id}.savedState`,
     ]) {

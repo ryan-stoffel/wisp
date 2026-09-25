@@ -1,4 +1,7 @@
 [toolchain]
 channel = "1.98.1"
 components = ["rustfmt", "clippy"]
+# x86_64-apple-darwin lets scripts/editor/build-app cross-compile wispd for an Intel Wisp.app
+# from an Apple silicon runner or Mac (#62).
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
 profile = "minimal"

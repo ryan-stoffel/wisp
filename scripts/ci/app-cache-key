@@ -19,7 +19,9 @@ esac
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$root"
-inputs=$(git ls-files -s -- editor .nvmrc .gitattributes scripts/editor)
+# The Rust inputs cover wispd (#62), which scripts/editor/build-app also builds and bundles, so a
+# daemon-only change rebuilds the cached app instead of reusing one with a stale wispd inside it.
+inputs=$(git ls-files -s -- editor .nvmrc .gitattributes scripts/editor Cargo.lock crates daemon rust-toolchain.toml)
 job=$(yq -o=json '.jobs.app' .github/workflows/ci.yml)
 [ -n "$inputs" ] && [ "$job" != null ] || fail "found no app build inputs or no app job in .github/workflows/ci.yml"
 hash=$(printf '%s\n%s\n' "$inputs" "$job" | shasum -a 256 | cut -d' ' -f1)

@@ -88,11 +88,25 @@ cmp -s "$bundle/Contents/Resources/$(plist_value CFBundleIconFile)" "$root/edito
 launcher="$app_dir/bin/$(product_value applicationName)"
 [ -x "$launcher" ] || fail "the launcher $launcher is missing"
 # The launcher runs the app's Electron as Node, so an x64 app needs Rosetta on Apple silicon.
+runs_natively=no
 if [ "$lipo_arch" = "$(uname -m)" ] || { [ "$lipo_arch" = x86_64 ] && [ -e /Library/Apple/usr/libexec/oah/libRosettaRuntime ]; }; then
+  runs_natively=yes
   version=$("$launcher" --version) || fail "$launcher --version failed"
   echo "${0##*/}: $(basename "$launcher") --version: $(printf '%s' "$version" | tr '\n' ' ')" >&2
 else
   echo "${0##*/}: skipped $(basename "$launcher") --version: running $lipo_arch here needs Rosetta, which is not installed" >&2
+fi
+
+# wispd (#62), next to the wisp launcher.
+wispd="$app_dir/bin/wispd"
+[ -x "$wispd" ] || fail "wispd is missing at $wispd"
+wispd_archs=$(lipo -archs "$wispd")
+[ "$wispd_archs" = "$lipo_arch" ] || fail "$wispd is built for '$wispd_archs', expected $lipo_arch"
+if [ "$runs_natively" = yes ]; then
+  wispd_version=$("$wispd" --version) || fail "$wispd --version failed"
+  echo "${0##*/}: $(basename "$wispd") --version: $wispd_version" >&2
+else
+  echo "${0##*/}: skipped $(basename "$wispd") --version: running $lipo_arch here needs Rosetta, which is not installed" >&2
 fi
 
 app_size=$(du -sh "$bundle" | cut -f1)
