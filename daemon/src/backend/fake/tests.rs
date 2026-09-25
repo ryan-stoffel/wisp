@@ -157,7 +157,13 @@ async fn an_api_key_account_gets_its_key_and_a_subscription_its_config_home() {
         ),
         "a worker needs its sandbox"
     );
-    request.sandbox = Some(WorkerSandbox::default());
+    request.sandbox = Some(WorkerSandbox::for_worktree(
+        Path::new("/Users/u"),
+        Path::new("/Users/u/wisp"),
+        &root(),
+        Path::new("/Users/u/src/app/.git"),
+        Path::new("/Users/u/wisp/context/p"),
+    ));
     request.account.credential = Credential::ApiKey(ApiKey::new("sk-fake-123".into()));
     let mut events = launch(&backend("context"), request.clone()).await.events;
     let all = rest(&mut events).await;

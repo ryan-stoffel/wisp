@@ -15,14 +15,15 @@
 //!     confines the file tools to the working directories.
 //!   - `--tools` names exactly [`WORKER_TOOLS`]. `Bash` is among them because Claude Code's own
 //!     Seatbelt sandbox holds every command: writes only to the working directories and the
-//!     session temp folder, no reads of the sandbox's `unreadable` paths, no writes to git
-//!     metadata, and no network. `failIfUnavailable` and `allowUnsandboxedCommands: false` keep a
-//!     command from ever running outside it.
+//!     session temp folder, no reads of the sandbox's `unreadable` paths, and no writes to git
+//!     metadata. `failIfUnavailable` and `allowUnsandboxedCommands: false` keep a command from
+//!     ever running outside it. Commands, `WebFetch`, and `WebSearch` reach any host but localhost
+//!     (Ryan, #137), so the unreadable paths are what keep secrets in.
 //!   - `--strict-mcp-config` connects no MCP servers, including the repository's `.mcp.json`.
 //!
-//!   As a second check, a worker whose `system/init` lists a tool outside [`WORKER_TOOLS`]
-//!   fails with [`FailureKind::PolicyViolation`]. The flags need Claude Code
-//!   [`WORKER_MIN_VERSION`] or later.
+//!   As a second check, a worker whose `system/init` lists a tool outside [`WORKER_TOOLS`], or
+//!   a Claude Code older than [`WORKER_MIN_VERSION`], fails with
+//!   [`FailureKind::PolicyViolation`].
 //!
 //! # Messages go on stdin
 //!
@@ -122,9 +123,9 @@ pub const NO_WRITE_ARGS: &[&str] = &[
 /// this list in M4.
 pub const NO_WRITE_TOOLS: &[&str] = &["Read", "Glob", "Grep", "EndConversation"];
 
-/// The built-in tools a worker gets (0013): no web tools, subagents, skills, or MCP tools, and no
-/// tool that runs code except `Bash`, which Claude Code's sandbox confines. `EndConversation`
-/// may appear in `system/init` as well, as for a no-write run.
+/// The built-in tools a worker gets (0013): the file tools, `Bash`, which Claude Code's sandbox
+/// confines, the web tools (Ryan, #137), and `TodoWrite`. No subagents, skills, or MCP tools.
+/// `EndConversation` may appear in `system/init` as well, as for a no-write run.
 pub const WORKER_TOOLS: &[&str] = &[
     "Read",
     "Edit",
@@ -133,11 +134,18 @@ pub const WORKER_TOOLS: &[&str] = &[
     "Grep",
     "NotebookEdit",
     "Bash",
+    "WebFetch",
+    "WebSearch",
     "TodoWrite",
 ];
 
 /// [`WORKER_TOOLS`] as `--tools` takes them.
-pub const WORKER_TOOL_LIST: &str = "Read,Edit,Write,Glob,Grep,NotebookEdit,Bash,TodoWrite";
+pub const WORKER_TOOL_LIST: &str =
+    "Read,Edit,Write,Glob,Grep,NotebookEdit,Bash,WebFetch,WebSearch,TodoWrite";
+
+/// Hosts no worker command may reach, even with network access: this Mac's own services wait
+/// on #168.
+pub const WORKER_DENIED_HOSTS: &[&str] = &["localhost", "127.0.0.1", "[::1]"];
 
 /// [`ToolPolicy::WorkspaceWrite`]'s fixed arguments (0013). [`arguments`] adds the run's
 /// [`worker_settings`] and `--add-dir` folders after them.
@@ -151,8 +159,9 @@ pub const WORKSPACE_WRITE_ARGS: &[&str] = &[
 ];
 
 /// The oldest Claude Code that has every flag and setting a worker relies on: `--restricted`
-/// arrived in 2.1.248, the last of them (0013). An older CLI rejects the unknown flag and the run
-/// fails as it starts, so #156 checks the detected version before it starts a worker.
+/// arrived in 2.1.248, the last of them (0013). An older CLI rejects the unknown flag, and a
+/// worker whose `system/init` reports an older version fails, but #156 also checks the detected
+/// version before it starts one, for a clearer error.
 pub const WORKER_MIN_VERSION: &str = "2.1.248";
 
 /// Prefixes of inherited variables no run gets: Anthropic credentials, endpoints, profiles, and
@@ -245,14 +254,6 @@ pub fn arguments(request: &RunRequest) -> Result<Vec<OsString>, StartError> {
             Credential::Subscription { config_home } => config_home.as_deref(),
             Credential::ApiKey(_) => None,
         };
-        for path in std::iter::once(request.cwd.as_path()).chain(config_home) {
-            if !path.is_absolute() || path.to_str().is_none() {
-                return Err(StartError::Invalid(format!(
-                    "a worker's {} is not an absolute UTF-8 path",
-                    path.display()
-                )));
-            }
-        }
         let settings = worker_settings(sandbox, &request.cwd, config_home);
         args.extend(["--settings".into(), settings.to_string().into()]);
         for dir in &sandbox.writable {
@@ -270,8 +271,10 @@ pub fn arguments(request: &RunRequest) -> Result<Vec<OsString>, StartError> {
     Ok(args)
 }
 
-/// The `--settings` a worker runs with (0013): hooks off, and Claude Code's Bash sandbox on, with
-/// no way around it, no network, and `sandbox`'s paths. `cwd` and the writable folders stay
+/// The `--settings` a worker runs with (0013): hooks off; the web tools allowed; and Claude Code's
+/// Bash sandbox on, with no way around it, `sandbox`'s paths, and every host but
+/// [`WORKER_DENIED_HOSTS`]. `WebFetch(domain:*)` is what opens the network: the sandbox takes its
+/// allowlist from `WebFetch` allow rules, and a bare `*` matches every host. `cwd` and the writable folders stay
 /// readable inside an unreadable path, such as wispd's data folder, which holds both. A second
 /// account's `config_home` is unreadable too.
 #[must_use]
@@ -288,6 +291,9 @@ pub fn worker_settings(sandbox: &WorkerSandbox, cwd: &Path, config_home: Option<
     let read_only = strings(sandbox.read_only.iter().map(PathBuf::as_path));
     serde_json::json!({
         "disableAllHooks": true,
+        "permissions": {
+            "allow": ["WebFetch(domain:*)", "WebSearch"],
+        },
         "sandbox": {
             "enabled": true,
             "failIfUnavailable": true,
@@ -296,7 +302,7 @@ pub fn worker_settings(sandbox: &WorkerSandbox, cwd: &Path, config_home: Option<
             "excludedCommands": [],
             "network": {
                 "strictAllowlist": true,
-                "allowedDomains": [],
+                "deniedDomains": WORKER_DENIED_HOSTS,
                 "allowLocalBinding": false,
             },
             "filesystem": {
@@ -308,7 +314,7 @@ pub fn worker_settings(sandbox: &WorkerSandbox, cwd: &Path, config_home: Option<
     })
 }
 
-/// Paths as settings strings. [`arguments`] has already refused any that isn't UTF-8.
+/// Paths as settings strings. [`worker_sandbox`] has already refused any that isn't UTF-8.
 fn strings<'a>(paths: impl Iterator<Item = &'a Path>) -> Vec<String> {
     paths
         .map(|path| path.to_string_lossy().into_owned())

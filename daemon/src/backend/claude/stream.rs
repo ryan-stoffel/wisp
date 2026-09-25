@@ -8,12 +8,27 @@ use std::collections::HashSet;
 use jiff::Timestamp;
 use serde_json::{Map, Value};
 
-use super::{NO_WRITE_TOOLS, WORKER_TOOLS};
+use super::{NO_WRITE_TOOLS, WORKER_MIN_VERSION, WORKER_TOOLS};
 use crate::backend::ToolPolicy;
 use crate::backend::event::{
     Event, Failure, FailureKind, LimitStatus, LimitWindow, ModelUsage, TodoItem, TodoStatus,
     ToolStatus, Usage, WarningKind,
 };
+
+/// A `major.minor.patch` version, for comparing. Anything after the patch number, such as a
+/// pre-release tag, is ignored.
+pub(super) fn version(text: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = text.splitn(3, '.');
+    let number = |part: Option<&str>| {
+        let digits: String = part?.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
+    };
+    Some((
+        number(parts.next())?,
+        number(parts.next())?,
+        number(parts.next())?,
+    ))
+}
 
 /// The tool that only ends the session, which `--tools` leaves in place (the CLI reference).
 const END_CONVERSATION: &str = "EndConversation";
@@ -216,6 +231,17 @@ impl Translator {
             );
             steps.push(violation(FailureKind::PolicyViolation, message));
             return steps;
+        }
+        if self.policy == ToolPolicy::WorkspaceWrite {
+            let reported = text(message, "claude_code_version");
+            if reported.and_then(version) < version(WORKER_MIN_VERSION) {
+                let message = format!(
+                    "Claude Code {} can't sandbox a worker; {WORKER_MIN_VERSION} or later can",
+                    reported.unwrap_or("of an unknown version")
+                );
+                steps.push(violation(FailureKind::PolicyViolation, message));
+                return steps;
+            }
         }
         self.verified = true;
         steps

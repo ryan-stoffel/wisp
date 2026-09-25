@@ -362,8 +362,8 @@ fn assert_worker_invocation(fake: &Fake) {
     assert_eq!(argv[6..6 + expected.len()], expected);
     assert_eq!(
         WORKSPACE_WRITE_ARGS.join(" "),
-        "--restricted --tools Read,Edit,Write,Glob,Grep,NotebookEdit,Bash,TodoWrite \
-         --strict-mcp-config --permission-mode acceptEdits",
+        "--restricted --tools Read,Edit,Write,Glob,Grep,NotebookEdit,Bash,WebFetch,WebSearch,\
+         TodoWrite --strict-mcp-config --permission-mode acceptEdits",
         "0013's worker policy, exactly"
     );
     assert_eq!(WORKER_TOOL_LIST, WORKER_TOOLS.join(","));
@@ -379,6 +379,7 @@ fn assert_worker_invocation(fake: &Fake) {
         settings,
         serde_json::json!({
             "disableAllHooks": true,
+            "permissions": {"allow": ["WebFetch(domain:*)", "WebSearch"]},
             "sandbox": {
                 "enabled": true,
                 "failIfUnavailable": true,
@@ -387,7 +388,7 @@ fn assert_worker_invocation(fake: &Fake) {
                 "excludedCommands": [],
                 "network": {
                     "strictAllowlist": true,
-                    "allowedDomains": [],
+                    "deniedDomains": ["localhost", "127.0.0.1", "[::1]"],
                     "allowLocalBinding": false,
                 },
                 "filesystem": {
@@ -434,11 +435,35 @@ fn a_worker_without_a_usable_sandbox_is_refused_before_anything_runs() {
     worker.sandbox = Some(relative);
     assert!(refused(worker.clone()).contains("context"));
 
+    let mut empty = worker_sandbox(&fake.root());
+    empty.unreadable.clear();
+    worker.sandbox = Some(empty);
+    assert!(refused(worker.clone()).contains("nothing unreadable"));
+
+    for glob in [
+        "/Users/u/src/app[old]/.git",
+        "/Users/u/src/a*/.git",
+        "/Users/u/src/a?/.git",
+    ] {
+        let mut sandbox = worker_sandbox(&fake.root());
+        sandbox.read_only[1] = glob.into();
+        worker.sandbox = Some(sandbox);
+        assert!(refused(worker.clone()).contains(glob), "{glob}");
+    }
+    let mut glob_cwd = worker.clone();
+    glob_cwd.sandbox = Some(worker_sandbox(&fake.root()));
+    glob_cwd.cwd = "/Users/u/src/app[old]".into();
+    assert!(refused(glob_cwd).contains("app[old]"));
+
     worker.sandbox = Some(worker_sandbox(&fake.root()));
     worker.account.credential = Credential::Subscription {
         config_home: Some("second-account".into()),
     };
-    assert!(refused(worker).contains("second-account"));
+    assert!(refused(worker.clone()).contains("second-account"));
+    worker.account.credential = Credential::Subscription {
+        config_home: Some("/Users/u/.claude-*".into()),
+    };
+    assert!(refused(worker).contains(".claude-*"));
     assert_eq!(fake.argv(), Vec::<String>::new(), "nothing ran");
 }
 
@@ -1179,10 +1204,47 @@ fn output_before_the_init_is_refused() {
 }
 
 fn init_line(tools: &str) -> Vec<u8> {
+    init_with_version(tools, "2.1.281")
+}
+
+fn init_with_version(tools: &str, version: &str) -> Vec<u8> {
     format!(
-        r#"{{"type":"system","subtype":"init","session_id":"s","apiKeySource":"none","tools":{tools}}}"#
+        r#"{{"type":"system","subtype":"init","session_id":"s","apiKeySource":"none","claude_code_version":"{version}","tools":{tools}}}"#
     )
     .into_bytes()
+}
+
+#[test]
+fn a_worker_on_a_claude_code_too_old_to_sandbox_it_is_stopped() {
+    for (reported, refused) in [
+        ("2.1.247", true),
+        ("2.0.999", true),
+        ("1.9.300", true),
+        ("not-a-version", true),
+        ("2.1.248", false),
+        ("2.1.281", false),
+        ("2.2.0", false),
+        ("10.0.0-beta.1", false),
+    ] {
+        let mut translator = Translator::new(ToolPolicy::WorkspaceWrite, "none");
+        let steps = translator.line(&init_with_version(r#"["Bash"]"#, reported));
+        let expected = refused.then_some(FailureKind::PolicyViolation);
+        assert_eq!(violation_kind(&steps), expected, "{reported}");
+    }
+    let mut translator = Translator::new(ToolPolicy::WorkspaceWrite, "none");
+    let unversioned =
+        br#"{"type":"system","subtype":"init","session_id":"s","apiKeySource":"none","tools":["Bash"]}"#;
+    assert_eq!(
+        violation_kind(&translator.line(unversioned)),
+        Some(FailureKind::PolicyViolation)
+    );
+    let mut translator = Translator::new(ToolPolicy::NoWrite, "none");
+    let old_reader = init_with_version(r#"["Read"]"#, "2.1.200");
+    assert_eq!(
+        violation_kind(&translator.line(&old_reader)),
+        None,
+        "no-write runs have no floor"
+    );
 }
 
 fn violation_kind(steps: &[Step]) -> Option<FailureKind> {
@@ -1195,13 +1257,13 @@ fn violation_kind(steps: &[Step]) -> Option<FailureKind> {
 #[test]
 fn a_worker_run_allows_only_the_worker_tools() {
     let allowed = init_line(
-        r#"["Read","Edit","Write","Glob","Grep","NotebookEdit","Bash","TodoWrite","EndConversation"]"#,
+        r#"["Read","Edit","Write","Glob","Grep","NotebookEdit","Bash","WebFetch","WebSearch","TodoWrite","EndConversation"]"#,
     );
     let mut translator = Translator::new(ToolPolicy::WorkspaceWrite, "none");
     assert_eq!(violation_kind(&translator.line(&allowed)), None);
     for extra in [
-        r#"["Bash","WebFetch"]"#,
-        r#"["Bash","WebSearch"]"#,
+        r#"["Bash","Monitor"]"#,
+        r#"["Bash","Task"]"#,
         r#"["Bash","Agent"]"#,
         r#"["Bash","Skill"]"#,
         r#"["Bash","mcp__github__create_issue"]"#,
