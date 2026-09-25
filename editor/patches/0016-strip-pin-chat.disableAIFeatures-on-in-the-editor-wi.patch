@@ -1,0 +1,77 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ryan Stoffel <stoffel.thomas.ryan@gmail.com>
+Date: Fri, 25 Sep 2026 01:12:03 -0700
+Subject: [PATCH] strip: pin chat.disableAIFeatures on in the editor window
+
+A workspace or folder settings.json, trusted or not, and an extension's
+configurationDefaults can all set chat.disableAIFeatures, since it is
+window-scoped upstream (#93). Once it reads false, the many chat
+contributions that gate on it come back to life even with Chat's own
+container and setup excluded: the first-launch onboarding page
+(welcomeGettingStarted/browser/startupPage.ts, gated on
+IChatEntitlementService's sentiment.hidden) shows the full "Sign in to
+use GitHub Copilot" screen, in trusted and untrusted folders alike.
+
+Making the setting application-scoped (0002 rule 5's suggested minimal
+patch) was rejected: chat.disableAIFeatures is scope: WINDOW, and
+Configuration's own parser filters a workspace or folder settings.json
+to WORKSPACE_SCOPES / FOLDER_SCOPES, which exclude APPLICATION. That
+filtering runs in the same shared WorkspaceConfiguration/
+FolderConfiguration classes the Agents window's own configuration
+service instantiates, so an application-scoped setting would also
+silence the workspace-scope write sessionsSetUpService.ts makes to keep
+AI features on there (0011). Scoping it per window is not possible
+through the shared schema, since both windows load it from the same
+chat.shared.contribution.ts.
+
+Instead, WorkspaceService.getValue and .inspect, which only the editor
+window instantiates (electron-browser/desktop.main.ts; the Agents
+window has its own class in
+sessions/services/configuration/browser/configurationService.ts), pin
+chat.disableAIFeatures to true ahead of the normal configuration
+lookup. Every chat contribution reads the flag through this one
+service, so the fix holds regardless of which upstream contribution
+currently checks it, and needs no changes to chat code itself (0002
+rule 5).
+
+diff --git a/src/vs/workbench/services/configuration/browser/configurationService.ts b/src/vs/workbench/services/configuration/browser/configurationService.ts
+index e33753b9f3724ce9952e2c075406f746671de3ba..2451bc69cc6972afc742b197e478446eef451203 100644
+--- a/src/vs/workbench/services/configuration/browser/configurationService.ts
++++ b/src/vs/workbench/services/configuration/browser/configurationService.ts
+@@ -38,6 +38,7 @@ import { IStringDictionary } from '../../../../base/common/collections.js';
+ import { IExtensionService } from '../../extensions/common/extensions.js';
+ import { IWorkbenchAssignmentService } from '../../assignment/common/assignmentService.js';
+ import { isUndefined } from '../../../../base/common/types.js';
++import { ChatAIDisabledSettingId } from '../../../../platform/chat/common/chatSettings.js';
+ import { localize } from '../../../../nls.js';
+ import { DidChangeUserDataProfileEvent, IUserDataProfileService } from '../../userDataProfile/common/userDataProfile.js';
+ import { IPolicyService, NullPolicyService } from '../../../../platform/policy/common/policy.js';
+@@ -335,6 +336,13 @@ export class WorkspaceService extends Disposable implements IWorkbenchConfigurat
+ 	getValue(arg1?: unknown, arg2?: unknown): unknown {
+ 		const section = typeof arg1 === 'string' ? arg1 : undefined;
+ 		const overrides = isConfigurationOverrides(arg1) ? arg1 : isConfigurationOverrides(arg2) ? arg2 : undefined;
++		// wisp: AI features stay off in the editor window no matter what a workspace, a folder,
++		// or an extension's defaults say (#93). The Agents window uses its own configuration
++		// service (sessions/services/configuration/browser/configurationService.ts) and keeps
++		// upstream's behavior, where AI features are on.
++		if (section === ChatAIDisabledSettingId) {
++			return true;
++		}
+ 		return this._configuration.getValue(section, overrides);
+ 	}
+ 
+@@ -414,7 +422,13 @@ export class WorkspaceService extends Disposable implements IWorkbenchConfigurat
+ 	}
+ 
+ 	inspect<T>(key: string, overrides?: IConfigurationOverrides): IConfigurationValue<T> {
+-		return this._configuration.inspect<T>(key, overrides);
++		const value = this._configuration.inspect<T>(key, overrides);
++		// wisp: mirrors the pin in getValue above (#93), for the few callers that read
++		// inspect(...).value instead.
++		if (key === ChatAIDisabledSettingId) {
++			return { ...value, value: true as unknown as T };
++		}
++		return value;
+ 	}
+ 
+ 	keys(): {
