@@ -1,5 +1,6 @@
 //! `events/subscribe`, `events/event`, and `events/unsubscribe`.
 
+use std::path::Path;
 use std::time::Duration;
 
 use wisp_protocol::jsonrpc::{Message, Notification};
@@ -13,9 +14,9 @@ use wisp_protocol::{
 
 use crate::support::{Client, InProcess, Wispd, create_params, kind, temp_dir};
 
-async fn create(client: &mut Client, name: &str) -> Project {
+async fn create(client: &mut Client, dir: &Path, name: &str) -> Project {
     client
-        .call::<ProjectCreate>(create_params(name))
+        .call::<ProjectCreate>(create_params(dir, name))
         .await
         .unwrap()
         .project
@@ -57,7 +58,7 @@ async fn subscribers_get_the_replay_then_live_events_on_every_connection() {
     let dir = temp_dir();
     let wispd = Wispd::start(dir.path()).await;
     let mut creator = Client::ready(&wispd.socket).await;
-    let first = create(&mut creator, "wisp").await;
+    let first = create(&mut creator, dir.path(), "wisp").await;
 
     let mut replaying = Client::ready(&wispd.socket).await;
     let replay = subscribe(&mut replaying, 0).await;
@@ -75,7 +76,7 @@ async fn subscribers_get_the_replay_then_live_events_on_every_connection() {
         .unwrap();
     let live_subscription = subscribe(&mut live, snapshot.seq).await;
 
-    let second = create(&mut creator, "roster").await;
+    let second = create(&mut creator, dir.path(), "roster").await;
     for (client, subscription) in [(&mut replaying, replay), (&mut live, live_subscription)] {
         let delivered = event(client).await;
         assert_eq!(delivered.subscription, subscription);
@@ -89,7 +90,7 @@ async fn a_retried_create_adds_no_event() {
     let dir = temp_dir();
     let wispd = Wispd::start(dir.path()).await;
     let mut client = Client::ready(&wispd.socket).await;
-    let params = create_params("wisp");
+    let params = create_params(dir.path(), "wisp");
     client.call::<ProjectCreate>(params.clone()).await.unwrap();
     client.call::<ProjectCreate>(params).await.unwrap();
 
@@ -104,7 +105,7 @@ async fn a_subscription_to_a_missing_project_is_refused() {
     let dir = temp_dir();
     let wispd = Wispd::start(dir.path()).await;
     let mut client = Client::ready(&wispd.socket).await;
-    let project = create(&mut client, "wisp").await;
+    let project = create(&mut client, dir.path(), "wisp").await;
 
     let error = client
         .call::<EventsSubscribe>(EventsSubscribeParams {
@@ -159,7 +160,7 @@ async fn unsubscribing_stops_the_events() {
         .expect("ending a subscription that doesn't exist succeeds");
 
     let mut creator = Client::ready(&wispd.socket).await;
-    create(&mut creator, "wisp").await;
+    create(&mut creator, dir.path(), "wisp").await;
     // The next message is the health answer, so no event came before it.
     client
         .call::<HostHealth>(HostHealthParams {})
@@ -176,7 +177,7 @@ async fn events_older_than_the_retention_need_a_resync() {
     let server = InProcess::start(config);
     let mut client = Client::ready(&server.socket).await;
     for name in ["a", "b", "c"] {
-        create(&mut client, name).await;
+        create(&mut client, dir.path(), name).await;
     }
 
     let error = client
@@ -207,7 +208,9 @@ async fn events_reach_a_subscriber_while_it_is_also_making_requests() {
         })
         .await
         .unwrap();
-    let create = client.send::<ProjectCreate>(create_params("wisp")).await;
+    let create = client
+        .send::<ProjectCreate>(create_params(dir.path(), "wisp"))
+        .await;
     let mut saw_answer = false;
     let mut saw_event = false;
     while !(saw_answer && saw_event) {

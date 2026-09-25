@@ -4,98 +4,36 @@
 
 import assert from 'assert';
 import { mainWindow } from '../../../../../base/browser/window.js';
-import { Emitter } from '../../../../../base/common/event.js';
-import { IDisposable, toDisposable } from '../../../../../base/common/lifecycle.js';
+import { setARIAContainer } from '../../../../../base/browser/ui/aria/aria.js';
+import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../base/common/uri.js';
+import { IChatSessionsService } from '../../../../../workbench/contrib/chat/common/chatSessionsService.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { ICommandService } from '../../../../../platform/commands/common/commands.js';
-import { ContextKeyService } from '../../../../../platform/contextkey/browser/contextKeyService.js';
-import { IContextKeyService } from '../../../../../platform/contextkey/common/contextkey.js';
-import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { Registry } from '../../../../../platform/registry/common/platform.js';
-import { IViewContainersRegistry, IViewDescriptorService, IViewsRegistry, ViewContainerLocation, Extensions as ViewExtensions, WindowEnablement } from '../../../../../workbench/common/views.js';
-import { IWorkbenchEnvironmentService } from '../../../../../workbench/services/environment/common/environmentService.js';
-import { ViewDescriptorService } from '../../../../../workbench/services/views/browser/viewDescriptorService.js';
-import { TestEnvironmentService, TestPathService, workbenchInstantiationService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
+import { WISP_HOST_SETTING } from '../../../../../platform/wisp/common/wispdConfiguration.js';
+import { IViewContainersRegistry, IViewsRegistry, ViewContainerLocation, Extensions as ViewExtensions, WindowEnablement } from '../../../../../workbench/common/views.js';
 import { CustomViewService, ICustomViewService } from '../../../../services/customView/browser/customViewService.js';
-import { ISessionsProvidersService, ISessionsProvidersChangeEvent } from '../../../../services/sessions/browser/sessionsProvidersService.js';
-import { ISessionsProvider } from '../../../../services/sessions/common/sessionsProvider.js';
+import { ISessionsProvidersService } from '../../../../services/sessions/browser/sessionsProvidersService.js';
 import { WispSessionsProviderContribution } from '../../../providers/wisp/browser/wispSessionsProvider.contribution.js';
 import { WISP_SESSIONS_PROVIDER_ID, WispSessionsProvider } from '../../../providers/wisp/browser/wispSessionsProvider.js';
-import { setARIAContainer } from '../../../../../base/browser/ui/aria/aria.js';
-import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
-import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
-import { IWispdService } from '../../../../../platform/wisp/common/wispd.js';
-import { WISP_HOST_SETTING } from '../../../../../platform/wisp/common/wispdConfiguration.js';
 import { hostMenuItems, WISP_RETRY_COMMAND, WISP_SHOW_HOST_MENU_COMMAND, WISP_SHOW_LOG_COMMAND, WISP_SWITCH_HOST_COMMAND } from '../../browser/wispHostMenu.js';
-import { IWispHostStatusService, WispHostStatusService } from '../../browser/wispHostStatusService.js';
 import { WispNoHostContribution } from '../../browser/wispNoHost.contribution.js';
 import { WISP_NO_HOST_VIEW_ID, WispNoHostView } from '../../browser/wispNoHostView.js';
 import '../../browser/wispThreads.contribution.js';
-import { connected, connecting, disconnected, SSH_COMMAND, TestWispdService } from './wispHostTestUtils.js';
 import { WISP_THREADS_CONTAINER_ID, WISP_THREADS_VIEW_ID, WispThreadsView } from '../../browser/wispThreadsView.js';
+import { agentsWindowServices, IAgentsWindowServices, TestSessionsProvidersService } from './wispAgentsTestServices.js';
+import { connected, connecting, disconnected, SSH_COMMAND } from './wispHostTestUtils.js';
 
 const NO_HOST_BODY = 'The coordinator runs on a host: this Mac, or another machine running wispd. You can chat once wisp connects to one.';
-
-function environment(isSessionsWindow: boolean): IWorkbenchEnvironmentService {
-	return Object.create(TestEnvironmentService, { isSessionsWindow: { value: isSessionsWindow } });
-}
-
-class TestSessionsProvidersService implements ISessionsProvidersService {
-	declare readonly _serviceBrand: undefined;
-	private readonly providers = new Map<string, ISessionsProvider>();
-	private readonly emitter = new Emitter<ISessionsProvidersChangeEvent>();
-	readonly onDidChangeProviders = this.emitter.event;
-
-	registerProvider(provider: ISessionsProvider): IDisposable {
-		this.providers.set(provider.id, provider);
-		return toDisposable(() => this.providers.delete(provider.id));
-	}
-
-	getProviders(): ISessionsProvider[] {
-		return [...this.providers.values()];
-	}
-
-	getProvider<T extends ISessionsProvider>(providerId: string): T | undefined {
-		return this.providers.get(providerId) as T | undefined;
-	}
-
-	dispose(): void {
-		this.emitter.dispose();
-	}
-}
 
 suite('wisp: Agents window', () => {
 
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
-	interface IServices {
-		instantiationService: TestInstantiationService;
-		viewDescriptorService: ViewDescriptorService;
-		commands: Array<string | [string, unknown]>;
-		wispd: TestWispdService;
-		configuration: TestConfigurationService;
-		hostStatus: WispHostStatusService;
-	}
+	type IServices = IAgentsWindowServices;
 
 	function services(isSessionsWindow: boolean, host = 'local'): IServices {
-		const configuration = new TestConfigurationService({ [WISP_HOST_SETTING]: host });
-		const instantiationService = workbenchInstantiationService({
-			environmentService: () => environment(isSessionsWindow),
-			pathService: () => new TestPathService(URI.file('/Users/ryan')),
-			configurationService: () => configuration,
-		}, disposables);
-		instantiationService.stub(IContextKeyService, disposables.add(instantiationService.createInstance(ContextKeyService)));
-		const viewDescriptorService = disposables.add(instantiationService.createInstance(ViewDescriptorService));
-		instantiationService.stub(IViewDescriptorService, viewDescriptorService);
-		const commands: Array<string | [string, unknown]> = [];
-		instantiationService.stub(ICommandService, { executeCommand: async (id: string, arg?: unknown) => { commands.push(arg === undefined ? id : [id, arg]); return undefined; } });
-		const wispd = disposables.add(new TestWispdService());
-		instantiationService.stub(IWispdService, wispd);
-		instantiationService.stub(IConfigurationService, configuration);
-		const hostStatus = disposables.add(instantiationService.createInstance(WispHostStatusService));
-		instantiationService.stub(IWispHostStatusService, hostStatus);
-		return { instantiationService, viewDescriptorService, commands, wispd, configuration, hostStatus };
+		return agentsWindowServices(disposables, isSessionsWindow, host);
 	}
 
 	/** Lets the service's first `getState` answer arrive. */
@@ -151,7 +89,7 @@ suite('wisp: Agents window', () => {
 				['Customize', 'true'],
 			]);
 			assert.strictEqual(buttons[0].disabled, false, 'a disabled button would leave the tab order');
-			assert.strictEqual(buttons[0].getAttribute('aria-description'), 'Connect to a host to start a chat.');
+			assert.strictEqual(buttons[0].getAttribute('aria-description'), 'Chats outside a project are not available yet.');
 		});
 
 		test('shows Projects with its empty copy, and hides Repositories and No Repo', () => {
@@ -223,9 +161,14 @@ suite('wisp: Agents window', () => {
 
 		test('registers as wisp with no sessions, session types, or workspaces', () => {
 			const { instantiationService } = services(true);
-			const providers = disposables.add(new TestSessionsProvidersService());
-			instantiationService.stub(ISessionsProvidersService, providers);
+			const providers = instantiationService.get(ISessionsProvidersService) as TestSessionsProvidersService;
+			const chatTypes: string[] = [];
+			instantiationService.stub(IChatSessionsService, {
+				registerChatSessionContribution: (contribution: { type: string }) => { chatTypes.push(contribution.type); return Disposable.None; },
+				registerChatSessionContentProvider: (scheme: string) => { chatTypes.push(`content:${scheme}`); return Disposable.None; },
+			} as unknown as IChatSessionsService);
 			disposables.add(instantiationService.createInstance(WispSessionsProviderContribution));
+			assert.deepStrictEqual(chatTypes, ['wisp.project', 'content:wisp.project'], 'the coordinator\'s chat type registers in process');
 
 			const provider = providers.getProvider<WispSessionsProvider>(WISP_SESSIONS_PROVIDER_ID);
 			assert.ok(provider instanceof WispSessionsProvider);
@@ -239,11 +182,11 @@ suite('wisp: Agents window', () => {
 			assert.deepStrictEqual(provider.getModelsSnapshot('any').models, []);
 		});
 
-		test('refuses to create or send, since no host is connected', async () => {
-			const provider = disposables.add(new WispSessionsProvider());
-			assert.throws(() => provider.createNewSession(URI.file('/repo'), 'wisp.thread'), /No host connected/);
-			assert.throws(() => provider.createQuickChat('wisp.thread'), /No host connected/);
-			await assert.rejects(provider.sendRequest('a', URI.file('/chat'), { query: 'hi' }), /No host connected/);
+		test('refuses to create sessions, quick chats, or requests', async () => {
+			const { provider } = services(true);
+			assert.throws(() => provider.createNewSession(URI.file('/repo'), 'wisp.thread'), /doesn't support this yet/);
+			assert.throws(() => provider.createQuickChat('wisp.thread'), /doesn't support this yet/);
+			await assert.rejects(provider.sendRequest('a', URI.file('/chat'), { query: 'hi' }), /can't take messages yet/);
 		});
 	});
 

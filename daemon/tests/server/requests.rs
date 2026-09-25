@@ -26,7 +26,7 @@ async fn a_cancelled_request_gets_exactly_one_answer_and_started_work_finishes()
     let lock = WriteLock::take(dir.path());
 
     // The create starts and waits for SQLite's lock; the list queues behind it.
-    let params = create_params("wisp");
+    let params = create_params(dir.path(), "wisp");
     let create = client.send::<ProjectCreate>(params.clone()).await;
     sleep(SETTLE).await;
     let list = client.send::<ProjectList>(ProjectListParams {}).await;
@@ -71,7 +71,7 @@ async fn an_id_already_in_flight_is_refused() {
             "jsonrpc": "2.0",
             "id": id,
             "method": "project/create",
-            "params": create_params("wisp"),
+            "params": create_params(dir.path(), "wisp"),
         })
     };
     client.send_message(&request(7)).await;
@@ -150,7 +150,9 @@ async fn requests_sent_before_the_client_closes_its_side_are_all_answered() {
             .unwrap(),
         )
         .await;
-    let create = client.send::<ProjectCreate>(create_params("wisp")).await;
+    let create = client
+        .send::<ProjectCreate>(create_params(dir.path(), "wisp"))
+        .await;
     let list = client.send::<ProjectList>(ProjectListParams {}).await;
     client.close_write().await;
 
@@ -190,7 +192,7 @@ async fn a_client_that_disconnects_mid_request_leaves_the_server_serving() {
     drop(partial);
 
     // A whole create, then gone before the answer.
-    let params = create_params("wisp");
+    let params = create_params(dir.path(), "wisp");
     let mut hasty = Client::ready(&wispd.socket).await;
     hasty.send::<ProjectCreate>(params.clone()).await;
     drop(hasty);

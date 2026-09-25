@@ -8,6 +8,7 @@ import {
   screenshot,
   type LaunchOptions,
   type Scenario,
+  type ScenarioContext,
   type Session,
 } from './harness.ts';
 import {
@@ -76,9 +77,15 @@ function checkScenarios(list: readonly Scenario[]): void {
 async function capture(scenario: Scenario, options: LaunchOptions): Promise<Result> {
   const { name, title } = scenario;
   let session: Session | undefined;
+  // The window a failure is shot from: the newest, after any relaunch.
+  let latest: ScenarioContext | undefined;
+  const track = (context: ScenarioContext): ScenarioContext => {
+    latest = context;
+    return { ...context, relaunch: async () => track(await context.relaunch()) };
+  };
   try {
     session = await launch(options, scenario);
-    const context = session;
+    const context = track(session);
     const shot = await withTimeout(
       (async () => {
         await ready(context);
@@ -96,7 +103,7 @@ async function capture(scenario: Scenario, options: LaunchOptions): Promise<Resu
     await writeFile(join(outDir, capturedFile(name)), shot);
     return { name, title, status: 'captured', file: capturedFile(name) };
   } catch (error) {
-    const failed = session ? await screenshot(session.window, failureShotTimeoutMs).catch(() => undefined) : undefined;
+    const failed = latest ? await screenshot(latest.window, failureShotTimeoutMs).catch(() => undefined) : undefined;
     if (failed) {
       await writeFile(join(outDir, failedFile(name)), failed);
       return { name, title, status: 'failed', error: messageOf(error), file: failedFile(name) };

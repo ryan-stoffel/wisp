@@ -20,6 +20,7 @@
 //!   `serve` running (#61).
 //! - [`keystore`]: where API keys live, the macOS login Keychain (#117).
 //! - [`usage`]: turns backend usage events into `wisp-store` rows (#120).
+//! - [`worktree`]: creates, inspects, and removes the git worktrees agent runs use (#154).
 
 #![warn(missing_docs)]
 
@@ -32,11 +33,13 @@ pub mod launch_agent;
 pub mod logging;
 mod methods;
 pub mod paths;
+mod repo;
 pub mod server;
 pub mod service;
 mod spawn;
 mod store;
 pub mod usage;
+pub mod worktree;
 
 /// wispd's release version, reported by `wispd --version`, the protocol handshake
 /// (`initialize` and `host/version`), and the `LaunchAgent`'s probe.

@@ -231,3 +231,107 @@
 		transform: rotate(360deg);
 	}
 }
+
+.wisp-threads-action-keybinding {
+	margin-left: auto;
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+/* Project rows: a letter glyph, the name, and a short age, as in Cursor's Projects list. */
+.wisp-threads-rows {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.wisp-threads .wisp-threads-row {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	width: 100%;
+	height: 28px;
+	padding: 0 var(--vscode-spacing-size80);
+	border-radius: var(--vscode-cornerRadius-medium);
+	white-space: nowrap;
+}
+
+.wisp-threads .wisp-threads-row:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.wisp-threads .wisp-threads-row.selected {
+	background-color: var(--vscode-list-inactiveSelectionBackground);
+	color: var(--vscode-list-inactiveSelectionForeground);
+}
+
+.wisp-threads-row-title {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.wisp-threads-row-age {
+	flex: none;
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+/* The glyph is decoration: the row's accessible name carries the project's name. */
+.wisp-threads-glyph,
+.wisp-project-glyph {
+	display: inline-flex;
+	flex: none;
+	align-items: center;
+	justify-content: center;
+	width: 16px;
+	height: 16px;
+	border-radius: var(--vscode-cornerRadius-small);
+	background-color: var(--vscode-charts-blue);
+	color: var(--vscode-editor-background);
+	font-size: 10px;
+	font-weight: var(--vscode-fontWeight-semiBold);
+	line-height: 1;
+}
+
+.wisp-threads-glyph[data-color="green"],
+.wisp-project-glyph[data-color="green"] {
+	background-color: var(--vscode-charts-green);
+}
+
+.wisp-threads-glyph[data-color="yellow"],
+.wisp-project-glyph[data-color="yellow"] {
+	background-color: var(--vscode-charts-yellow);
+}
+
+.wisp-threads-glyph[data-color="purple"],
+.wisp-project-glyph[data-color="purple"] {
+	background-color: var(--vscode-charts-purple);
+}
+
+.wisp-threads-glyph[data-color="orange"],
+.wisp-project-glyph[data-color="orange"] {
+	background-color: var(--vscode-charts-orange);
+}
+
+.wisp-threads-glyph[data-color="red"],
+.wisp-project-glyph[data-color="red"] {
+	background-color: var(--vscode-charts-red);
+}
+
+.wisp-threads-empty p {
+	margin: 0;
+}
+
+.wisp-threads .wisp-threads-link {
+	margin-top: var(--vscode-spacing-size60);
+	padding: 0;
+	color: var(--vscode-textLink-foreground);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.wisp-threads .wisp-threads-link:hover {
+	color: var(--vscode-textLink-activeForeground);
+	text-decoration: underline;
+}

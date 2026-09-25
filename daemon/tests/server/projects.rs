@@ -1,6 +1,7 @@
 //! `project/list` and `project/create` against a real store.
 
 use std::fs;
+use std::path::Path;
 
 use rustix::process::Signal;
 use serde_json::json;
@@ -25,7 +26,7 @@ async fn projects_are_created_listed_and_retried_idempotently() {
     assert!(empty.projects.is_empty());
     assert_eq!(empty.seq, 0);
 
-    let params = create_params("wisp");
+    let params = create_params(dir.path(), "wisp");
     let created = client
         .call::<ProjectCreate>(params.clone())
         .await
@@ -47,7 +48,7 @@ async fn projects_are_created_listed_and_retried_idempotently() {
     );
 
     let second = client
-        .call::<ProjectCreate>(create_params("roster"))
+        .call::<ProjectCreate>(create_params(dir.path(), "roster"))
         .await
         .unwrap()
         .project;
@@ -67,7 +68,7 @@ async fn a_create_that_reuses_an_id_with_other_params_is_an_id_conflict() {
     let dir = temp_dir();
     let wispd = Wispd::start(dir.path()).await;
     let mut client = Client::ready(&wispd.socket).await;
-    let params = create_params("wisp");
+    let params = create_params(dir.path(), "wisp");
     let created = client
         .call::<ProjectCreate>(params.clone())
         .await
@@ -123,7 +124,7 @@ async fn invalid_create_params_are_refused_before_the_store() {
         let params = ProjectCreateParams {
             name: name.to_owned(),
             repo_path: repo_path.to_owned(),
-            ..create_params("x")
+            ..create_params(dir.path(), "x")
         };
         let error = client.call::<ProjectCreate>(params).await.unwrap_err();
         assert_eq!(error.code, INVALID_PARAMS, "{name:?} {repo_path:?}");
@@ -134,15 +135,74 @@ async fn invalid_create_params_are_refused_before_the_store() {
         .unwrap();
     assert!(listed.projects.is_empty());
 
+    // Params at the limits pass the checks and reach the repository check, which this path fails.
     let at_the_limits = ProjectCreateParams {
         name: "n".repeat(256),
         repo_path: long_path[..1024].to_owned(),
-        ..create_params("x")
+        ..create_params(dir.path(), "x")
     };
-    client
+    let error = client
         .call::<ProjectCreate>(at_the_limits)
         .await
-        .expect("a name of 256 bytes and a path of 1024 are accepted");
+        .unwrap_err();
+    assert_eq!(kind(&error), ErrorKind::NotARepository);
+}
+
+#[tokio::test]
+async fn a_new_project_needs_a_repository_and_reports_its_branch() {
+    let dir = temp_dir();
+    let wispd = Wispd::start(dir.path()).await;
+    let mut client = Client::ready(&wispd.socket).await;
+
+    let plain = dir.path().join("plain");
+    fs::create_dir(&plain).unwrap();
+    let missing = dir.path().join("missing");
+    for (path, reason) in [
+        (&plain, "is not the top folder of a git repository"),
+        (&missing, "doesn't exist on this host"),
+    ] {
+        let params = ProjectCreateParams {
+            repo_path: path.to_str().unwrap().to_owned(),
+            ..create_params(dir.path(), "wisp")
+        };
+        let error = client.call::<ProjectCreate>(params).await.unwrap_err();
+        assert_eq!(kind(&error), ErrorKind::NotARepository);
+        assert!(error.message.contains(reason), "{}", error.message);
+    }
+    let listed = client
+        .call::<ProjectList>(ProjectListParams {})
+        .await
+        .unwrap();
+    assert!(listed.projects.is_empty(), "nothing was created");
+    assert_eq!(listed.seq, 0);
+
+    let params = create_params(dir.path(), "wisp");
+    let created = client
+        .call::<ProjectCreate>(params.clone())
+        .await
+        .unwrap()
+        .project;
+    assert_eq!(created.branch.as_deref(), Some("main"));
+
+    let head = Path::new(&params.repo_path).join(".git").join("HEAD");
+    fs::write(&head, "ref: refs/heads/feature/104\n").unwrap();
+    let listed = client
+        .call::<ProjectList>(ProjectListParams {})
+        .await
+        .unwrap();
+    assert_eq!(
+        listed.projects[0].branch.as_deref(),
+        Some("feature/104"),
+        "read when listed"
+    );
+
+    fs::remove_dir_all(&params.repo_path).unwrap();
+    let retried = client
+        .call::<ProjectCreate>(params.clone())
+        .await
+        .expect("a retry returns the project after its folder is gone");
+    assert_eq!(retried.project.id, created.id);
+    assert_eq!(retried.project.branch, None);
 }
 
 #[tokio::test]
@@ -152,7 +212,7 @@ async fn projects_outlive_a_restart_and_the_event_log_starts_over() {
     let mut client = Client::connect(&wispd.socket).await;
     let first_log = client.initialize().await.unwrap().log_id;
     let created = client
-        .call::<ProjectCreate>(create_params("wisp"))
+        .call::<ProjectCreate>(create_params(dir.path(), "wisp"))
         .await
         .unwrap()
         .project;
