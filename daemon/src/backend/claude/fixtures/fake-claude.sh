@@ -1,6 +1,7 @@
 #!/bin/sh
-# A stand-in for the claude CLI in tests. It records its arguments, environment, working
-# directory, and stdin under $FAKE_CLAUDE_DIR, then replays $FAKE_CLAUDE_FIXTURE line by line.
+# A stand-in for the claude CLI in tests. It records its arguments, its environment (whose PWD
+# is its working directory), and stdin under $FAKE_CLAUDE_DIR, then replays $FAKE_CLAUDE_FIXTURE
+# line by line.
 #
 # Fixture lines starting with # are comments and blank lines are skipped. These directives act:
 #   @read          read one line of stdin, or exit 0 if stdin has ended
@@ -16,7 +17,6 @@
 dir=$FAKE_CLAUDE_DIR
 printf '%s\n' "$@" > "$dir/argv"
 env > "$dir/env"
-pwd > "$dir/cwd"
 : > "$dir/stdin"
 exec 3< "$FAKE_CLAUDE_FIXTURE"
 while IFS= read -r line <&3; do

@@ -271,9 +271,9 @@ async fn a_read_only_run_maps_the_stream_and_uses_the_no_write_policy() {
         r#"--tools Read,Glob,Grep --setting-sources user --settings {"disableAllHooks":true} --strict-mcp-config --permission-mode dontAsk"#,
         "0004's no-write policy, exactly"
     );
-    assert_eq!(fake.recorded("cwd").trim(), cwd.to_str().unwrap());
-
     let env = fake.env();
+    let working_dir = format!("PWD={}", cwd.display());
+    assert!(env.contains(&working_dir), "{env:?}");
     for scrubbed in [
         "ANTHROPIC_API_KEY=",
         "ANTHROPIC_AUTH_TOKEN=",
