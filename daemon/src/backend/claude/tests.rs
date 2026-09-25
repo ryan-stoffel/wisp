@@ -25,13 +25,19 @@ const TURN_2: &str = "01997e2a-4c3b-7d10-8a2e-5f6b7c8d9e02";
 const OPUS: &str = "claude-opus-4-7";
 const FAKE_CLAUDE: &str = include_str!("fixtures/fake-claude.sh");
 
-/// [`next`]'s wait for an event.
-const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
-/// Far longer than [`EVENT_TIMEOUT`], so the production SIGKILL escalation can never race a
-/// slow-but-correct exit under a loaded runner (#149): only a genuinely stuck CLI reaches it. The
-/// default 10 s grace used to be close enough to `next`'s old 10 s wait that CI contention alone
-/// could make the two race.
-const GENEROUS_GRACE: Duration = Duration::from_secs(120);
+/// [`next`]'s wait for an event: a plain hang detector, not a margin against a competing timeout.
+/// Raised from the original 10 s because that value was itself what a loaded runner could
+/// legitimately exceed for a correct, un-raced cancel (#149) — signal delivery, the CLI's own
+/// exit, and wispd's reap-and-report path all depend on the OS scheduling real threads and
+/// processes, which no in-test synchronization can make instantaneous under contention. CI's own
+/// job timeout (30 min) is the backstop against a genuine hang.
+const EVENT_TIMEOUT: Duration = Duration::from_secs(60);
+/// Longer than CI's own 30 min job timeout (`ci.yml`), so the run would fail on that before this
+/// grace's `SIGKILL` escalation could ever fire: the escalation is removed as a possible actor in
+/// this test, not merely made less likely at the same order of magnitude as `EVENT_TIMEOUT`. The
+/// default 10 s grace used to race a slow-but-correct exit under a loaded runner (#149); the fix
+/// is to make that race structurally impossible, not to widen it.
+const UNREACHABLE_GRACE: Duration = Duration::from_hours(1);
 
 fn fixture(name: &str) -> &'static str {
     match name {
@@ -188,7 +194,7 @@ async fn launch(backend: &dyn Backend, request: RunRequest) -> Started {
 async fn next(events: &mut EventStream) -> Event {
     tokio::time::timeout(EVENT_TIMEOUT, events.next())
         .await
-        .expect("no event within 30 s")
+        .expect("no event within 60 s")
         .expect("the stream ended")
 }
 
@@ -814,7 +820,7 @@ async fn a_follow_up_can_be_its_own_turn_and_stdin_waits_for_it() {
 async fn cancel_interrupts_the_cli_with_sigint() {
     let fake = Fake::new("cancel");
     let backend = fake.backend.clone().with_cancel_policy(CancelPolicy {
-        grace: GENEROUS_GRACE,
+        grace: UNREACHABLE_GRACE,
         ..CancelPolicy::default()
     });
     let Started { run, mut events } = launch(&backend, request(&fake.root())).await;

@@ -1041,12 +1041,9 @@ mod tests {
         );
     }
 
-    /// Far longer than [`HANG_TIMEOUT`], so the production SIGKILL escalation can never race a
-    /// slow-but-correct trap under a loaded runner (#139): only a genuinely stuck process reaches
-    /// it. The default 10 s grace used to be close enough to a test's own budget that CI
-    /// contention alone could make the two race.
-    const GENEROUS_GRACE: Duration = Duration::from_secs(120);
-    /// A test's own bound on a hang, independent of [`GENEROUS_GRACE`] above.
+    /// This test's own bound on a hang. It races nothing: unlike `CancelPolicy`'s grace-then-kill
+    /// escalation, it is the only timer in play, so it is a plain hang detector, not a margin
+    /// against a competing timeout.
     const HANG_TIMEOUT: Duration = Duration::from_secs(30);
 
     #[tokio::test]
@@ -1059,10 +1056,13 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(process.next().await, Some(Output::Line(b"ready".to_vec())));
-        process.signals().cancel(CancelPolicy {
-            grace: GENEROUS_GRACE,
-            ..CancelPolicy::default()
-        });
+        // Signals the process directly instead of `cancel()`, which would also arm the
+        // grace-then-`SIGKILL` escalation. That escalation raced this trap's own clean exit
+        // under a loaded runner (#139): a slow-but-correct trap could lose to it, and widening
+        // the grace only narrowed the window without removing it. This test is about the trap's
+        // reaction to `SIGINT`, not the escalation (`cancel_kills_the_group_after_the_grace_period`
+        // owns that), so it never arms a second timer to race in the first place.
+        assert!(process.signals().signal(Signal::INT));
         let (lines, exit) = timeout(HANG_TIMEOUT, collect(&mut process))
             .await
             .expect("the process did not exit after SIGINT");
