@@ -1061,7 +1061,8 @@ mod tests {
     #[tokio::test]
     async fn cancel_asks_first() {
         // A trap shows which signal arrived. Without one, bash 3.2's exit status after a SIGINT
-        // in `wait` varies.
+        // in `wait` varies. Printing "ready" only after the trap is installed is this test's
+        // deterministic handshake: reading that line can never race the trap's own installation.
         let mut process = launcher(base())
             .spawn(&sh(
                 "trap 'echo interrupted; exit 7' INT; echo ready; sleep 30 & wait $!",
@@ -1069,7 +1070,11 @@ mod tests {
             .unwrap();
         assert_eq!(process.next().await, Some(Output::Line(b"ready".to_vec())));
         let started = Instant::now();
-        process.signals().cancel(CancelPolicy::default());
+        // Signals the process directly instead of `cancel()`, which would also arm the
+        // grace-then-`SIGKILL` escalation. This test is about the trap's own reaction to
+        // `SIGINT`, not the escalation (`cancel_kills_the_group_after_the_grace_period` owns
+        // that), so it never arms a second timer that could race the trap's clean exit (#139).
+        assert!(process.signals().signal(Signal::INT));
         let (lines, exit) = collect(&mut process).await;
         assert_eq!(lines, [Output::Line(b"interrupted".to_vec())]);
         assert_eq!(exit.info.code, Some(7), "{exit:?}");
