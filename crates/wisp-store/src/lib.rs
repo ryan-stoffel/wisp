@@ -8,6 +8,7 @@
 //! in this database (#117).
 
 mod accounts;
+mod defaults;
 mod error;
 mod migrations;
 mod project;
@@ -22,6 +23,7 @@ use std::time::{Duration, Instant};
 use rusqlite::{Connection, Error as SqliteError, ErrorCode};
 
 pub use accounts::{Account, AccountFields};
+pub use defaults::RoleDefault;
 pub use error::StoreError;
 pub use project::{Project, ProjectFields};
 pub use usage::{LimitSnapshot, SessionModelUsage, UsageDelta, UsageSummary};
