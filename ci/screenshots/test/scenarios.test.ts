@@ -22,6 +22,13 @@ test('captures the host connected, unreachable, and its menu', () => {
   assert.match(String(disconnected?.settings?.['wisp.host']), /^ssh:\/\/127\.0\.0\.1:\d+$/, 'a closed local port, so ssh fails fast');
 });
 
+test('creates a project, and sees it again after quitting Wisp and wispd', () => {
+  const names = scenarios.map((scenario) => scenario.name);
+
+  assert.ok(names.includes('agents-window-project'));
+  assert.ok(names.includes('agents-window-project-reopened'));
+});
+
 test('names are unique and titles are text the comment accepts', () => {
   const names = scenarios.map((scenario) => scenario.name);
 

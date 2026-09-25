@@ -16,6 +16,8 @@
 //! - `context`: each project's shared context folder (0005, #155): `context/list`, `context/read`,
 //!   `context/write`, and a watcher that turns an agent's own writes on disk into
 //!   `context.changed` events.
+//! - `detect`: detecting which vendor CLIs are installed and signed in, without touching their
+//!   credentials (#114).
 //! - [`launch_agent`]: the launch agent that `attach` starts wispd through, when it is installed.
 //! - [`service`]: installs, removes, and reports on the per-user `LaunchAgent` that keeps
 //!   `serve` running (#61).
@@ -27,12 +29,14 @@
 pub mod attach;
 pub mod backend;
 mod context;
+mod detect;
 mod event_log;
 pub mod keystore;
 pub mod launch_agent;
 pub mod logging;
 mod methods;
 pub mod paths;
+mod repo;
 pub mod server;
 pub mod service;
 mod spawn;

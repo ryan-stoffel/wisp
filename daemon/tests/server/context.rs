@@ -16,9 +16,9 @@ use wisp_protocol::{
 
 use crate::support::{Client, Wispd, create_params, kind, temp_dir};
 
-async fn project(client: &mut Client) -> Project {
+async fn project(client: &mut Client, dir: &std::path::Path) -> Project {
     client
-        .call::<ProjectCreate>(create_params("wisp"))
+        .call::<ProjectCreate>(create_params(dir, "wisp"))
         .await
         .unwrap()
         .project
@@ -54,7 +54,7 @@ async fn write_read_and_list_round_trip() {
     let dir = temp_dir();
     let wispd = Wispd::start(dir.path()).await;
     let mut client = Client::ready(&wispd.socket).await;
-    let project = project(&mut client).await;
+    let project = project(&mut client, dir.path()).await;
 
     let written = client
         .call::<ContextWrite>(write_params(
@@ -93,7 +93,7 @@ async fn a_retry_is_idempotent_and_a_different_write_with_the_same_id_conflicts(
     let dir = temp_dir();
     let wispd = Wispd::start(dir.path()).await;
     let mut client = Client::ready(&wispd.socket).await;
-    let project = project(&mut client).await;
+    let project = project(&mut client, dir.path()).await;
     let params = write_params(project.id, "notes.md", "hello", None);
 
     let first = client.call::<ContextWrite>(params.clone()).await.unwrap();
@@ -113,7 +113,7 @@ async fn a_fresh_id_overwrites_a_paths_previous_content() {
     let dir = temp_dir();
     let wispd = Wispd::start(dir.path()).await;
     let mut client = Client::ready(&wispd.socket).await;
-    let project = project(&mut client).await;
+    let project = project(&mut client, dir.path()).await;
 
     client
         .call::<ContextWrite>(write_params(project.id, "notes.md", "first", None))
@@ -144,7 +144,7 @@ async fn traversal_absolute_hidden_nested_and_bad_extension_paths_are_refused() 
     let dir = temp_dir();
     let wispd = Wispd::start(dir.path()).await;
     let mut client = Client::ready(&wispd.socket).await;
-    let project = project(&mut client).await;
+    let project = project(&mut client, dir.path()).await;
 
     for path in [
         "../escape.md",
@@ -185,7 +185,7 @@ async fn reading_a_missing_file_is_context_not_found() {
     let dir = temp_dir();
     let wispd = Wispd::start(dir.path()).await;
     let mut client = Client::ready(&wispd.socket).await;
-    let project = project(&mut client).await;
+    let project = project(&mut client, dir.path()).await;
 
     let error = client
         .call::<ContextRead>(ContextReadParams {
@@ -222,7 +222,7 @@ async fn a_file_over_the_per_file_cap_is_rejected() {
     let dir = temp_dir();
     let wispd = Wispd::start(dir.path()).await;
     let mut client = Client::ready(&wispd.socket).await;
-    let project = project(&mut client).await;
+    let project = project(&mut client, dir.path()).await;
 
     let too_big = "a".repeat(1024 * 1024 + 1);
     let error = client
@@ -245,7 +245,7 @@ async fn a_pre_existing_symlink_is_refused_for_read_and_write_and_left_untouched
     let dir = temp_dir();
     let wispd = Wispd::start(dir.path()).await;
     let mut client = Client::ready(&wispd.socket).await;
-    let project = project(&mut client).await;
+    let project = project(&mut client, dir.path()).await;
     // Ensures the project's context folder exists before this test plants a symlink in it.
     client
         .call::<ContextList>(ContextListParams {
@@ -281,7 +281,7 @@ async fn concurrent_writes_to_one_path_leave_a_consistent_last_writer() {
     let dir = temp_dir();
     let wispd = Wispd::start(dir.path()).await;
     let mut client = Client::ready(&wispd.socket).await;
-    let project = project(&mut client).await;
+    let project = project(&mut client, dir.path()).await;
 
     let mut a = Client::ready(&wispd.socket).await;
     let mut b = Client::ready(&wispd.socket).await;
@@ -317,7 +317,7 @@ async fn a_write_emits_exactly_one_context_changed_event_and_an_agents_own_write
     let dir = temp_dir();
     let wispd = Wispd::start(dir.path()).await;
     let mut client = Client::ready(&wispd.socket).await;
-    let project = project(&mut client).await;
+    let project = project(&mut client, dir.path()).await;
 
     let mut watcher = Client::ready(&wispd.socket).await;
     watcher

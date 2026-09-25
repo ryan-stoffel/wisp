@@ -135,7 +135,7 @@ async fn two_attaches_at_once_start_and_share_one_wispd() {
 
     let (one, two) = tokio::join!(first.initialize(), second.initialize());
     assert_eq!(one.log_id, two.log_id, "both reach the same wispd");
-    let params = create_params("wisp");
+    let params = create_params(dir.path(), "wisp");
     first.call::<ProjectCreate>(params.clone()).await.unwrap();
     let listed = second
         .call::<ProjectList>(ProjectListParams {})
