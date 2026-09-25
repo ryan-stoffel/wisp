@@ -1,6 +1,8 @@
-// Small helpers for driving wisp's own UI (the Agents window's sidebar, host chip, and commands),
-// on top of ci/smoke's ui.ts pattern (the command palette settle window is the same 500ms, for the
-// same reason: the list re-renders on a filter timer with no event to wait on).
+// Small helpers for driving wisp's own UI: the Agents window's sidebar, host chip, and host menu.
+// The Agents window has no workspace open, so Ctrl+Shift+P there doesn't reach the ordinary
+// command palette (it opens an empty Quick Open, which always says "No matching results"); wisp's
+// own commands are driven through the sidebar buttons and the host chip's own menu instead, the
+// way ci/screenshots/src/scenarios.ts's `agents-window-host-menu` scenario already does.
 import type { Page } from 'playwright-core';
 
 // Matches ci/screenshots/src/scenarios.ts's own `hostChip` selector.
@@ -55,28 +57,30 @@ export async function projectRowLabels(window: Page): Promise<string[]> {
   );
 }
 
-/**
- * Runs a command through the command palette by its title, such as "Wisp: New Project...". Waits
- * for a matching row before accepting, so a filter that hasn't settled yet never runs the wrong
- * (or no) command.
- */
-export async function runCommand(window: Page, title: string): Promise<void> {
-  await window.keyboard.press('ControlOrMeta+Shift+KeyP');
-  const input = window.locator(PALETTE_INPUT);
-  await input.waitFor({ state: 'visible' });
-  await input.fill(title);
-  const row = window.locator('.quick-input-widget .monaco-list-row').filter({ hasText: title }).first();
-  await row.waitFor({ state: 'visible' });
-  await window.keyboard.press('Enter');
+/** Opens the host chip's own menu (wispHostMenu.ts's `showHostMenu`), by clicking the chip. */
+export async function openHostMenu(window: Page): Promise<void> {
+  await window.locator(HOST_CHIP).click();
+  await window.locator('.quick-input-widget').waitFor({ state: 'visible' });
 }
 
 /**
- * Waits for whatever quick input the last command opened (a picker or an input box; they share
- * the same widget) and types into it, or leaves its default value if `text` is undefined.
+ * Clicks a host menu row by its id (`hostMenuItems`'s `current`, `local`, `add`, `reconnect`, or
+ * `log`), the same `data-quick-input-id` attribute ci/screenshots/src/scenarios.ts's own
+ * `agents-window-host-menu` scenario checks for. Clicking a row accepts it, the same as Enter on
+ * the active item.
+ */
+export async function clickHostMenuItem(window: Page, id: string): Promise<void> {
+  await window.locator(`.quick-input-widget [data-quick-input-id="${id}"]`).click();
+}
+
+/**
+ * Waits for whatever quick input opened after clicking a host menu row (an input box; it shares
+ * the widget the menu itself was in) and types into it, or leaves its default value if `text` is
+ * undefined.
  */
 export async function fillQuickInput(window: Page, text?: string): Promise<void> {
-  // The palette closes and, if the command opens another quick input, a new one replaces it in the
-  // same widget; ci/smoke's paletteCommands waits out that same re-render with a fixed settle window.
+  // The menu closes and the row's own action opens another quick input in the same widget; ci/smoke's
+  // paletteCommands waits out the same kind of re-render with a fixed settle window.
   await window.waitForTimeout(500);
   const input = window.locator(PALETTE_INPUT).first();
   await input.waitFor({ state: 'visible' });

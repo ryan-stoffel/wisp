@@ -8,7 +8,7 @@
 // skips too; wherever it can't run, that keeps #95 open rather than failing the build (its own AC).
 import { skip, check } from '../check.ts';
 import { TIMEOUT_MS, launchConnectedForSsh, readEnvFile, ready } from '../harness.ts';
-import { runCommand, fillQuickInput, waitForHostKind } from '../wispUi.ts';
+import { clickHostMenuItem, fillQuickInput, openHostMenu, waitForHostKind } from '../wispUi.ts';
 
 /** Where `scripts/ci/ssh-localhost` writes its `KEY=value` result (also read by scripts/ci/e2e). */
 const STATUS_ENV_VAR = 'WISP_E2E_SSH_STATUS_FILE';
@@ -32,7 +32,8 @@ export const sshChecks = [
       await ready({ app, window });
       await waitForHostKind(window, ['connected'], TIMEOUT_MS);
 
-      await runCommand(window, 'Wisp: Switch Host...');
+      await openHostMenu(window);
+      await clickHostMenuItem(window, 'add');
       await fillQuickInput(window, 'localhost');
       await window.keyboard.press('Enter');
 
