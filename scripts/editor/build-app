@@ -6,23 +6,29 @@ usage() {
 Usage: scripts/editor/build-app [--app-version <X.Y.Z>] [arm64|x64]
 
 Builds the packaged app for macOS on arm64 or x64 (default: this Mac's
-architecture) with upstream's gulp task vscode-darwin-<arch>-min, ad-hoc signs
-it, and prints the path of editor/VSCode-darwin-<arch>/<name>.app as the only
-line on stdout. Everything else goes to stderr.
+architecture) with upstream's gulp task vscode-darwin-<arch>-min, builds wispd
+for the same architecture and copies it in, ad-hoc signs the bundle, and
+prints the path of editor/VSCode-darwin-<arch>/<name>.app as the only line on
+stdout. Everything else goes to stderr.
 
 Steps: scripts/editor/prepare, then npm ci for <arch> unless node_modules
-already matches, the built-in extensions, gulp, codesign, and upstream's check
-of every Mach-O file's architecture. x64 builds on Apple silicon too, as
-upstream's pipeline does. GITHUB_TOKEN, if set, is passed to upstream's GitHub
-downloads (built-in extensions and Electron). scripts/ci/check-app checks the
-branding of the result.
+already matches, the built-in extensions, gulp, cargo build -p wispd for the
+matching Rust target, codesign, and upstream's check of every Mach-O file's
+architecture. x64 builds on Apple silicon too, as upstream's pipeline does,
+cross-compiling wispd with the x86_64-apple-darwin target that
+rust-toolchain.toml pins alongside aarch64-apple-darwin. GITHUB_TOKEN, if set,
+is passed to upstream's GitHub downloads (built-in extensions and Electron).
+scripts/ci/check-app checks the branding of the result, including wispd's.
 
   --app-version <X.Y.Z>  build with this version instead of upstream's, as
                          scripts/ci/package-app does for a release. Gulp puts it
                          in the app's product.json, which the About dialog and
                          wisp --version show, and in CFBundleShortVersionString
                          and CFBundleVersion. editor/vscode/package.json holds it
-                         only while gulp runs.
+                         only while gulp runs. The same version becomes wispd's
+                         WISP_VERSION (daemon/src/lib.rs), so wispd --version
+                         matches (#44); without --app-version, wispd keeps its
+                         own Cargo.toml placeholder.
 EOF
 }
 
@@ -68,6 +74,11 @@ case ${1:-$(uname -m)} in
   *) fail "arch must be arm64 or x64, got '${1:-$(uname -m)}'" ;;
 esac
 [ "$(uname -s)" = Darwin ] || fail "building the app needs macOS"
+case $arch in
+  arm64) rust_target=aarch64-apple-darwin ;;
+  x64) rust_target=x86_64-apple-darwin ;;
+esac
+command -v cargo >/dev/null || fail "building wispd needs cargo (rustup, from rust-toolchain.toml)"
 
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
@@ -105,6 +116,23 @@ CI=true npm run gulp "vscode-darwin-$arch-min" >&2
 
 bundle="$root/editor/VSCode-darwin-$arch/$(node -p 'require("./product.json").nameLong').app"
 [ -d "$bundle" ] || fail "gulp did not produce $bundle"
+
+# wispd goes in before signing, so the ad-hoc signature below covers it too, the same as the
+# wisp launcher gulp already put in Contents/Resources/app/bin (#62). WISP_VERSION is read by
+# daemon/src/lib.rs through option_env!, which Cargo tracks: changing it alone still rebuilds.
+echo "${0##*/}: building wispd for $rust_target" >&2
+(
+  cd "$root"
+  if [ -n "$app_version" ]; then
+    WISP_VERSION=$app_version cargo build --release --locked -p wispd --target "$rust_target" >&2
+  else
+    cargo build --release --locked -p wispd --target "$rust_target" >&2
+  fi
+)
+bin_dir="$bundle/Contents/Resources/app/bin"
+mkdir -p "$bin_dir"
+cp "$root/target/$rust_target/release/wispd" "$bin_dir/wispd"
+chmod +x "$bin_dir/wispd"
 
 # Renaming Electron's bundle breaks its signature, and macOS calls an unsigned or
 # broken bundle damaged. #7 replaces the ad-hoc signature with a Developer ID.

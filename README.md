@@ -19,7 +19,7 @@ brew install --cask ryan-stoffel/taps/wisp
 
 Installing by the full name trusts only this cask, not the whole tap. Since Homebrew 6, third-party taps have to be trusted explicitly. Until the editor fork is done (milestone M0), a release is the Code - OSS editor with Wisp's name and icon, without the coordinator chat.
 
-The cask installs `/Applications/Wisp.app` and the `wisp` command, which Homebrew links into its `bin` folder, already on your `PATH`. `wisp <folder>` opens a folder in Wisp, and `wisp --version` prints the version. The command runs the app's own binary, so it works once macOS lets Wisp open (below).
+The cask installs `/Applications/Wisp.app` and the `wisp` and `wispd` commands, which Homebrew links into its `bin` folder, already on your `PATH`. `wisp <folder>` opens a folder in Wisp, and `wisp --version` prints the version. Both commands run the app's own binaries, so `wisp` works once macOS lets Wisp open (below); `wispd` doesn't need that, and [daemon/README.md](daemon/README.md) covers what it does, including setting up a Mac as a host over SSH.
 
 ### Opening Wisp the first time
 
@@ -39,7 +39,7 @@ On macOS 15 and later, Control-click > Open no longer gets past this check.
 
 macOS asks again after every `brew upgrade --cask wisp`, because each build has a new ad-hoc signature.
 
-To uninstall, run `brew uninstall --cask wisp`. Add `--zap` to also delete Wisp's settings, extensions, and data: `~/.wisp`, `~/.wisp-shared`, and its folders in `~/Library`. `--zap` cannot remove the `Wisp Safe Storage` item from your login keychain, so delete that in Keychain Access.
+Uninstalling stops and removes wispd's `LaunchAgent` first, if `wispd service install` set one up (daemon/README.md). Run `brew uninstall --cask wisp`. Add `--zap` to also delete Wisp's settings, extensions, and data: `~/.wisp`, `~/.wisp-shared`, and its folders in `~/Library`. `--zap` cannot remove the `Wisp Safe Storage` item from your login keychain, so delete that in Keychain Access.
 
 ## License
 
