@@ -13,6 +13,15 @@ test('ships the Agents window, startup, and editor scenarios', () => {
   assert.deepEqual(names.slice(0, 3), ['agents-window', 'startup', 'editor-file-open']);
 });
 
+test('captures the host connected, unreachable, and its menu', () => {
+  const names = scenarios.map((scenario) => scenario.name);
+
+  assert.ok(names.includes('agents-window-disconnected'));
+  assert.ok(names.includes('agents-window-host-menu'));
+  const disconnected = scenarios.find((scenario) => scenario.name === 'agents-window-disconnected');
+  assert.match(String(disconnected?.settings?.['wisp.host']), /\.invalid$/, 'a host that can never resolve, so ssh fails fast');
+});
+
 test('names are unique and titles are text the comment accepts', () => {
   const names = scenarios.map((scenario) => scenario.name);
 
