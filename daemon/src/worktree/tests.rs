@@ -283,7 +283,7 @@ async fn changed_files_and_diff_see_uncommitted_and_committed_changes_the_same_w
     assert!(diff.text.contains("new.txt"), "{}", diff.text);
 
     let commit = mgr
-        .commit_all(&created.path, &created.git_dir, "agent changes")
+        .commit_all(&created.path, &created.git_dir, &repo, "agent changes")
         .await
         .unwrap()
         .expect("there was something to commit");
@@ -325,7 +325,7 @@ async fn commit_all_is_a_no_op_when_nothing_changed() {
     let created = mgr.create(&repo, RunId::generate(), None).await.unwrap();
 
     let commit = mgr
-        .commit_all(&created.path, &created.git_dir, "nothing to see")
+        .commit_all(&created.path, &created.git_dir, &repo, "nothing to see")
         .await
         .unwrap();
 
@@ -361,13 +361,61 @@ async fn commit_all_refuses_without_a_configured_identity() {
     std::fs::write(created.path.join("README.md"), "edited\n").unwrap();
 
     let error = mgr
-        .commit_all(&created.path, &created.git_dir, "should not commit")
+        .commit_all(&created.path, &created.git_dir, &repo, "should not commit")
         .await
         .unwrap_err();
 
     assert!(
         matches!(error, WorktreeError::MissingIdentity { .. }),
         "{error:?}"
+    );
+}
+
+#[tokio::test]
+async fn commit_all_uses_an_identity_configured_only_in_a_global_gitconfig() {
+    // Regression test (PR #172 review): most users' identity lives in `~/.gitconfig`, not the
+    // repository's local config, and `commit_all`'s worktree-scoped calls can't see it (their
+    // `HOME` and `GIT_CONFIG_GLOBAL` are locked down, #166). `commit_all` must still resolve it,
+    // by asking `repo_root` directly, and use it for the commit.
+    let repo_dir = tempfile::tempdir().unwrap();
+    let repo = init_repo(repo_dir.path()).canonicalize().unwrap();
+    git(&repo, &["config", "--unset", "user.name"]);
+    git(&repo, &["config", "--unset", "user.email"]);
+
+    let fake_home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        fake_home.path().join(".gitconfig"),
+        "[user]\n\tname = Global User\n\temail = global@example.com\n",
+    )
+    .unwrap();
+
+    let data_dir = tempfile::tempdir().unwrap();
+    let path = std::env::var("PATH").unwrap();
+    let base: Environment = [
+        ("PATH", path.as_str()),
+        ("HOME", fake_home.path().to_str().unwrap()),
+    ]
+    .into_iter()
+    .collect();
+    let launcher = Launcher::new(DataDir::new(data_dir.path()).unwrap(), base);
+    let mgr = WorktreeManager::new(launcher, data_dir.path());
+    let created = mgr.create(&repo, RunId::generate(), None).await.unwrap();
+    std::fs::write(created.path.join("README.md"), "edited\n").unwrap();
+
+    let commit = mgr
+        .commit_all(&created.path, &created.git_dir, &repo, "agent changes")
+        .await
+        .unwrap()
+        .expect("there was something to commit, with the identity resolved from ~/.gitconfig");
+
+    assert_eq!(commit.sha, rev_parse(&created.path, "HEAD"));
+    assert_eq!(
+        git_output(&created.path, &["log", "-1", "--format=%an"]),
+        "Global User"
+    );
+    assert_eq!(
+        git_output(&created.path, &["log", "-1", "--format=%ae"]),
+        "global@example.com"
     );
 }
 
@@ -482,7 +530,7 @@ async fn commit_all_does_not_run_a_post_commit_hook_via_a_repo_configured_hooks_
 
     std::fs::write(created.path.join("README.md"), "edited\n").unwrap();
     let commit = mgr
-        .commit_all(&created.path, &created.git_dir, "agent changes")
+        .commit_all(&created.path, &created.git_dir, &repo, "agent changes")
         .await
         .unwrap()
         .expect("there was something to commit");
@@ -528,7 +576,7 @@ async fn commit_all_does_not_run_a_hook_configured_via_an_included_config_file()
 
     std::fs::write(created.path.join("README.md"), "edited\n").unwrap();
     let commit = mgr
-        .commit_all(&created.path, &created.git_dir, "agent changes")
+        .commit_all(&created.path, &created.git_dir, &repo, "agent changes")
         .await
         .unwrap()
         .expect("there was something to commit");
@@ -639,7 +687,7 @@ async fn worktree_git_commands_ignore_a_rewritten_git_file() {
 
     std::fs::write(created.path.join("README.md"), "edited\n").unwrap();
     let commit = mgr
-        .commit_all(&created.path, &created.git_dir, "agent changes")
+        .commit_all(&created.path, &created.git_dir, &repo, "agent changes")
         .await
         .unwrap()
         .expect("there was something to commit");

@@ -32,9 +32,11 @@
 //! leaves `base` unset (today's only case: the repo's current branch `HEAD`), creation refuses if
 //! the repo's working tree is dirty, since a new worktree cut from `HEAD` would silently drop
 //! those uncommitted changes; an explicit `base` skips that check. [`WorktreeManager::commit_all`]
-//! scrubs every environment variable that could override the repo's configured
-//! `user.name`/`user.email` (`GIT_AUTHOR_*`, `GIT_COMMITTER_*`, `EMAIL`), so a commit is always
-//! attributed to whatever the repo itself says, never to whatever wispd inherited.
+//! resolves `user.name`/`user.email` itself, from the repository the user actually works in
+//! (`repo_root`, see [`WorktreeManager::resolve_identity`]), and scrubs every environment
+//! variable that could override them anyway (`GIT_AUTHOR_*`, `GIT_COMMITTER_*`, `EMAIL`), so a
+//! commit is always attributed to whatever the repo itself says, never to whatever wispd
+//! inherited.
 //!
 //! # A worker's worktree is hostile input (#166)
 //!
@@ -54,6 +56,19 @@
 //! drivers, and remote helper protocols disabled by `-c`, and with `GIT_CONFIG_NOSYSTEM`, a
 //! `/dev/null` `GIT_CONFIG_GLOBAL`, and a scrubbed, dedicated `HOME`, so the only config git can
 //! still read is the pinned repository's own local config, which the worker cannot write.
+//!
+//! [`WorktreeManager::create`] and [`WorktreeManager::remove`] are not scoped this way: their git
+//! commands run against `repo_root`, the user's own checkout, which a worker never writes, so
+//! there is no `.git` file or repo-local config of the worker's to distrust there.
+//!
+//! **Known gap (#175):** a `-c` override wins over a config value no matter how that value was
+//! set, including through an `include`/`includeIf`, so hooks and hooksPath stay closed either
+//! way. Filter drivers (`filter.<name>.clean`/`.smudge`) don't have that `-c` escape hatch, and if
+//! the pinned repository's own local config contains an *absolute* `include.path` pointing into
+//! the worktree, the included file can still define one, for a worker's `.gitattributes` to
+//! trigger. A *relative* `include.path` doesn't reach the worktree — it resolves against the
+//! repository's git folder — so this needs an unusual repository configuration to matter; #175
+//! tracks closing it.
 
 #[cfg(test)]
 mod tests;
@@ -73,7 +88,7 @@ use tracing::warn;
 use wisp_protocol::RunId;
 
 use crate::backend::process::{
-    Exit, Launcher, Output, Process, ProcessSpec, SpawnError, StdinMode,
+    Environment, Exit, Launcher, Output, Process, ProcessSpec, SpawnError, StdinMode,
 };
 
 /// How long a single git invocation may run before wispd gives up on it and kills its process
@@ -103,6 +118,7 @@ const GIT_SCRUBBED: &[&str] = &[
     "GIT_CONFIG_SYSTEM",
     "GIT_CONFIG_NOSYSTEM",
     "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
     "GIT_PAGER",
     "GIT_EDITOR",
     "GIT_SEQUENCE_EDITOR",
@@ -123,6 +139,21 @@ const GIT_SCRUBBED: &[&str] = &[
 /// of [`GIT_SCRUBBED`]: `XDG_CONFIG_HOME` could otherwise point git at a config file outside the
 /// dedicated, empty `HOME` these calls inject.
 const WORKTREE_GIT_EXTRA_SCRUBBED: &[&str] = &["XDG_CONFIG_HOME"];
+
+/// The names, from `base`, of any `GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>` pair (git's way of
+/// setting config from the environment, indexed rather than named, so [`GIT_SCRUBBED`] can't list
+/// them). [`GIT_SCRUBBED`] already removes `GIT_CONFIG_COUNT`, without which git ignores every
+/// indexed pair regardless of index, so this is defense in depth for a worktree-scoped call
+/// (#166): scrubbed by name too, in case something downstream ever sets its own count.
+fn indexed_git_config_vars(base: &Environment) -> Vec<OsString> {
+    base.names()
+        .filter(|name| {
+            let name = name.to_string_lossy();
+            name.starts_with("GIT_CONFIG_KEY_") || name.starts_with("GIT_CONFIG_VALUE_")
+        })
+        .map(OsString::from)
+        .collect()
+}
 
 /// The folder under a manager's data directory used as `HOME` for every git command scoped to a
 /// worker's worktree (#166): empty, so there is no `~/.gitconfig`, `~/.git-credentials`, or
@@ -479,7 +510,8 @@ impl WorktreeManager {
     }
 
     /// Stages every change in the worktree and commits it with `message`, using the repository's
-    /// own configured `user.name`/`user.email`. Returns `None`, committing nothing, if there is
+    /// own configured `user.name`/`user.email`, resolved from `repo_root` (see
+    /// [`WorktreeManager::resolve_identity`]). Returns `None`, committing nothing, if there is
     /// nothing to commit.
     ///
     /// Runs with `--no-verify` and `--no-gpg-sign`: hooks and interactive signing assume a person
@@ -491,13 +523,14 @@ impl WorktreeManager {
     ///
     /// # Errors
     ///
-    /// [`WorktreeError::MissingIdentity`] if there is something to commit but the repository has
-    /// no configured identity, or [`WorktreeError::GitFailed`], [`WorktreeError::Timeout`], or
+    /// [`WorktreeError::MissingIdentity`] if there is something to commit but `repo_root` has no
+    /// configured identity, or [`WorktreeError::GitFailed`], [`WorktreeError::Timeout`], or
     /// [`WorktreeError::Spawn`].
     pub async fn commit_all(
         &self,
         worktree_path: &Path,
         git_dir: &Path,
+        repo_root: &Path,
         message: &str,
     ) -> Result<Option<Commit>, WorktreeError> {
         self.stage_all(worktree_path, git_dir).await?;
@@ -507,15 +540,21 @@ impl WorktreeManager {
         if staged.trim().is_empty() {
             return Ok(None);
         }
-        if !self.has_identity(worktree_path, git_dir).await? {
+        let Some((name, email)) = self.resolve_identity(repo_root).await? else {
             return Err(WorktreeError::MissingIdentity {
-                repo: worktree_path.to_owned(),
+                repo: repo_root.to_owned(),
             });
-        }
+        };
+        let user_name_arg = format!("user.name={name}");
+        let user_email_arg = format!("user.email={email}");
         self.run_worktree_git_ok(
             worktree_path,
             git_dir,
             &[
+                "-c",
+                user_name_arg.as_str(),
+                "-c",
+                user_email_arg.as_str(),
                 "commit",
                 "--no-verify",
                 "--no-gpg-sign",
@@ -722,19 +761,37 @@ impl WorktreeManager {
         Ok(!status.trim().is_empty())
     }
 
-    async fn has_identity(
+    /// The repository's configured `user.name`/`user.email`, or `None` if either is unset.
+    ///
+    /// Resolved against `repo_root` (the user's own checkout) through the ordinary,
+    /// unrestricted [`WorktreeManager::run_git`], not the locked-down
+    /// [`WorktreeManager::run_worktree_git`] a worker's worktree calls go through: `repo_root`
+    /// isn't worker-writable (#137, decision 0013), so there is nothing to harden here, and an
+    /// identity configured only in `~/.gitconfig` — true for most users — must still resolve.
+    /// [`WorktreeManager::commit_all`] passes the result back into the worktree-scoped commit
+    /// explicitly, with `-c user.name=`/`-c user.email=`, since that call's own environment
+    /// can't see it.
+    async fn resolve_identity(
         &self,
-        worktree_path: &Path,
-        git_dir: &Path,
-    ) -> Result<bool, WorktreeError> {
-        let configured = |output: GitOutput| output.success() && !output.stdout.trim().is_empty();
+        repo_root: &Path,
+    ) -> Result<Option<(String, String)>, WorktreeError> {
+        let configured = |output: GitOutput| -> Option<String> {
+            if !output.success() {
+                return None;
+            }
+            let value = output.stdout.trim();
+            (!value.is_empty()).then(|| value.to_owned())
+        };
         let name = self
-            .run_worktree_git(worktree_path, git_dir, &["config", "--get", "user.name"])
+            .run_git(repo_root, &["config", "--get", "user.name"])
             .await?;
         let email = self
-            .run_worktree_git(worktree_path, git_dir, &["config", "--get", "user.email"])
+            .run_git(repo_root, &["config", "--get", "user.email"])
             .await?;
-        Ok(configured(name) && configured(email))
+        Ok(match (configured(name), configured(email)) {
+            (Some(name), Some(email)) => Some((name, email)),
+            _ => None,
+        })
     }
 
     async fn lock_repo(&self, repo_root: &Path) -> tokio::sync::OwnedMutexGuard<()> {
@@ -818,6 +875,7 @@ impl WorktreeManager {
             .iter()
             .chain(WORKTREE_GIT_EXTRA_SCRUBBED)
             .map(|name| OsString::from(*name))
+            .chain(indexed_git_config_vars(self.launcher.base()))
             .collect();
         spec.inject.set("GIT_TERMINAL_PROMPT", "0");
         spec.inject.set("GIT_CONFIG_NOSYSTEM", "1");
