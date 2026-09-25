@@ -16,6 +16,8 @@ Each script finds the repo root on its own, so it runs from any directory.
 | `screenshots` | Captures every scenario in `ci/screenshots/` from the app into a directory (see [Screenshots](#screenshots)) | `screenshots.yml` (#4), `capture` job |
 | `publish-screenshots` | Checks a capture directory, commits its PNGs to the `ci-screenshots` branch, and creates or updates the PR comment. It needs Actions' environment; locally, `--dry-run` prints the comment | `screenshots.yml` (#4), `publish` job |
 | `check-screenshots` | `npm ci`, then lint, type-check, and test `ci/screenshots/`, including the tests that guard the `publish` job | `ci.yml` (#39), `screenshots` job |
+| `smoke` | Runs the Playwright smoke checks in `ci/smoke/` against the app (see [Smoke tests](#smoke-tests)) | `ci.yml` (#13), `smoke` job |
+| `check-smoke` | `npm ci`, then lint, type-check, and test `ci/smoke/` | `ci.yml` (#13), `smoke` job |
 | `package-app` | Builds `Wisp.app` from source with a version stamped in, zips it, checks the zip with `check-app`, and prints the bundle path (see [package-app](#package-app)) | `release.yml` (#5), `build` job |
 | `next-version` | Prints the version the next release gets, from tags and Conventional Commits (see [Releases](#releases)) | `release.yml` (#5), `build` job |
 | `generate-cask` | Prints the Homebrew cask for a version and its zips, from `release/wisp.rb.template` | `release.yml` (#5), `build` job |
@@ -144,6 +146,32 @@ scripts/ci/check-screenshots
 - A local run takes about 30 seconds once the app is built. `build-app` takes about 8 minutes on an M3 Pro from a clean tree, or 5 once `node_modules` is installed.
 - The windows open on your screen. A Retina display doubles the image size.
 - The app follows macOS's Increase Contrast setting, as any build of the editor does, so with it on you get the high contrast theme.
+
+## Smoke tests
+
+`ci.yml`'s `smoke` job (macOS, `needs: [app]`) is M0's automated check that the fork still builds with the editor, file tree, and terminal (#13). It restores the arm64 zip the `app` job above just built or restored ([Getting the app](#getting-the-app) describes the same restore; `smoke` runs after `app` in the same workflow instead of alongside it in a separate one, so the cache is always a hit here and the job adds only its own runtime, never a second build). `ci/smoke/` is a sibling package to `ci/screenshots/`; its `src/harness.ts` imports `ci/screenshots/src/harness.ts`'s launch code by relative path instead of duplicating it, which is why both packages get `npm ci` in `scripts/ci/smoke` and `scripts/ci/check-smoke` (`ci/screenshots/src/harness.ts`'s own `playwright-core` import resolves from `ci/screenshots/node_modules`, not `ci/smoke/node_modules`, since Node resolves a bare specifier from the importing file's own location).
+
+Every launch gets its own throwaway `HOME` on top of the throwaway `--user-data-dir` and `--extensions-dir` `ci/screenshots/src/harness.ts` already makes, because the terminal check spawns the user's real shell (which reads rc files from `HOME`) and the Source Control check reads git's user config from it; neither should depend on, or be slowed down by, whatever is on the machine running the job.
+
+The suite has three parts, in `ci/smoke/src/checks/`:
+
+- `agents-window.ts`: a plain launch opens the Agents window (`sessions.html`) with wisp's sidebar and the disabled no-host composer, no dialog, and no sign-in, account, or Copilot text in the title bar.
+- `editor.ts`: `wisp <folder>` opens the editor window (`workbench.html`) and, in one launch, exercises the file tree, editing and saving, search, Source Control, and a terminal, then checks the window for Chat UI and the command palette for chat, Copilot, or sign-in entries. One launch instead of six keeps the job's runtime down.
+- `exclusions.ts`: #94's ask that the suite check, at runtime, that every id wisp excludes (`editor/overlay/src/vs/workbench/common/wisp/exclusions.ts` and `.../platform/wisp/common/excludedActions.ts`) is actually skipped. `ci/smoke/src/exclusions.ts` parses those files directly (accepting either quote style, a missing trailing comma, and a trailing comment, unlike `check-fork`'s sed, which #94 found only matches one shape), so a renamed or mis-quoted id shows up here even when it would silently vanish from `check-fork`'s guard. A table in the test gives every parsed id one of four kinds of evidence: a DOM element that would exist under its own id, a command palette entry with recognizable text, `app.getAppMetrics()` showing no local agent host utility process, or, for ids with no independent effect from outside the process (about half of them: an internal sync, a context key with no menu entry, or a feature reachable only through another excluded surface that is itself checked), `check-fork`'s static guard as the only automated check today. The table's count is itself asserted against the parsed lists, so a new exclusion has to be triaged into it or the suite fails. #144 tracks giving the static-only ids a real runtime signal.
+
+### The known flake
+
+#10's Handoff comment: "The first Playwright run against a newly built packaged app lost its window partway through, and I could not reproduce it in three more runs." `ci/screenshots/src/harness.ts`'s `launch()` used to trust `app.firstWindow()`, whichever `BrowserWindow` Electron creates first, at whatever URL it has at that instant (usually still `about:blank`). On a cold launch that first window can be a transient page that closes again before the caller gets to it, losing the window Playwright was watching. `launch()` now waits for a window whose navigation actually reaches `workbench.html` or `sessions.html`; a transient window's wait for that URL simply times out, and Playwright keeps waiting for the real one. One wait, no retry, and both `ci/screenshots` and `ci/smoke` get the fix.
+
+### Running it locally
+
+```sh
+scripts/ci/build-app            # or set WISP_APP_BUNDLE to a Wisp.app you already have
+scripts/ci/smoke
+scripts/ci/check-smoke
+```
+
+Each launch opens on your screen, like `scripts/ci/screenshots`'s do.
 
 ## The app job
 
