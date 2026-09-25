@@ -336,12 +336,22 @@ pub fn kind(error: &ErrorObject) -> ErrorKind {
         .kind
 }
 
-pub fn create_params(name: &str) -> ProjectCreateParams {
+/// Params for a new project named `name`, on a repository made for it under `dir`.
+pub fn create_params(dir: &Path, name: &str) -> ProjectCreateParams {
     ProjectCreateParams {
         id: ProjectId::generate(),
         name: name.to_owned(),
-        repo_path: format!("/Users/me/src/{name}"),
+        repo_path: repo(dir, name),
     }
+}
+
+/// Makes `dir/repos/<name>` look like a repository on `main`, as far as wispd checks, and
+/// returns its path.
+pub fn repo(dir: &Path, name: &str) -> String {
+    let path = dir.join("repos").join(name);
+    std::fs::create_dir_all(path.join(".git")).expect("make the repository");
+    std::fs::write(path.join(".git").join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
+    path.to_str().expect("a UTF-8 path").to_owned()
 }
 
 /// Holds SQLite's write lock on the store, so the store's next write waits (up to its 5 s busy

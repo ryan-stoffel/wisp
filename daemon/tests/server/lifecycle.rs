@@ -169,7 +169,7 @@ async fn sigterm_finishes_the_requests_in_flight_then_cleans_up() {
     let mut wispd = Wispd::start(dir.path()).await;
     let mut client = Client::ready(&wispd.socket).await;
     let lock = WriteLock::take(dir.path());
-    let params = create_params("wisp");
+    let params = create_params(dir.path(), "wisp");
     let create = client.send::<ProjectCreate>(params.clone()).await;
     sleep(SETTLE).await;
 
