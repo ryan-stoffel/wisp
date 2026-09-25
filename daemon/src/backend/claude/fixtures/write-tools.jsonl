@@ -1,0 +1,5 @@
+# Synthetic: written from the documented stream-json format (0004 [11][14]), not recorded from a real run. #124 replaces it with a recorded transcript.
+@read
+{"type":"system","subtype":"init","cwd":"/Users/dev/repo","session_id":"5b1e3c9a-8f2d-4c6e-9a1b-3d7f0e2c4a68","tools":["Read","Glob","Grep","Bash","Edit"],"mcp_servers":[],"model":"claude-opus-4-7","permissionMode":"dontAsk","slash_commands":["compact","review"],"apiKeySource":"none","claude_code_version":"2.1.281","output_style":"default","agents":["general-purpose"],"skills":[],"plugins":[],"capabilities":["interrupt_receipt_v1"],"uuid":"a0000000-0000-4000-8000-000000000039"}
+{"type":"assistant","message":{"id":"msg_01Wt1","type":"message","role":"assistant","model":"claude-opus-4-7","content":[{"type":"text","text":"I could edit files here."}],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":3,"cache_creation_input_tokens":0,"cache_read_input_tokens":14000,"output_tokens":40,"service_tier":"standard"}},"parent_tool_use_id":null,"session_id":"5b1e3c9a-8f2d-4c6e-9a1b-3d7f0e2c4a68","uuid":"a0000000-0000-4000-8000-000000000040"}
+@hang
