@@ -1,7 +1,7 @@
 //! Logging with `tracing`, to `logs/wispd.log` in the data folder.
 
 use std::fmt;
-use std::fs::{DirBuilder, OpenOptions};
+use std::fs::{DirBuilder, File, OpenOptions};
 use std::io::{self, IsTerminal};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::Path;
@@ -111,6 +111,23 @@ fn parse_level(level: &str) -> Result<LevelFilter, String> {
     }
 }
 
+/// Opens the log file at `path` for appending. The file (0600) and its folder (0700) are created
+/// if they are missing.
+///
+/// # Errors
+///
+/// If the folder or the file can't be created or opened.
+pub fn open_log_file(path: &Path) -> io::Result<File> {
+    if let Some(dir) = path.parent() {
+        DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    }
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(path)
+}
+
 /// Sends log lines to the file at `path`, appending, and to stderr as well when stderr is a
 /// terminal.
 ///
@@ -121,14 +138,7 @@ fn parse_level(level: &str) -> Result<LevelFilter, String> {
 ///
 /// If the file can't be opened, or logging was already started.
 pub fn init(path: &Path, filter: &LogFilter) -> io::Result<()> {
-    if let Some(dir) = path.parent() {
-        DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
-    }
-    let file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(path)?;
+    let file = open_log_file(path)?;
     let stderr = io::stderr()
         .is_terminal()
         .then(|| format::layer().with_writer(io::stderr));

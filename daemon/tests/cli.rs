@@ -86,3 +86,33 @@ fn service_status_reports_a_fresh_label_as_absent() {
     assert!(stdout.contains("running: false"), "{stdout}");
     assert!(stdout.contains("answers initialize: false"), "{stdout}");
 }
+
+// The refusal comes before anything touches launchd or `~/Library/LaunchAgents`, so this never
+// installs a real LaunchAgent.
+#[test]
+fn service_install_refuses_the_default_label_for_another_data_folder() {
+    let temp = tempfile::Builder::new()
+        .prefix("wispd-cli-")
+        .tempdir_in("/tmp")
+        .expect("create a temp dir under /tmp");
+    let data_dir = temp.path().join("data");
+    let output = Command::new(env!("CARGO_BIN_EXE_wispd"))
+        .args(["service", "install", "--data-dir"])
+        .arg(&data_dir)
+        .env_remove("WISPD_LOG")
+        .env_remove("WISPD_DATA_DIR")
+        .env_remove("WISPD_SERVICE_LABEL")
+        .output()
+        .expect("wispd should run");
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("serves only the default data folder"),
+        "{stderr}"
+    );
+    assert!(
+        !data_dir.exists(),
+        "nothing was prepared for the refused folder"
+    );
+}
