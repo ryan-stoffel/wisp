@@ -13,6 +13,7 @@ use nix::libc;
 use nix::spawn::{PosixSpawnAttr, PosixSpawnFileActions, PosixSpawnFlags, posix_spawn};
 use nix::sys::signal::SigSet;
 use rustix::process::Pid;
+use zeroize::Zeroize;
 
 /// `POSIX_SPAWN_SETSID` from `<sys/spawn.h>`, which the libc crate doesn't define for Apple
 /// platforms.
@@ -56,6 +57,12 @@ pub(crate) fn spawn_detached(command: &Command, stdio: Stdio<'_>) -> io::Result<
 /// group whose id is the returned pid, with `stdio` as its only descriptors, and in this process's
 /// working directory. `program` must be a path; `PATH` is not searched.
 ///
+/// `env`'s values may include a secret, such as an API key account's key (#118). This function's
+/// own copies of them (the `NAME=value` pair it builds and the `CString` it turns that into) are
+/// zeroized once `posix_spawn` has read them, whether or not it succeeds; `env` itself is the
+/// caller's, and dropping it is the caller's job (`backend::process::Environment` does this for
+/// the copy it holds).
+///
 /// # Errors
 ///
 /// If an argument or environment variable contains a NUL byte, or `posix_spawn` fails.
@@ -72,7 +79,11 @@ pub(crate) fn spawn_session(
             let mut pair = key.clone();
             pair.push("=");
             pair.push(value);
-            c_string(&pair)
+            let result = c_string(&pair);
+            // `pair` may hold a secret (an agent's API key, #118); wipe this copy of it, whether
+            // or not it turned into a usable CString.
+            pair.into_encoded_bytes().zeroize();
+            result
         })
         .collect::<io::Result<Vec<_>>>()?;
 
@@ -97,7 +108,13 @@ pub(crate) fn spawn_session(
     attr.set_sigdefault(&SigSet::all())?;
     attr.set_sigmask(&SigSet::empty())?;
 
-    let pid = posix_spawn(program, &actions, &attr, &c_args, &c_env)?;
+    let spawned = posix_spawn(program, &actions, &attr, &c_args, &c_env);
+    // `c_env` holds a copy of every variable posix_spawn read, which may include a secret
+    // (#118); wipe them now that it has, whether or not the spawn itself succeeded.
+    for entry in c_env {
+        entry.into_bytes_with_nul().zeroize();
+    }
+    let pid = spawned?;
     Pid::from_raw(pid.as_raw()).ok_or_else(|| io::Error::other("posix_spawn returned pid 0"))
 }
 

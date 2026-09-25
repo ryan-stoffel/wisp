@@ -12,6 +12,9 @@
 #   @trap-int      on SIGINT, record it and exit 130
 #   @ignore-int    ignore SIGINT
 #   @hang          wait forever
+#   @spawn-child   spawn a child that dumps its own environment to $dir/child-env, stripping the
+#                  credential variables first when CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1, the way
+#                  the real CLI is documented to (0004 [16], #118)
 # Every other line goes to stdout as it is.
 
 dir=$FAKE_CLAUDE_DIR
@@ -30,6 +33,14 @@ while IFS= read -r line <&3; do
     '@trap-int') trap 'echo SIGINT >> "$dir/signals"; exit 130' INT ;;
     '@ignore-int') trap '' INT ;;
     '@hang') while :; do sleep 60 & wait $!; done ;;
+    '@spawn-child')
+      if [ "${CLAUDE_CODE_SUBPROCESS_ENV_SCRUB-}" = "1" ]; then
+        env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN \
+          -u CLAUDE_CODE_OAUTH_REFRESH_TOKEN sh -c 'env' > "$dir/child-env"
+      else
+        sh -c 'env' > "$dir/child-env"
+      fi
+      ;;
     *) printf '%s\n' "$line" ;;
   esac
 done
