@@ -9,6 +9,13 @@ import { _electron, errors, type ElectronApplication, type Locator, type Page } 
 export interface ScenarioContext {
   app: ElectronApplication;
   window: Page;
+  /** A folder of the scenario's own, removed after it: the one `args` got. */
+  dir: string;
+  /**
+   * Quits the app and stops the wispd it started, then launches both again with the same profile
+   * and wispd data folder, and waits until the new window is ready. Use the context it returns.
+   */
+  relaunch(): Promise<ScenarioContext>;
 }
 
 export interface NotAvailable {
@@ -85,28 +92,26 @@ export async function appLaunchOptions(): Promise<LaunchOptions> {
 export async function launch(options: LaunchOptions, scenario: Pick<Scenario, 'args' | 'settings'> = {}): Promise<Session> {
   const root = await mkdtemp(join(tmpdir(), 'wisp-screenshots-'));
   const wispdDataDir = join(root, 'wispd');
+  const files = join(root, 'files');
+  const userData = join(root, 'user-data');
   let app: ElectronApplication | undefined;
-  const close = async (): Promise<void> => {
+  const quit = async (): Promise<void> => {
     if (app) {
       const child = app.process();
       await Promise.race([app.close().catch(() => undefined), delay(10_000)]);
       if (child.exitCode === null && child.signalCode === null) {
         child.kill('SIGKILL');
       }
+      app = undefined;
     }
     await stopWispd(wispdDataDir);
+  };
+  const close = async (): Promise<void> => {
+    await quit();
     await rm(root, { recursive: true, force: true, maxRetries: 3 });
   };
-  try {
-    const files = join(root, 'files');
-    await mkdir(files);
-    const extraArgs = (await scenario.args?.(files)) ?? [];
-    const userData = join(root, 'user-data');
-    if (scenario.settings) {
-      await mkdir(join(userData, 'User'), { recursive: true });
-      await writeFile(join(userData, 'User', 'settings.json'), `${JSON.stringify(scenario.settings, null, 2)}\n`);
-    }
-    app = await _electron.launch({
+  const start = async (extraArgs: readonly string[]): Promise<Session> => {
+    const started = await _electron.launch({
       ...options,
       args: [
         ...(options.args ?? []),
@@ -120,16 +125,38 @@ export async function launch(options: LaunchOptions, scenario: Pick<Scenario, 'a
       env: { ...inheritedEnv(), ...options.env, [WISPD_DATA_DIR_ENV]: wispdDataDir },
       timeout: TIMEOUT_MS,
     });
-    const window = await app.firstWindow({ timeout: TIMEOUT_MS });
+    app = started;
+    const window = await started.firstWindow({ timeout: TIMEOUT_MS });
     window.setDefaultTimeout(TIMEOUT_MS);
-    return { app, window, close };
+    const session: Session = {
+      app: started,
+      window,
+      dir: files,
+      close,
+      relaunch: async () => {
+        await quit();
+        const next = await start(extraArgs);
+        await ready(next);
+        return next;
+      },
+    };
+    return session;
+  };
+  try {
+    await mkdir(files);
+    const extraArgs = (await scenario.args?.(files)) ?? [];
+    if (scenario.settings) {
+      await mkdir(join(userData, 'User'), { recursive: true });
+      await writeFile(join(userData, 'User', 'settings.json'), `${JSON.stringify(scenario.settings, null, 2)}\n`);
+    }
+    return await start(extraArgs);
   } catch (error) {
     await close();
     throw error;
   }
 }
 
-export async function ready({ app, window }: ScenarioContext): Promise<void> {
+export async function ready({ app, window }: Pick<ScenarioContext, 'app' | 'window'>): Promise<void> {
   await window.waitForURL((url) => url.protocol !== 'about:');
   await fitWindow(app, window);
   await window.locator(workbenchSelector).waitFor();
