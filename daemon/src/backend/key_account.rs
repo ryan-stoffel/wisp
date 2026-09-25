@@ -3,8 +3,10 @@
 //! A key account (#117) names a [`Provider`] and an [`AccountId`]; the key itself lives in the
 //! [`KeyStore`]. [`resolve`] reads it at the moment a run is about to start and wraps it as the
 //! [`Credential`] its backend takes. The caller drops the result once
-//! [`Backend::start`](super::Backend::start) has spawned the CLI, which zeroizes the key
-//! ([`ApiKey`]'s `Drop`) as soon as the run no longer needs it.
+//! [`Backend::start`](super::Backend::start) has spawned the CLI: [`ApiKey`]'s `Drop` zeroizes
+//! the key itself, and the copies the spawn path makes of it along the way
+//! (`backend::process::Environment`'s entries, and `spawn_session`'s own buffers) zeroize
+//! themselves the same way once each is done with its copy.
 //!
 //! Only Anthropic has a backend today (Claude Code, #116), so [`resolve`] only has that one arm.
 //! `OpenAI` (#122) and Cursor (#123) are wired the same way once their backends exist; until then

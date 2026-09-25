@@ -774,28 +774,52 @@ async fn an_api_key_never_reaches_tracing_output() {
         .with_writer(move || for_writer.clone())
         .finish();
     let guard = tracing::subscriber::set_default(subscriber);
-
-    let fake = Fake::new("api-key-completed");
     let key = "sk-ant-api03-test-key-not-real";
-    let all = run(&fake, api_key_request(&fake.root(), key)).await;
-    drop(guard);
 
+    // A completed run and a failed one (the mismatch check), so both outcomes are covered.
+    let completed = Fake::new("api-key-completed");
+    let completed_request = api_key_request(&completed.root(), key);
+    assert!(
+        !format!("{completed_request:?}").contains(key),
+        "the key must not appear in a request's Debug output"
+    );
+    tracing::info!("wisp-test-sentinel: starting the completed run");
+    let all = run(&completed, completed_request).await;
     assert!(
         matches!(outcome(&all), Outcome::Completed { .. }),
         "{all:?}"
     );
+
+    let mismatched = Fake::new("read-only");
+    tracing::info!("wisp-test-sentinel: starting the mismatched run");
+    let all = run(&mismatched, api_key_request(&mismatched.root(), key)).await;
+    assert_eq!(failure(&all).0, FailureKind::UnexpectedApiKey);
+
+    drop(guard);
     let logged = String::from_utf8_lossy(&capture.0.lock().unwrap()).into_owned();
+    assert!(
+        logged.contains("wisp-test-sentinel: starting the mismatched run"),
+        "the capture never saw anything, so it can't prove the key's absence: {logged:?}"
+    );
     assert!(
         !logged.contains(key),
         "the key leaked into tracing output: {logged}"
     );
 }
 
+// The fake CLI's own scrubbing of its child's environment stands in for the real CLI's, which
+// is documented (0004 [16]) but not something wispd can verify directly: this proves wispd sets
+// CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 and that a CLI honoring it keeps the key from a subprocess.
 #[tokio::test]
 async fn a_tool_subprocess_the_cli_spawns_never_sees_the_key() {
     let fake = Fake::new("subprocess-env");
     let key = "sk-ant-api03-test-key-not-real";
     run(&fake, api_key_request(&fake.root(), key)).await;
+    assert!(
+        fake.env().contains(&format!("ANTHROPIC_API_KEY={key}")),
+        "the CLI itself must have had the key, or this test proves nothing: {:?}",
+        fake.env()
+    );
     let child_env: Vec<String> = fake
         .recorded("child-env")
         .lines()

@@ -42,8 +42,10 @@
 //! own configuration folder. [`apply_credential`] then injects only what the account needs: the
 //! account's configuration folder for a subscription, or, for an API key account (#118), only
 //! [`API_KEY_ENV`] with the key [`key_account::resolve`](super::key_account::resolve) read from
-//! the Keychain. The key is never in `args`, so `ps` can't show it, and the [`super::ApiKey`]
-//! that carries it zeroizes its buffer once the run holding it is dropped.
+//! the Keychain. The key is never in `args`, so `ps` can't show it, and every copy of it wispd
+//! makes along the way ([`super::ApiKey`]'s own buffer, [`super::process::Environment`]'s
+//! entries, and the buffers `spawn_session` builds from them) is zeroized once it is done with
+//! it.
 //!
 //! A project's `env` block can still set variables for a worker (0004, #134), so the output is
 //! checked as well. A `system/init` whose `apiKeySource` isn't the account's, or is missing, and

@@ -42,6 +42,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::net::unix::pipe;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Instant, sleep_until, timeout};
+use zeroize::Zeroize;
 
 use super::event::ExitInfo;
 use crate::paths::DataDir;
@@ -66,7 +67,9 @@ pub const DEFAULT_DRAIN_AFTER_EXIT: Duration = Duration::from_millis(500);
 const TRAMPOLINE: &str = "cd -- \"$1\" && shift && exec \"$@\"";
 const SHELL: &str = "/bin/sh";
 
-/// A set of environment variables. Its `Debug` shows names only, since values can be secrets.
+/// A set of environment variables. Its `Debug` shows names only, since values can be secrets, and
+/// a value it drops or replaces (`set`, `remove`, going out of scope) is zeroized first, so an
+/// API key (#118) doesn't sit in a freed allocation.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Environment {
     vars: BTreeMap<OsString, OsString>,
@@ -91,15 +94,15 @@ impl Environment {
         self.vars.get(name.as_ref()).map(OsString::as_os_str)
     }
 
-    /// Sets `name` to `value`.
+    /// Sets `name` to `value`, zeroizing whatever value `name` had before.
     pub fn set(&mut self, name: impl Into<OsString>, value: impl Into<OsString>) -> &mut Self {
-        self.vars.insert(name.into(), value.into());
+        zeroize_os_string(self.vars.insert(name.into(), value.into()));
         self
     }
 
-    /// Removes `name`.
+    /// Removes `name`, zeroizing its value.
     pub fn remove(&mut self, name: impl AsRef<OsStr>) -> &mut Self {
-        self.vars.remove(name.as_ref());
+        zeroize_os_string(self.vars.remove(name.as_ref()));
         self
     }
 
@@ -110,8 +113,23 @@ impl Environment {
 
     fn extend(&mut self, other: &Self) {
         for (name, value) in &other.vars {
-            self.vars.insert(name.clone(), value.clone());
+            zeroize_os_string(self.vars.insert(name.clone(), value.clone()));
         }
+    }
+}
+
+impl Drop for Environment {
+    fn drop(&mut self) {
+        for value in self.vars.values_mut() {
+            std::mem::take(value).into_encoded_bytes().zeroize();
+        }
+    }
+}
+
+/// Zeroizes `value`'s bytes before it is freed, if there is one.
+fn zeroize_os_string(value: Option<OsString>) {
+    if let Some(value) = value {
+        value.into_encoded_bytes().zeroize();
     }
 }
 
