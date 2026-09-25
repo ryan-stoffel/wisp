@@ -14,8 +14,9 @@ The decisions behind it:
 | --- | --- |
 | `wispd serve` | Serves the protocol on this user's Unix socket until SIGTERM or SIGINT |
 | `wispd attach` | Connects stdin and stdout to that socket, and starts wispd first if nothing is listening |
+| `wispd service install`, `uninstall`, `status` | Manage the LaunchAgent that keeps `serve` running (#61) |
 
-Both commands take `--data-dir` (or `WISPD_DATA_DIR`) to use a data folder other than `~/Library/Application Support/wisp`. `attach` also takes `--connect-timeout <seconds>`, which defaults to 10.
+Both commands take `--data-dir` (or `WISPD_DATA_DIR`) to use a data folder other than `~/Library/Application Support/wisp`. `attach` also takes `--connect-timeout <seconds>`, which defaults to 10 and can be at most 86400, a day.
 
 `attach` passes bytes through unchanged and prints nothing else on stdout. You can send a request by hand:
 
@@ -26,7 +27,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol
 
 When its input ends, `attach` keeps printing until wispd has answered everything it was sent, and then exits. The same command works through `ssh <host> wispd attach`.
 
-If wispd isn't running, `attach` starts it through the LaunchAgent when one is installed. Otherwise it starts `wispd serve` in the background, in its own session. That `serve` keeps running after `attach` exits or the SSH connection drops, and `attach` never stops it.
+If wispd isn't running, `attach` starts it through the LaunchAgent when one is installed and serves the same data folder. The LaunchAgent under the default label serves only the default data folder, so `wispd service install --data-dir <other>` needs `--label` as well. Otherwise it starts `wispd serve` in the background, in its own session. That `serve` keeps running after `attach` exits or the SSH connection drops, and `attach` never stops it.
 
 ### Exit codes
 
@@ -50,15 +51,15 @@ ssh -T -o BatchMode=yes -o ConnectTimeout=10 -o ControlPath=none -- <host> wispd
 
 It uses your own ssh config, keys, and agent (0007). For that command to work, the host needs:
 
-1. **wisp installed**, with `brew install --cask ryan-stoffel/taps/wisp`. The cask links `wispd` into `/opt/homebrew/bin` (#62).
-2. **`wispd` on the `PATH` of a non-interactive SSH command.** sshd runs `wispd attach` through your login shell as `zsh -c`, which reads `~/.zshenv` but not `~/.zprofile` or `~/.zshrc`. The `PATH` it starts with is `/usr/bin:/bin:/usr/sbin:/sbin`, so `/opt/homebrew/bin` is missing. Fix it on the host in one of these ways:
+1. **wisp installed**, with `brew install --cask ryan-stoffel/taps/wisp`. The cask links `wispd` into Homebrew's `bin` folder (#62): `/opt/homebrew/bin` on Apple silicon, `/usr/local/bin` on Intel.
+2. **`wispd` on the `PATH` of a non-interactive SSH command.** sshd runs `wispd attach` through your login shell as `zsh -c`, which reads `~/.zshenv` but not `~/.zprofile` or `~/.zshrc`. The `PATH` it starts with is `/usr/bin:/bin:/usr/sbin:/sbin`, so Homebrew's `bin` folder is missing. Fix it on the host in one of these ways. The examples use Apple silicon's `/opt/homebrew/bin`; on an Intel host, use `/usr/local/bin` instead.
    - Add Homebrew to `PATH` in `~/.zshenv`, the file zsh reads for every command:
 
      ```sh
      export PATH="/opt/homebrew/bin:$PATH"
      ```
 
-   - Or run `wispd` by its full path, `/opt/homebrew/bin/wispd attach`. The editor retries with that path when the host's shell exits 127, meaning it didn't find `wispd` (#64).
+   - Or run `wispd` by its full path, such as `/opt/homebrew/bin/wispd attach`. The editor retries with that path when the host's shell exits 127, meaning it didn't find `wispd` (#64).
 
    `SetEnv PATH=...` for the host in the laptop's `~/.ssh/config`, or `ssh -o SetEnv=...`, works only if the host's sshd lists `PATH` in `AcceptEnv`. macOS's sshd accepts only `LANG` and `LC_*`, so it drops `PATH`. Changing that means editing the host's sshd configuration, which affects every login, so prefer one of the fixes above.
 
