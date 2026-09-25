@@ -96,7 +96,7 @@
 	color: var(--vscode-input-foreground);
 }
 
-.wisp-coordinator-chat .wisp-chat-composer:focus-within {
+.wisp-coordinator-chat .wisp-chat-composer:has(> .wisp-chat-input:focus) {
 	border-color: var(--vscode-focusBorder);
 }
 
