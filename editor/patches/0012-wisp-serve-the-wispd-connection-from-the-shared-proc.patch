@@ -16,35 +16,35 @@ created on first use, and the channel keeps request cancellation, which
 ProxyChannel does not carry.
 
 diff --git a/src/vs/code/electron-utility/sharedProcess/sharedProcessMain.ts b/src/vs/code/electron-utility/sharedProcess/sharedProcessMain.ts
-index d32bf32badc887efdb4fa0233614d3f84deaf12f..466a4b295c89367c8b6241cec201361d268e56a9 100644
+index d32bf32badc887efdb4fa0233614d3f84deaf12f..b55669fe8f9b0bb176f0e90c74b0b96a95494920 100644
 --- a/src/vs/code/electron-utility/sharedProcess/sharedProcessMain.ts
 +++ b/src/vs/code/electron-utility/sharedProcess/sharedProcessMain.ts
-@@ -147,6 +147,8 @@ import { PlaywrightChannel } from '../../../platform/browserView/node/playwright
- import { AgentNetworkFilterService } from '../../../platform/networkFilter/common/networkFilterService.js';
- import { ILocalGitService } from '../../../platform/git/common/localGitService.js';
- import { LocalGitService } from '../../../platform/git/node/localGitService.js';
+@@ -74,6 +74,8 @@ import { SharedProcessUserDataProfileStorageService } from '../../../platform/us
+ import { ActiveWindowManager } from '../../../platform/windows/node/windowTracker.js';
+ import { ISignService } from '../../../platform/sign/common/sign.js';
+ import { SignService } from '../../../platform/sign/node/signService.js';
 +import { IWispdService, WISPD_CHANNEL_NAME, WispdChannel } from '../../../platform/wisp/common/wispd.js';
 +import { WispdService } from '../../../platform/wisp/node/wispdService.js';
- 
- class SharedProcessMain extends Disposable implements IClientConnectionFilter {
- 
-@@ -433,6 +435,9 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
- 		// Tunnel Agent Host
- 		services.set(ITunnelAgentHostMainService, new SyncDescriptor(TunnelAgentHostMainService, undefined, true));
+ import { ISharedTunnelsService } from '../../../platform/tunnel/common/tunnel.js';
+ import { SharedTunnelsService } from '../../../platform/tunnel/node/tunnelService.js';
+ import { ipcSharedProcessTunnelChannelName, ISharedProcessTunnelService } from '../../../platform/remote/common/sharedProcessTunnelService.js';
+@@ -404,6 +406,9 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
+ 		// Signing
+ 		services.set(ISignService, new SyncDescriptor(SignService, undefined, false /* proxied to other processes */));
  
 +		// wisp: the connection to wispd
 +		services.set(IWispdService, new SyncDescriptor(WispdService, undefined, true));
 +
- 		return new InstantiationService(services);
- 	}
- 
-@@ -525,6 +530,9 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
- 		const tunnelAgentHostChannel = ProxyChannel.fromService(accessor.get(ITunnelAgentHostMainService), this._store);
- 		this.server.registerChannel(TUNNEL_AGENT_HOST_CHANNEL, tunnelAgentHostChannel);
+ 		// Tunnel
+ 		const remoteSocketFactoryService = new RemoteSocketFactoryService();
+ 		services.set(IRemoteSocketFactoryService, remoteSocketFactoryService);
+@@ -462,6 +467,9 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
+ 		const checksumChannel = ProxyChannel.fromService(accessor.get(IChecksumService), this._store);
+ 		this.server.registerChannel('checksum', checksumChannel);
  
 +		// wisp: the connection to wispd
 +		this.server.registerChannel(WISPD_CHANNEL_NAME, new WispdChannel(accessor.get(IWispdService)));
 +
- 	}
- 
- 	private registerErrorHandler(logService: ILogService): void {
+ 		// Profiling
+ 		const profilingChannel = ProxyChannel.fromService(accessor.get(IV8InspectProfilingService), this._store);
+ 		this.server.registerChannel('v8InspectProfiling', profilingChannel);
