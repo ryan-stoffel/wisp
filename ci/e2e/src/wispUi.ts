@@ -48,6 +48,25 @@ export async function waitForHostKind(window: Page, kinds: readonly string[], ti
   return hostChipStatus(window);
 }
 
+/**
+ * Waits until the host chip shows both `name` and `kind`. Checking `kind` alone races when the
+ * chip already shows that kind for the *previous* host (for example, waiting for 'connected' right
+ * after switching away from an already-connected "this Mac" can see the old, still-connected chip
+ * and return immediately, before the switch has taken effect).
+ */
+export async function waitForHostNamed(window: Page, name: string, kind: string, timeoutMs: number): Promise<HostChipStatus> {
+  await window.waitForFunction(
+    ({ selector, wantedName, wantedKind }) => {
+      const chip = document.querySelector(selector);
+      return chip?.getAttribute('data-kind') === wantedKind
+        && chip.querySelector('.wisp-threads-host-name')?.textContent === wantedName;
+    },
+    { selector: HOST_CHIP, wantedName: name, wantedKind: kind },
+    { timeout: timeoutMs },
+  );
+  return hostChipStatus(window);
+}
+
 /** The sidebar's project rows, by their accessible name ("<name>, project, updated <age>"). */
 export async function projectRowLabels(window: Page): Promise<string[]> {
   return window.evaluate(() =>

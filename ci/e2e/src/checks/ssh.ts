@@ -8,7 +8,7 @@
 // skips too; wherever it can't run, that keeps #95 open rather than failing the build (its own AC).
 import { skip, check } from '../check.ts';
 import { TIMEOUT_MS, launchConnectedForSsh, readEnvFile, ready } from '../harness.ts';
-import { clickHostMenuItem, fillQuickInput, openHostMenu, waitForHostKind } from '../wispUi.ts';
+import { clickHostMenuItem, fillQuickInput, openHostMenu, waitForHostKind, waitForHostNamed } from '../wispUi.ts';
 
 /** Where `scripts/ci/ssh-localhost` writes its `KEY=value` result (also read by scripts/ci/e2e). */
 const STATUS_ENV_VAR = 'WISP_E2E_SSH_STATUS_FILE';
@@ -37,7 +37,10 @@ export const sshChecks = [
       await fillQuickInput(window, 'localhost');
       await window.keyboard.press('Enter');
 
-      const connected = await waitForHostKind(window, ['connected'], TIMEOUT_MS);
+      // Waits for both the name and the kind together: right after the switch the chip can still
+      // read 'connected' for the *old* host ("this Mac") for a moment, and a kind-only wait would
+      // return on that stale match instead of the new host actually connecting.
+      const connected = await waitForHostNamed(window, 'localhost', 'connected', TIMEOUT_MS);
       if (connected.kind !== 'connected' || connected.name !== 'localhost') {
         throw new Error(`host chip is ${JSON.stringify(connected)}, expected it connected to localhost`);
       }
