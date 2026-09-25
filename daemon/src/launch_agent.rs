@@ -1,29 +1,26 @@
-//! The launch agent that keeps `wispd serve` running on a host (#61), as far as `attach` needs it:
-//! its label, where its plist is installed, and how to start it (0010).
+//! Starting the launch agent that [`crate::service`] installs (#61), as `attach` does when it
+//! finds wispd not running (0010).
+//!
+//! The label and plist path are [`service`]'s. The agent under [`DEFAULT_LABEL`] serves the
+//! default data folder, which `wispd service install` enforces.
 
-use std::io;
-use std::path::{Path, PathBuf};
+use std::io::{self, Read as _};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::paths::DataDir;
+use crate::service::{self, DEFAULT_LABEL, LAUNCHCTL};
 
-/// The launch agent's label: the app's bundle id (0006) and `.wispd`.
-pub const LABEL: &str = "io.github.ryan-stoffel.wisp.wispd";
+const POLL: Duration = Duration::from_millis(10);
 
-const LAUNCHCTL: &str = "/bin/launchctl";
-
-/// Where the launch agent's plist is installed, for the user whose home folder is `home`.
-#[must_use]
-pub fn plist_path(home: &Path) -> PathBuf {
-    home.join("Library/LaunchAgents")
-        .join(format!("{LABEL}.plist"))
-}
-
-/// The launch agent's service target for the user `uid`: `gui/<uid>/<LABEL>`. launchd loads the
-/// agent into the user's GUI domain, where the Keychain is reachable (0004).
+/// The service target of the agent under [`DEFAULT_LABEL`] for the user `uid`:
+/// `gui/<uid>/<label>`. launchd loads it into the user's GUI domain, where the Keychain is
+/// reachable (0004).
 #[must_use]
 pub fn service_target(uid: u32) -> String {
-    format!("gui/{uid}/{LABEL}")
+    format!("gui/{uid}/{DEFAULT_LABEL}")
 }
 
 /// A launch agent that `attach` can start.
@@ -38,44 +35,68 @@ pub struct LaunchAgent {
 impl LaunchAgent {
     /// This user's launch agent, if it is installed and serves `data_dir`.
     ///
-    /// The launch agent serves the default data folder, so a `--data-dir` or `WISPD_DATA_DIR`
-    /// that names another folder never starts it. It counts as installed when its plist exists.
+    /// The agent serves the default data folder, so a `--data-dir` or `WISPD_DATA_DIR` that
+    /// names another folder never starts it. It counts as installed when its plist exists.
     #[must_use]
     pub fn installed_for(data_dir: &DataDir) -> Option<Self> {
         if DataDir::default_location().ok()? != *data_dir {
             return None;
         }
-        let home = std::env::home_dir()?;
-        plist_path(&home).is_file().then(|| Self {
-            launchctl: PathBuf::from(LAUNCHCTL),
-            service: service_target(rustix::process::getuid().as_raw()),
-        })
+        service::plist_path(DEFAULT_LABEL)
+            .ok()?
+            .is_file()
+            .then(|| Self {
+                launchctl: PathBuf::from(LAUNCHCTL),
+                service: service_target(rustix::process::getuid().as_raw()),
+            })
     }
 
-    /// Starts the service unless it is running, with `launchctl kickstart`.
+    /// Starts the service unless it is running, with `launchctl kickstart`, waiting for
+    /// `launchctl` until `deadline` at the latest.
     ///
     /// # Errors
     ///
-    /// If `launchctl` can't run or fails. The error includes what it printed.
-    pub fn kickstart(&self) -> io::Result<()> {
-        let output = Command::new(&self.launchctl)
+    /// If `launchctl` can't run, fails, or is still running at `deadline`, in which case it is
+    /// killed. The error includes what it printed on stderr.
+    pub fn kickstart(&self, deadline: Instant) -> io::Result<()> {
+        let mut child = Command::new(&self.launchctl)
             .arg("kickstart")
             .arg(&self.service)
             .stdin(Stdio::null())
-            .output()?;
-        if output.status.success() {
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!(
+                        "`launchctl kickstart {}` did not finish in time",
+                        self.service
+                    ),
+                ));
+            }
+            thread::sleep(POLL.min(deadline - now));
+        };
+        if status.success() {
             return Ok(());
         }
-        let printed = if output.stderr.trim_ascii().is_empty() {
-            output.stdout
-        } else {
-            output.stderr
-        };
+        // launchctl prints a line or two, well under a pipe's buffer, so it never blocked on
+        // writing it.
+        let mut printed = String::new();
+        if let Some(mut stderr) = child.stderr.take() {
+            let _ = stderr.read_to_string(&mut printed);
+        }
         Err(io::Error::other(format!(
-            "`launchctl kickstart {}` failed ({}): {}",
+            "`launchctl kickstart {}` failed ({status}): {}",
             self.service,
-            output.status,
-            String::from_utf8_lossy(printed.trim_ascii())
+            printed.trim()
         )))
     }
 }
@@ -85,16 +106,13 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant};
 
-    use super::{LaunchAgent, plist_path, service_target};
+    use super::{LaunchAgent, service_target};
     use crate::paths::DataDir;
 
     #[test]
-    fn the_label_names_the_plist_and_the_service() {
-        assert_eq!(
-            plist_path(Path::new("/Users/me")),
-            Path::new("/Users/me/Library/LaunchAgents/io.github.ryan-stoffel.wisp.wispd.plist")
-        );
+    fn the_service_target_is_the_default_label_in_the_gui_domain() {
         assert_eq!(
             service_target(501),
             "gui/501/io.github.ryan-stoffel.wisp.wispd"
@@ -114,26 +132,53 @@ mod tests {
         path
     }
 
+    fn agent(launchctl: PathBuf) -> LaunchAgent {
+        LaunchAgent {
+            launchctl,
+            service: "gui/501/test".to_owned(),
+        }
+    }
+
+    fn soon() -> Instant {
+        Instant::now() + Duration::from_secs(10)
+    }
+
     #[test]
     fn kickstart_runs_launchctl_and_reports_its_failure() {
         let dir = tempfile::tempdir().unwrap();
         let args = dir.path().join("args");
-        let ok = LaunchAgent {
-            launchctl: fake_launchctl(dir.path(), &format!("echo \"$@\" > '{}'", args.display())),
-            service: "gui/501/test".to_owned(),
-        };
-        ok.kickstart().unwrap();
+        let ok = agent(fake_launchctl(
+            dir.path(),
+            &format!("echo \"$@\" > '{}'", args.display()),
+        ));
+        ok.kickstart(soon()).unwrap();
         assert_eq!(
             fs::read_to_string(&args).unwrap(),
             "kickstart gui/501/test\n"
         );
 
-        let failing = LaunchAgent {
-            launchctl: fake_launchctl(dir.path(), "echo 'Could not find service' >&2; exit 113"),
-            service: "gui/501/test".to_owned(),
-        };
-        let error = failing.kickstart().unwrap_err().to_string();
+        let failing = agent(fake_launchctl(
+            dir.path(),
+            "echo 'Could not find service' >&2; exit 113",
+        ));
+        let error = failing.kickstart(soon()).unwrap_err().to_string();
         assert!(error.contains("Could not find service"), "{error}");
         assert!(error.contains("113"), "{error}");
+    }
+
+    #[test]
+    fn a_kickstart_that_hangs_is_given_up_at_the_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let hanging = agent(fake_launchctl(dir.path(), "exec sleep 30"));
+        let started = Instant::now();
+        let error = hanging
+            .kickstart(started + Duration::from_millis(200))
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
     }
 }

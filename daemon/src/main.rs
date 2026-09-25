@@ -7,7 +7,9 @@ use clap::{Args, Parser, Subcommand};
 use tokio::net::UnixStream;
 use tokio::signal::unix::{SignalKind, signal};
 use tracing::{error, info, warn};
-use wispd::attach::{self, DEFAULT_CONNECT_TIMEOUT, EXIT_UNAVAILABLE, Options, report};
+use wispd::attach::{
+    self, DEFAULT_CONNECT_TIMEOUT, EXIT_UNAVAILABLE, MAX_CONNECT_TIMEOUT, Options, report,
+};
 use wispd::launch_agent::LaunchAgent;
 use wispd::logging::{self, DEFAULT_LOG_LEVEL, LOG_LEVEL_ENV, LogFilter};
 use wispd::paths::{DATA_DIR_ENV, DataDir};
@@ -59,7 +61,13 @@ fn parse_seconds(text: &str) -> Result<Duration, String> {
         .ok()
         .filter(|seconds| *seconds > 0.0)
         .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
-        .ok_or_else(|| format!("{text:?} is not a number of seconds greater than 0"))
+        .filter(|duration| *duration <= MAX_CONNECT_TIMEOUT)
+        .ok_or_else(|| {
+            format!(
+                "{text:?} is not a number of seconds greater than 0 and at most {}",
+                MAX_CONNECT_TIMEOUT.as_secs()
+            )
+        })
 }
 
 #[derive(Debug, Args)]
@@ -195,6 +203,11 @@ fn serve(args: &ServeArgs) -> ExitCode {
             ));
         }
         info!(log_level = %args.log_level, "starting");
+        // Every path wispd uses is absolute by now. Leaving the directory it was started in
+        // keeps a folder, or the volume it is on, from staying busy for as long as wispd runs.
+        if let Err(error) = std::env::set_current_dir("/") {
+            warn!(%error, "could not change to the root folder");
+        }
         let server = match Server::start(Config::new(data_dir)) {
             Ok(server) => server,
             Err(error @ StartError::AlreadyRunning { .. }) => {
@@ -367,11 +380,13 @@ mod tests {
         );
         assert_eq!(args.connect_timeout, Some(Duration::from_millis(2500)));
         assert_eq!(attach_args(&[]).unwrap().connect_timeout, None);
+        let longest = attach_args(&["--connect-timeout", "86400"]).unwrap();
+        assert_eq!(longest.connect_timeout, Some(Duration::from_hours(24)));
     }
 
     #[test]
     fn attach_refuses_a_timeout_that_is_not_positive_and_extra_arguments() {
-        for bad in ["0", "-1", "soon", "NaN", "inf"] {
+        for bad in ["0", "-1", "soon", "NaN", "inf", "1e19", "86401"] {
             assert!(attach_args(&["--connect-timeout", bad]).is_err(), "{bad}");
         }
         assert!(attach_args(&["extra"]).is_err());

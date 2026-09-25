@@ -33,6 +33,10 @@ pub const EXIT_UNAVAILABLE: u8 = 4;
 /// How long `attach` waits for wispd by default: the editor's liveness window (0007).
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The longest wait [`connect`] accepts: a day. `--connect-timeout` refuses anything longer, and
+/// [`connect`] shortens it to this.
+pub const MAX_CONNECT_TIMEOUT: Duration = Duration::from_hours(24);
+
 /// The first retry comes soon, since a `serve` that is starting binds its socket in milliseconds.
 const FIRST_RETRY: Duration = Duration::from_millis(10);
 /// Retries double up to this, which also paces starting `serve` again while another holds the
@@ -136,21 +140,22 @@ pub fn connect(data_dir: &DataDir, options: &Options) -> Result<StdUnixStream, U
     if let Some(stream) = try_connect(&socket)? {
         return Ok(stream);
     }
-    let deadline = Instant::now() + options.connect_timeout;
+    let timeout = options.connect_timeout.min(MAX_CONNECT_TIMEOUT);
+    let deadline = Instant::now() + timeout;
     let mut starter = Starter {
         data_dir,
         options,
         launched: None,
         spawned: None,
     };
-    starter.start()?;
+    starter.start(deadline)?;
     let mut retry = FIRST_RETRY;
     loop {
         let now = Instant::now();
         if now >= deadline {
             return Err(Unavailable::TimedOut {
                 socket,
-                timeout: options.connect_timeout,
+                timeout,
                 launch_agent: starter.launched,
                 log: data_dir.log_file(),
             });
@@ -158,6 +163,7 @@ pub fn connect(data_dir: &DataDir, options: &Options) -> Result<StdUnixStream, U
         thread::sleep(retry.min(deadline - now));
         retry = (retry * 2).min(MAX_RETRY);
         if let Some(stream) = try_connect(&socket)? {
+            starter.reap_later();
             return Ok(stream);
         }
         starter.check()?;
@@ -203,9 +209,9 @@ struct Spawned {
 }
 
 impl Starter<'_> {
-    fn start(&mut self) -> Result<(), Unavailable> {
+    fn start(&mut self, deadline: Instant) -> Result<(), Unavailable> {
         if let Some(agent) = &self.options.launch_agent {
-            match agent.kickstart() {
+            match agent.kickstart(deadline) {
                 Ok(()) => {
                     self.launched = Some(agent.service.clone());
                     return Ok(());
@@ -243,6 +249,17 @@ impl Starter<'_> {
         })?;
         self.spawned = Some(Spawned { pid, log_len });
         Ok(())
+    }
+
+    /// Once connected, waits for the `serve` spawned last on a thread of its own, so one that
+    /// lost the lock to another doesn't stay a zombie for as long as `attach` runs. The thread
+    /// ends with the process.
+    fn reap_later(&mut self) {
+        if let Some(spawned) = self.spawned.take() {
+            thread::spawn(move || {
+                let _ = rustix::process::waitpid(Some(spawned.pid), WaitOptions::empty());
+            });
+        }
     }
 
     /// Checks on the `serve` spawned last. One that another `serve` kept out with the lock is
@@ -499,10 +516,17 @@ mod tests {
             bridge,
         } = rig();
         drop(stdout);
-        wispd
-            .write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"events/event\"}\n")
-            .await
-            .unwrap();
+        // attach notices a closed stdout on its next write, so wispd keeps writing. A child that
+        // another test spawns may hold the read end for a moment, and absorb a write (#86).
+        let event = b"{\"jsonrpc\":\"2.0\",\"method\":\"events/event\"}\n";
+        let deadline = tokio::time::Instant::now() + PATIENCE;
+        while !bridge.is_finished() {
+            assert!(tokio::time::Instant::now() < deadline, "the bridge ends");
+            if wispd.write_all(event).await.is_err() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         ended(bridge).await.unwrap();
         drop(stdin);
     }
