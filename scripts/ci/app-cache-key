@@ -8,8 +8,11 @@ fail() {
 }
 
 [ $# -eq 1 ] || fail "$usage"
+# arm64 builds in the app job, on every PR and push; x64 has its own app-x64 job, push only (#177),
+# so each arch's key covers only its own job's definition.
 case $1 in
-  arm64 | x64) arch=$1 ;;
+  arm64) arch=$1 job_path=.jobs.app ;;
+  x64) arch=$1 job_path=.jobs.app-x64 ;;
   *) fail "arch must be arm64 or x64, got '$1'" ;;
 esac
 case $(yq --version 2>&1 || true) in
@@ -22,8 +25,8 @@ cd "$root"
 # The Rust inputs cover wispd (#62), which scripts/editor/build-app also builds and bundles, so a
 # daemon-only change rebuilds the cached app instead of reusing one with a stale wispd inside it.
 inputs=$(git ls-files -s -- editor .nvmrc .gitattributes scripts/editor Cargo.lock crates daemon rust-toolchain.toml)
-job=$(yq -o=json '.jobs.app' .github/workflows/ci.yml)
-[ -n "$inputs" ] && [ "$job" != null ] || fail "found no app build inputs or no app job in .github/workflows/ci.yml"
+job=$(yq -o=json "$job_path" .github/workflows/ci.yml)
+[ -n "$inputs" ] && [ "$job" != null ] || fail "found no app build inputs or no ${job_path#.jobs.} job in .github/workflows/ci.yml"
 hash=$(printf '%s\n%s\n' "$inputs" "$job" | shasum -a 256 | cut -d' ' -f1)
 printf '%s\n' "$hash" | grep -Eq '^[0-9a-f]{64}$' || fail "could not hash the inputs"
 printf 'wisp-app-darwin-%s-%s\n' "$arch" "$hash"
