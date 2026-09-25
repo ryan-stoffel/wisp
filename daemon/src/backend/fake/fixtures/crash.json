@@ -1,0 +1,6 @@
+[
+  {"init": {"sessionId": "crash-1"}},
+  {"emit": {"kind": "textDelta", "text": "Almost"}},
+  {"stderr": "fatal: the fake CLI fell over"},
+  "crash"
+]

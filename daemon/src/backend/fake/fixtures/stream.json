@@ -1,0 +1,16 @@
+[
+  {"init": {"sessionId": "fake-session-1", "model": "fake-model"}},
+  {"emit": {"kind": "textDelta", "messageId": "m1", "text": "Reading "}},
+  {"emit": {"kind": "textDelta", "messageId": "m1", "text": "the repo."}},
+  {"emit": {"kind": "text", "messageId": "m1", "text": "Reading the repo."}},
+  {"emit": {"kind": "toolCall", "callId": "c1", "name": "Read", "input": {"file_path": "README.md"}}},
+  {"sleepMs": 20},
+  {"emit": {"kind": "toolResult", "callId": "c1", "status": "ok", "output": "# wisp"}},
+  {"emit": {"kind": "toolCall", "callId": "c2", "name": "Write", "input": {"file_path": "x"}}},
+  {"emit": {"kind": "toolResult", "callId": "c2", "status": "denied"}},
+  {"emit": {"kind": "usage", "model": "fake-model", "inputTokens": 1200, "outputTokens": 80, "cacheReadTokens": 5000, "cacheWriteTokens": 300, "costUsdMicros": 21000}},
+  {"emit": {"kind": "rateLimit", "window": "five_hour", "durationMinutes": 300, "usedPercent": 12.5, "status": "allowed", "resetsAt": "2026-09-24T17:00:00Z"}},
+  {"emit": {"kind": "usage", "model": "fake-model", "inputTokens": 300, "outputTokens": 40, "costUsdMicros": 4000}},
+  {"emit": {"kind": "text", "messageId": "m2", "text": "The README is one line."}},
+  {"endTurn": {"result": "The README is one line."}}
+]
