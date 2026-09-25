@@ -7,10 +7,10 @@ import { test } from 'node:test';
 import { LIMITS, nameProblem, textProblem } from '../src/manifest.ts';
 import { scenarios } from '../src/scenarios.ts';
 
-test('ships the Agents window, startup, editor, and coordinator chat scenarios', () => {
+test('ships the Agents window, startup, and editor scenarios', () => {
   const names = scenarios.map((scenario) => scenario.name);
 
-  assert.deepEqual(names.slice(0, 4), ['agents-window', 'startup', 'editor-file-open', 'coordinator-chat']);
+  assert.deepEqual(names.slice(0, 3), ['agents-window', 'startup', 'editor-file-open']);
 });
 
 test('names are unique and titles are text the comment accepts', () => {

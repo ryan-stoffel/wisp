@@ -1,0 +1,178 @@
+/*---------------------------------------------------------------------------------------------
+ *  wisp: not part of Code - OSS. Edit editor/overlay in the wisp repo, not this copy.
+ *--------------------------------------------------------------------------------------------*/
+
+/*
+ * Only theme and size tokens, so light, dark, and high contrast themes need no rules of their own.
+ * The background and text color come from the sidebar part.
+ */
+
+.wisp-threads {
+	display: flex;
+	flex-direction: column;
+	box-sizing: border-box;
+	height: 100%;
+	font-size: var(--vscode-fontSize-body1);
+}
+
+.wisp-threads button {
+	margin: 0;
+	border: none;
+	background: none;
+	color: inherit;
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+
+.wisp-threads button:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.wisp-threads button.disabled {
+	cursor: default;
+}
+
+.wisp-threads-actions {
+	display: flex;
+	flex: none;
+	flex-direction: column;
+	padding: var(--vscode-spacing-size20) var(--vscode-spacing-size80) var(--vscode-spacing-size60);
+}
+
+.wisp-threads-action {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size100);
+	height: 28px;
+	padding: 0 var(--vscode-spacing-size80);
+	border-radius: var(--vscode-cornerRadius-medium);
+	white-space: nowrap;
+}
+
+.wisp-threads-action:not(.disabled):hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.wisp-threads-action.disabled {
+	color: var(--vscode-disabledForeground);
+}
+
+.wisp-threads-action-label {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.wisp-threads-lists {
+	flex: 1 1 auto;
+	min-height: 0;
+	padding: 0 var(--vscode-spacing-size80);
+	overflow-y: auto;
+}
+
+.wisp-threads-section-header {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	height: 28px;
+	margin-top: var(--vscode-spacing-size100);
+	padding: 0 var(--vscode-spacing-size40) 0 var(--vscode-spacing-size80);
+	color: var(--vscode-descriptionForeground);
+}
+
+.wisp-threads-section-title {
+	flex: 1 1 auto;
+	margin: 0;
+	font-size: var(--vscode-fontSize-label1);
+	font-weight: var(--vscode-fontWeight-semiBold);
+}
+
+.wisp-threads-icon-button {
+	display: inline-flex;
+	flex: none;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	border-radius: var(--vscode-cornerRadius-small);
+	color: var(--vscode-icon-foreground);
+}
+
+.wisp-threads-icon-button:not(.disabled):hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.wisp-threads-icon-button.disabled {
+	color: var(--vscode-disabledForeground);
+}
+
+.wisp-threads-empty {
+	margin: 0;
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size80) var(--vscode-spacing-size80);
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+	line-height: 18px;
+}
+
+.wisp-threads-footer {
+	display: flex;
+	flex: none;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	height: 44px;
+	padding: 0 var(--vscode-spacing-size120) 0 var(--vscode-spacing-size120);
+	border-top: 1px solid var(--vscode-sideBarSectionHeader-border, transparent);
+	white-space: nowrap;
+}
+
+.wisp-threads-user {
+	display: flex;
+	flex: 1 1 auto;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	min-width: 0;
+}
+
+.wisp-threads-avatar {
+	display: inline-flex;
+	flex: none;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	border-radius: var(--vscode-cornerRadius-circle);
+	background-color: var(--vscode-agentsBadge-background);
+	color: var(--vscode-agentsBadge-foreground);
+	font-size: var(--vscode-fontSize-label2);
+	font-weight: var(--vscode-fontWeight-semiBold);
+}
+
+.wisp-threads-user-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.wisp-threads-host {
+	display: inline-flex;
+	flex: none;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	height: 22px;
+	padding: 0 var(--vscode-spacing-size80);
+	border-radius: var(--vscode-cornerRadius-circle);
+	background-color: var(--vscode-agentStatusIndicator-background);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+/* A hollow dot: no host. The label next to it carries the state. */
+.wisp-threads-host-dot {
+	flex: none;
+	box-sizing: border-box;
+	width: 8px;
+	height: 8px;
+	border: 1.5px solid var(--vscode-descriptionForeground);
+	border-radius: var(--vscode-cornerRadius-circle);
+}
