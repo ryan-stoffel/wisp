@@ -13,6 +13,8 @@
 //! - [`attach`]: reaching the server and bridging stdio to it, behind `wispd attach`.
 //! - [`backend`]: the interface over the vendor CLIs that run agents (0004), and the process
 //!   supervision they share.
+//! - `detect`: detecting which vendor CLIs are installed and signed in, without touching their
+//!   credentials (#114).
 //! - [`launch_agent`]: the launch agent that `attach` starts wispd through, when it is installed.
 //! - [`service`]: installs, removes, and reports on the per-user `LaunchAgent` that keeps
 //!   `serve` running (#61).
@@ -26,6 +28,7 @@
 
 pub mod attach;
 pub mod backend;
+mod detect;
 mod event_log;
 pub mod keystore;
 pub mod launch_agent;

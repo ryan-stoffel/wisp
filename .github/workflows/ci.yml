@@ -206,6 +206,53 @@ jobs:
           path: ${{ env.ZIP }}
           key: ${{ steps.inputs.outputs.key }}
 
+  # Playwright Electron smoke tests against the packaged app (#13), restoring the arm64 zip the app job
+  # above just built or restored, the way screenshots.yml's capture job does. Running after app instead of
+  # alongside it means this restore is always a hit: app has already saved that key by the time this job
+  # starts, so smoke adds only its own runtime (about a minute), never a second app build. arm64 only,
+  # matching screenshots.yml's choice, since a bug this suite would catch is not architecture-specific.
+  smoke:
+    runs-on: macos-26
+    needs: [app]
+    timeout-minutes: 20
+    env:
+      ZIP: dist/editor/wisp-darwin-arm64.zip
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Hash the inputs of the app build
+        id: inputs
+        run: |
+          key=$(scripts/ci/app-cache-key arm64)
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      # Restore only: the app job is the one writer of this cache, and it saves only builds that pass check-app.
+      - name: Restore the app the app job built
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.ZIP }}
+          key: ${{ steps.inputs.outputs.key }}
+          fail-on-cache-miss: true
+
+      - name: Unpack the app
+        run: |
+          mkdir -p "$RUNNER_TEMP/app"
+          ditto -x -k "$ZIP" "$RUNNER_TEMP/app"
+          echo "WISP_APP_BUNDLE=$RUNNER_TEMP/app/Wisp.app" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            ci/screenshots/package-lock.json
+            ci/smoke/package-lock.json
+
+      - name: Run the smoke tests
+        run: scripts/ci/smoke
+
   actionlint:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -240,7 +287,7 @@ jobs:
   # Branch protection requires this job's name, ci, as the only check (#6). Renaming it blocks every merge.
   ci:
     if: always()
-    needs: [rust, screenshots, fork, app, actionlint]
+    needs: [rust, screenshots, fork, app, smoke, actionlint]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
