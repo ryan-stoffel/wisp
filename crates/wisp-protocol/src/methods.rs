@@ -26,6 +26,7 @@ use ts_rs::TS;
 
 use crate::jsonrpc::CancelRequestParams;
 use crate::{
+    AccountsDefaultsGetParams, AccountsDefaultsGetResult, AccountsDefaultsSetParams,
     AccountsKeysAddParams, AccountsKeysAddResult, AccountsKeysListParams, AccountsKeysListResult,
     AccountsKeysRemoveParams, AccountsKeysRemoveResult, EventsEventParams, EventsSubscribeParams,
     EventsSubscribeResult, EventsUnsubscribeParams, EventsUnsubscribeResult, HostHealthParams,
@@ -133,6 +134,12 @@ method_table! {
         /// `usage/get`: per-account tokens and cost for today and this week (local time on this
         /// host), and the latest limit windows.
         UsageGet = "usage/get": UsageGetParams => UsageGetResult;
+        /// `accounts/defaults/get`: this host's default account for the coordinator role and for
+        /// a worker role, absent where none is set (#119).
+        AccountsDefaultsGet = "accounts/defaults/get": AccountsDefaultsGetParams => AccountsDefaultsGetResult;
+        /// `accounts/defaults/set`: sets or clears one role's default account, and returns both
+        /// roles' defaults as they stand after the change.
+        AccountsDefaultsSet = "accounts/defaults/set": AccountsDefaultsSetParams => AccountsDefaultsGetResult;
     }
     notifications {
         /// `$/cancelRequest`: cancels a request, which still gets exactly one response. Either
@@ -182,6 +189,8 @@ mod tests {
                 "accounts/keys/list",
                 "accounts/keys/remove",
                 "usage/get",
+                "accounts/defaults/get",
+                "accounts/defaults/set",
                 "$/cancelRequest",
                 "events/event",
             ]

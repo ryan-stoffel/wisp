@@ -73,6 +73,16 @@ export type WispRequests = {
 	 * host), and the latest limit windows.
 	 */
 	"usage/get": { params: UsageGetParams, result: UsageGetResult },
+	/**
+	 * `accounts/defaults/get`: this host's default account for the coordinator role and for
+	 * a worker role, absent where none is set (#119).
+	 */
+	"accounts/defaults/get": { params: AccountsDefaultsGetParams, result: AccountsDefaultsGetResult },
+	/**
+	 * `accounts/defaults/set`: sets or clears one role's default account, and returns both
+	 * roles' defaults as they stand after the change.
+	 */
+	"accounts/defaults/set": { params: AccountsDefaultsSetParams, result: AccountsDefaultsGetResult },
 };
 
 /** Notifications, which get no response, by method. */
@@ -586,6 +596,62 @@ export type UsagePeriod = {
 	 */
 	costUsdMicros?: number | null,
 };
+
+/**
+ * Params of `accounts/defaults/get`.
+ */
+export type AccountsDefaultsGetParams = Record<symbol, never>;
+
+/**
+ * Result of `accounts/defaults/get`, and of `accounts/defaults/set`: this host's default account
+ * for each role, absent where none is set.
+ */
+export type AccountsDefaultsGetResult = {
+	/**
+	 * The coordinator's default account.
+	 */
+	coordinator?: AccountChoice,
+	/**
+	 * A worker's default account.
+	 */
+	worker?: AccountChoice,
+};
+
+/**
+ * An account a task can be routed to: the user's own login in a vendor CLI, or a stored key.
+ *
+ * A newer wispd may send a kind this version does not know. Treat that as absent rather than end
+ * a `switch` over this type in an exhaustiveness assertion.
+ */
+export type AccountChoice = { "kind": "subscription",
+	/**
+	 * The backend's name, as `host/health`'s running agents and wispd's logs use it.
+	 */
+	backend: string, } | { "kind": "key",
+	/**
+	 * The key account's id.
+	 */
+	id: AccountId,
+};
+
+/**
+ * Params of `accounts/defaults/set`.
+ */
+export type AccountsDefaultsSetParams = {
+	/**
+	 * The role to set the default for.
+	 */
+	role: Role,
+	/**
+	 * The new default, or `None` to clear it.
+	 */
+	account?: AccountChoice,
+};
+
+/**
+ * Which kind of run an account is chosen for (0004).
+ */
+export type Role = "coordinator" | "worker";
 
 /**
  * Params of `$/cancelRequest`.

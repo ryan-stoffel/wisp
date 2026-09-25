@@ -31,6 +31,7 @@
 
 mod account;
 mod agent;
+mod defaults;
 mod error;
 mod events;
 pub mod framing;
@@ -52,6 +53,10 @@ pub use account::{
     Provider, RawKey,
 };
 pub use agent::{RunId, TurnId};
+pub use defaults::{
+    AccountChoice, AccountsDefaultsGetParams, AccountsDefaultsGetResult, AccountsDefaultsSetParams,
+    Role,
+};
 pub use error::{ErrorData, ErrorKind, IncompatibleProtocolDetail};
 pub use events::{
     EventsEventParams, EventsSubscribeParams, EventsSubscribeResult, EventsUnsubscribeParams,
@@ -213,6 +218,34 @@ mod tests {
             id: AccountId::generate(),
         });
         round_trip(&AccountsKeysRemoveResult {});
+    }
+
+    #[test]
+    fn account_default_types_round_trip() {
+        round_trip(&AccountsDefaultsGetParams {});
+        for account in [
+            None,
+            Some(AccountChoice::Subscription {
+                backend: "claude".to_owned(),
+            }),
+            Some(AccountChoice::Key {
+                id: AccountId::generate(),
+            }),
+        ] {
+            round_trip(&AccountsDefaultsSetParams {
+                role: Role::Coordinator,
+                account: account.clone(),
+            });
+        }
+        round_trip(&AccountsDefaultsGetResult {
+            coordinator: Some(AccountChoice::Subscription {
+                backend: "claude".to_owned(),
+            }),
+            worker: Some(AccountChoice::Key {
+                id: AccountId::generate(),
+            }),
+        });
+        round_trip(&AccountsDefaultsGetResult::default());
     }
 
     #[test]
