@@ -4,6 +4,7 @@
 
 import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
+import '../../../../platform/wisp/common/wispdConfiguration.js';
 
 // Upstream's own switches for Chat, Copilot, and TypeScript's automatic type acquisition.
 // Registered in code so the first launch gets them too. chat.disableAIFeatures is also pinned

@@ -473,14 +473,30 @@ export class WispdClient extends Disposable {
 		try {
 			message = JSON.parse(line);
 		} catch {
-			this.logger.warn(`wispd: skipped a line that is not JSON (${line.length} characters)`);
+			this.onNonJsonLine(connection, `not JSON (${line.length} characters)`);
 			return;
 		}
 		if (typeof message !== 'object' || message === null) {
-			this.logger.warn('wispd: skipped a line that is not a JSON-RPC message');
+			this.onNonJsonLine(connection, 'not a JSON-RPC message');
 			return;
 		}
 		connection.protocol.handleMessage(message as JsonRpcMessage).catch(error => this.logger.error(`wispd: ${errorMessage(error)}`));
+	}
+
+	/**
+	 * Before `initialize` answers, a host's shell startup files (over SSH, `~/.zshenv`) can print
+	 * lines that are not JSON; those are skipped and logged (decision record 0007). After that, a
+	 * non-JSON line means the protocol stream is corrupted, so the connection is dropped.
+	 */
+	private onNonJsonLine(connection: Connection, reason: string): void {
+		if (!connection.initialized) {
+			this.logger.warn(`wispd: skipped a line that is ${reason}`);
+			return;
+		}
+		this.drop(connection, {
+			reason: 'protocolError',
+			message: `wispd sent a line that is ${reason}. Quiet the host's shell startup files so only wisp's protocol reaches stdout.`,
+		});
 	}
 
 	private onNotification(connection: Connection, notification: IJsonRpcNotification): void {
