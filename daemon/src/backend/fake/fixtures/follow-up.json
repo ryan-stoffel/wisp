@@ -1,0 +1,7 @@
+[
+  {"init": {"sessionId": "chat-1"}},
+  {"emit": {"kind": "text", "text": "First answer."}},
+  {"endTurn": {"result": "First answer."}},
+  "awaitFollowUp",
+  {"endTurn": {"result": "Second answer."}}
+]
