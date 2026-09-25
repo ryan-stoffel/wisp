@@ -42,6 +42,18 @@ for file in product.json package.json; do
   [ "$actual" = "$version" ] || fail "version is '$actual' in the app's $file, expected '$version'"
 done
 
+# wispd's version comes from WISP_VERSION at build time (#44, #62), not a file this script can
+# read without running it, and running an x64 binary here needs Rosetta, as check-app also allows.
+case $arch in
+  arm64) lipo_arch=arm64 ;;
+  x64) lipo_arch=x86_64 ;;
+esac
+wispd="$bundle/Contents/Resources/app/bin/wispd"
+if [ "$lipo_arch" = "$(uname -m)" ] || { [ "$lipo_arch" = x86_64 ] && [ -e /Library/Apple/usr/libexec/oah/libRosettaRuntime ]; }; then
+  actual=$("$wispd" --version) || fail "$wispd --version failed"
+  [ "$actual" = "wispd $version" ] || fail "wispd --version printed '$actual', expected 'wispd $version'"
+fi
+
 mkdir -p "$root/dist"
 rm -f "$zip"
 ditto -c -k --keepParent --norsrc --noextattr --noacl "$bundle" "$zip"

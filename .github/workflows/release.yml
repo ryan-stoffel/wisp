@@ -92,6 +92,21 @@ jobs:
             echo "reused=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # package-app builds wispd too (#62). The key matches ci.yml's rust and app jobs, so a
+      # runner that already warmed this cache under the same key skips the download.
+      - name: Cache Rust toolchain
+        if: steps.published.outputs.reused != 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.rustup/toolchains/*
+            !~/.rustup/toolchains/stable-*
+          key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
+
+      - name: Install Rust toolchain
+        if: steps.published.outputs.reused != 'true'
+        run: rustup toolchain install --no-self-update
+
       - name: Build and package Wisp.app
         if: steps.published.outputs.reused != 'true'
         env:
