@@ -1,24 +1,34 @@
-import { basename, join } from 'node:path';
-import { appears, hasWorkbench, notAvailable, screenshot, type Scenario } from './harness.ts';
+import { cp } from 'node:fs/promises';
+import { join } from 'node:path';
+import { appears, notAvailable, screenshot, visible, type Scenario } from './harness.ts';
 
 const workspace = join(import.meta.dirname, '..', 'fixtures', 'workspace');
-const openFile = join(workspace, 'src', 'tasks.ts');
+const openFile = 'tasks.ts';
 
 export const scenarios: readonly Scenario[] = [
   {
     name: 'startup',
     title: 'Startup',
-    run: ({ window }) => screenshot(window),
+    async run({ window }) {
+      await visible(window, '.part.titlebar', '.part.activitybar', '.part.editor', '.part.statusbar');
+      return screenshot(window);
+    },
   },
   {
     name: 'editor-file-open',
     title: 'Editor with a file open',
-    args: [workspace, openFile],
+    async args(dir) {
+      const folder = join(dir, 'workspace');
+      await cp(workspace, folder, { recursive: true });
+      return [folder, join(folder, 'src', openFile)];
+    },
     async run({ window }) {
-      if (!(await hasWorkbench(window))) {
-        return notAvailable('needs the Code - OSS workbench, which replaces the stand-in Electron app');
-      }
-      await window.locator(`.monaco-editor[data-uri$="/src/${basename(openFile)}"]`).waitFor();
+      await visible(
+        window,
+        `.monaco-editor[data-uri$="/src/${openFile}"] .view-lines`,
+        `.tabs-container .tab.active[data-resource-name="${openFile}"]`,
+        `[id="workbench.view.explorer"] .monaco-list-row[aria-label="${openFile}"]`,
+      );
       return screenshot(window);
     },
   },
@@ -26,7 +36,7 @@ export const scenarios: readonly Scenario[] = [
     name: 'coordinator-chat',
     title: 'Coordinator chat',
     async run({ window }) {
-      if (!(await hasWorkbench(window)) || !(await appears(window.locator('.wisp-coordinator-chat'), 10_000))) {
+      if (!(await appears(window.locator('.wisp-coordinator-chat'), 10_000))) {
         return notAvailable('needs the coordinator chat view');
       }
       return screenshot(window);

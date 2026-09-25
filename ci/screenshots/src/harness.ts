@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -18,7 +18,7 @@ export interface NotAvailable {
 export interface Scenario {
   name: string;
   title: string;
-  args?: readonly string[];
+  args?: (dir: string) => Promise<readonly string[]>;
   run(context: ScenarioContext): Promise<Buffer | NotAvailable>;
 }
 
@@ -33,7 +33,8 @@ export const WINDOW_SIZE = { width: 1024, height: 640 };
 
 const repoRoot = join(import.meta.dirname, '..', '..', '..');
 const workbenchSelector = '.monaco-workbench';
-const codeOssFlags = ['--skip-welcome', '--skip-release-notes', '--disable-workspace-trust'];
+const workbenchRestoredMark = 'code/didStartWorkbench';
+const appFlags = ['--skip-welcome', '--skip-release-notes', '--disable-workspace-trust', '--use-inmemory-secretstorage'];
 const execFileAsync = promisify(execFile);
 
 export function notAvailable(reason: string): NotAvailable {
@@ -48,8 +49,10 @@ export function screenshot(window: Page, timeout = TIMEOUT_MS): Promise<Buffer> 
   return window.screenshot({ animations: 'disabled', caret: 'hide', timeout });
 }
 
-export async function hasWorkbench(window: Page): Promise<boolean> {
-  return (await window.locator(workbenchSelector).count()) > 0;
+export async function visible(window: Page, ...selectors: string[]): Promise<void> {
+  for (const selector of selectors) {
+    await window.locator(selector).first().waitFor({ state: 'visible' });
+  }
 }
 
 export async function appears(locator: Locator, timeout: number): Promise<boolean> {
@@ -75,8 +78,8 @@ export async function appLaunchOptions(): Promise<LaunchOptions> {
   }
 }
 
-export async function launch(options: LaunchOptions, extraArgs: readonly string[]): Promise<Session> {
-  const profile = await mkdtemp(join(tmpdir(), 'wisp-screenshots-'));
+export async function launch(options: LaunchOptions, scenarioArgs?: Scenario['args']): Promise<Session> {
+  const root = await mkdtemp(join(tmpdir(), 'wisp-screenshots-'));
   let app: ElectronApplication | undefined;
   const close = async (): Promise<void> => {
     if (app) {
@@ -86,12 +89,21 @@ export async function launch(options: LaunchOptions, extraArgs: readonly string[
         child.kill('SIGKILL');
       }
     }
-    await rm(profile, { recursive: true, force: true, maxRetries: 3 });
+    await rm(root, { recursive: true, force: true, maxRetries: 3 });
   };
   try {
+    const files = join(root, 'files');
+    await mkdir(files);
+    const extraArgs = (await scenarioArgs?.(files)) ?? [];
     app = await _electron.launch({
       ...options,
-      args: [...(options.args ?? []), `--user-data-dir=${profile}`, ...codeOssFlags, ...extraArgs],
+      args: [
+        ...(options.args ?? []),
+        `--user-data-dir=${join(root, 'user-data')}`,
+        `--extensions-dir=${join(root, 'extensions')}`,
+        ...appFlags,
+        ...extraArgs,
+      ],
       env: { ...inheritedEnv(), ...options.env },
       timeout: TIMEOUT_MS,
     });
@@ -107,9 +119,8 @@ export async function launch(options: LaunchOptions, extraArgs: readonly string[
 export async function ready({ app, window }: ScenarioContext): Promise<void> {
   await window.waitForURL((url) => url.protocol !== 'about:');
   await fitWindow(app, window);
-  if (window.url().startsWith('vscode-file:')) {
-    await window.locator(workbenchSelector).waitFor();
-  }
+  await window.locator(workbenchSelector).waitFor();
+  await window.waitForFunction((mark) => performance.getEntriesByName(mark, 'mark').length > 0, workbenchRestoredMark);
   await window.evaluate(
     async ({ quietMs, limitMs, fontsMs }) => {
       await new Promise<void>((resolve) => {

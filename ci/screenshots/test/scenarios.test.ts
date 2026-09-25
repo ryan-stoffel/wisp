@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
-import { isAbsolute, join } from 'node:path';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { isAbsolute, join, relative } from 'node:path';
 import { test } from 'node:test';
 import { LIMITS, nameProblem, textProblem } from '../src/manifest.ts';
 import { scenarios } from '../src/scenarios.ts';
@@ -22,12 +23,21 @@ test('names are unique and titles are text the comment accepts', () => {
   }
 });
 
-test('absolute paths in launch arguments exist', () => {
+test('launch arguments are paths that exist inside the scenario directory', async () => {
   for (const scenario of scenarios) {
-    for (const arg of scenario.args ?? []) {
-      if (isAbsolute(arg)) {
-        assert.ok(existsSync(arg), `${scenario.name}: ${arg} does not exist`);
+    if (!scenario.args) {
+      continue;
+    }
+    const dir = await mkdtemp(join(tmpdir(), 'wisp-scenario-args-'));
+    try {
+      for (const arg of await scenario.args(dir)) {
+        if (isAbsolute(arg)) {
+          assert.ok(existsSync(arg), `${scenario.name}: ${arg} does not exist`);
+          assert.ok(!relative(dir, arg).startsWith('..'), `${scenario.name}: ${arg} is outside ${dir}`);
+        }
       }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
   }
 });

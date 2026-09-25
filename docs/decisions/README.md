@@ -4,7 +4,7 @@ A decision that affects more than one issue gets a record here. Records supersed
 
 | Record | Decision |
 | --- | --- |
-| [0001](0001-ci-before-product-code.md) | CI is built before product code, against a stand-in Electron app |
+| [0001](0001-ci-before-product-code.md) | CI is built before product code, against a stand-in Electron app, which #38 retired for the real `Wisp.app` |
 | [0002](0002-editor-fork-strategy.md) | The editor is upstream Code - OSS at a pinned tag plus a patch series |
 | [0003](0003-naming.md) | Wisp, `wisp`, and `wispd` |
 | [0004](0004-subscription-providers.md) | Subscriptions run through each vendor's official CLI; wisp never handles consumer credentials |
