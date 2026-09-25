@@ -143,7 +143,7 @@ export class WispThreadsView extends ViewPane {
 	 * the visible parts are hidden from screen readers, and a change is announced once, politely.
 	 */
 	private renderHostChip(footer: HTMLElement): void {
-		const chip = append(footer, $<HTMLButtonElement>('button.wisp-threads-host', { type: 'button', }));
+		const chip = append(footer, $<HTMLButtonElement>('button.wisp-threads-host', { type: 'button' }));
 		append(chip, $('span.wisp-threads-host-dot', { 'aria-hidden': 'true' }));
 		const name = append(chip, $('span.wisp-threads-host-name', { 'aria-hidden': 'true' }));
 		const state = append(chip, $('span.wisp-threads-host-state', { 'aria-hidden': 'true' }));
@@ -159,6 +159,10 @@ export class WispThreadsView extends ViewPane {
 			name.textContent = status.kind === 'notConnected' ? localize('wispThreads.notConnected', "Not connected") : status.host;
 			state.textContent = status.showState && status.kind !== 'notConnected' ? status.state : '';
 			hover.value = this.hoverService.setupDelayedHover(chip, { content: status.kind === 'error' ? `${status.ariaLabel}. ${status.heading}` : status.ariaLabel });
+			// Connecting passes in a moment, so only where it lands is announced.
+			if (status.kind === 'connecting') {
+				return;
+			}
 			if (announced !== undefined && announced !== status.ariaLabel) {
 				ariaStatus(status.ariaLabel);
 			}

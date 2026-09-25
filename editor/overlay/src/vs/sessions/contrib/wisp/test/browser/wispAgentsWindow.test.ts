@@ -202,13 +202,16 @@ suite('wisp: Agents window', () => {
 			assert.deepStrictEqual(commands, [WISP_SHOW_HOST_MENU_COMMAND]);
 		});
 
-		test('a host state change is announced politely, and the first render is not', () => {
+		test('a host state change is announced politely, but not the first render or connecting', () => {
 			const aria = mainWindow.document.createElement('div');
 			setARIAContainer(aria);
 			const { wispd } = renderSidebar('mac-mini');
 			const regions = [...aria.querySelectorAll<HTMLElement>('.monaco-status')];
 			const announced = () => regions.map(element => element.textContent).join('');
 			assert.strictEqual(announced(), '');
+
+			wispd.setState(connecting(1, SSH_COMMAND));
+			assert.strictEqual(announced(), '', 'connecting is transient, so it is not announced');
 
 			wispd.setState(connected(SSH_COMMAND));
 			assert.strictEqual(announced(), 'Host: mac-mini, connected');

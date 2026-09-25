@@ -2,11 +2,10 @@
  *  wisp: not part of Code - OSS. Edit editor/overlay in the wisp repo, not this copy.
  *--------------------------------------------------------------------------------------------*/
 
-import './media/wispHostMenu.css';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { autorun } from '../../../../base/common/observable.js';
-import { ThemeIcon } from '../../../../base/common/themables.js';
+import { ThemeColor, ThemeIcon, themeColorFromId } from '../../../../base/common/themables.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
@@ -38,9 +37,13 @@ const MARK_ICONS: Record<WispHostMark, ThemeIcon> = {
 	error: Codicon.error,
 };
 
-function markClasses(mark: WispHostMark): string[] {
-	return [...ThemeIcon.asClassNameArray(MARK_ICONS[mark]), `wisp-host-mark-${mark}`];
-}
+/** Each mark is its own codicon shape, so color is never the only cue. */
+const MARK_COLORS: Record<WispHostMark, ThemeColor> = {
+	connected: themeColorFromId('charts.green'),
+	connecting: themeColorFromId('charts.yellow'),
+	idle: themeColorFromId('descriptionForeground'),
+	error: themeColorFromId('errorForeground'),
+};
 
 function capitalize(text: string): string {
 	return text.charAt(0).toUpperCase() + text.slice(1);
@@ -65,7 +68,8 @@ export function hostMenuItems(status: IWispHostStatus, configuredHost: string, r
 			label: remote ? status.host : capitalize(status.host),
 			description: capitalize(status.state),
 			detail: currentHostDetail(status, remote),
-			iconClasses: markClasses(status.mark),
+			iconClass: ThemeIcon.asClassName(MARK_ICONS[status.mark]),
+			iconColor: MARK_COLORS[status.mark],
 			ariaLabel: status.ariaLabel,
 		},
 	];
@@ -74,34 +78,41 @@ export function hostMenuItems(status: IWispHostStatus, configuredHost: string, r
 			id: 'local',
 			label: localize('wispHostMenu.thisMac', "This Mac"),
 			detail: localize('wispHostMenu.thisMacDetail', "Use the wispd that comes with Wisp"),
-			iconClasses: ThemeIcon.asClassNameArray(Codicon.vm),
+			iconClass: ThemeIcon.asClassName(Codicon.vm),
 			run: run.useThisMac,
 		});
 	}
 	items.push(
-		{ id: 'add', label: localize('wispHostMenu.addHost', "Add Host..."), detail: localize('wispHostMenu.addHostDetail', "Connect to an ssh destination from your ssh config"), iconClasses: ThemeIcon.asClassNameArray(Codicon.server), run: run.addHost },
+		{ id: 'add', label: localize('wispHostMenu.addHost', "Add Host..."), detail: localize('wispHostMenu.addHostDetail', "Connect to an ssh destination from your ssh config"), iconClass: ThemeIcon.asClassName(Codicon.server), run: run.addHost },
 		{ type: 'separator' },
-		{ id: 'reconnect', label: localize('wispHostMenu.reconnect', "Reconnect"), iconClasses: ThemeIcon.asClassNameArray(Codicon.refresh), run: run.retry },
-		{ id: 'log', label: localize('wispHostMenu.showLog', "Show wispd Log"), iconClasses: ThemeIcon.asClassNameArray(Codicon.output), run: run.showLog },
+		{ id: 'reconnect', label: localize('wispHostMenu.reconnect', "Reconnect"), iconClass: ThemeIcon.asClassName(Codicon.refresh), run: run.retry },
+		{ id: 'log', label: localize('wispHostMenu.showLog', "Show wispd Log"), iconClass: ThemeIcon.asClassName(Codicon.output), run: run.showLog },
 	);
 	return items;
 }
 
-async function writeHost(accessor: ServicesAccessor, host: string | undefined): Promise<void> {
+/**
+ * Returns a function that writes `wisp.host`, or removes it for this Mac. It takes its services
+ * now, because an accessor is only valid until the command's first `await`.
+ */
+function hostWriter(accessor: ServicesAccessor): (host: string | undefined) => Promise<void> {
 	const configurationService = accessor.get(IConfigurationService);
 	const notificationService = accessor.get(INotificationService);
-	try {
-		// Application-scoped, so it lands in the default profile's settings, which the shared process reads.
-		await configurationService.updateValue(WISP_HOST_SETTING, host, ConfigurationTarget.USER);
-	} catch (error) {
-		notificationService.error(localize('wispHostMenu.writeFailed', "Couldn't change Wisp: Host: {0}", error instanceof Error ? error.message : String(error)));
-	}
+	return async host => {
+		try {
+			// Application-scoped, so it lands in the default profile's settings, which the shared process reads.
+			await configurationService.updateValue(WISP_HOST_SETTING, host, ConfigurationTarget.USER);
+		} catch (error) {
+			notificationService.error(localize('wispHostMenu.writeFailed', "Couldn't change Wisp: Host: {0}", error instanceof Error ? error.message : String(error)));
+		}
+	};
 }
 
 /** Asks for an ssh destination, checked the way the ssh transport checks it, and switches to it. */
 async function addHost(accessor: ServicesAccessor): Promise<void> {
 	const quickInputService = accessor.get(IQuickInputService);
 	const statusService = accessor.get(IWispHostStatusService);
+	const writeHost = hostWriter(accessor);
 	const current = statusService.configuredHost.get();
 	const destination = await quickInputService.input({
 		title: localize('wispHostMenu.addHostTitle', "Add Host"),
@@ -117,7 +128,7 @@ async function addHost(accessor: ServicesAccessor): Promise<void> {
 	if (destination === undefined) {
 		return;
 	}
-	await writeHost(accessor, destination.trim());
+	await writeHost(destination.trim());
 }
 
 async function showLog(accessor: ServicesAccessor): Promise<void> {
@@ -197,7 +208,7 @@ registerAction2(class extends Action2 {
 
 	/** With `'local'`, switches to this Mac; otherwise asks for an ssh destination. */
 	run(accessor: ServicesAccessor, host?: unknown): Promise<void> {
-		return host === 'local' ? writeHost(accessor, undefined) : addHost(accessor);
+		return host === 'local' ? hostWriter(accessor)(undefined) : addHost(accessor);
 	}
 });
 
