@@ -13,6 +13,7 @@ mod migrations;
 mod project;
 mod timestamp;
 mod usage;
+mod worktree;
 
 use std::fs;
 use std::path::Path;
@@ -25,6 +26,7 @@ pub use accounts::{Account, AccountFields};
 pub use error::StoreError;
 pub use project::{Project, ProjectFields};
 pub use usage::{LimitSnapshot, SessionModelUsage, UsageDelta, UsageSummary};
+pub use worktree::{Worktree, WorktreeFields};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const WAL_RETRY_INTERVAL: Duration = Duration::from_millis(20);
