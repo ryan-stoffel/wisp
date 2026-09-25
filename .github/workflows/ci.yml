@@ -45,6 +45,17 @@ jobs:
       - name: Lint, type-check, build, and test
         run: scripts/ci/check-rust
 
+      # wispd builds only on macOS, so the editor's tests against a real wispd run here, on the binary check-rust built.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          # Upstream's lockfile exists only after scripts/editor/prepare runs, and the pin decides it.
+          cache-dependency-path: editor/upstream.json
+
+      - name: Test the editor's wispd client
+        run: scripts/editor/test-wisp target/debug/wispd
+
   editor:
     runs-on: macos-26
     timeout-minutes: 120
