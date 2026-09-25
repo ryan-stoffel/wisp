@@ -30,6 +30,15 @@ export interface SmokeSession extends Session {
 }
 
 /**
+ * `wisp.host` defaults to `local`, and the packaged app bundles a working `wispd`, so a plain launch
+ * now reaches a real local host (#65) instead of staying in the disconnected state it always used to be
+ * in. Pointing WISP_WISPD_PATH (node/wispdService.ts) at a path that can never exist keeps every launch
+ * disconnected deterministically: the checks that read the no-host view need that state on purpose, and
+ * the rest do not depend on wispd at all, so there is nothing to lose by keeping it out of every launch.
+ */
+const WISPD_PATH_ENV = 'WISP_WISPD_PATH';
+
+/**
  * Launches the app the same way ci/screenshots does, but under a throwaway HOME in addition to the
  * throwaway user-data and extensions directories launchApp already makes, and with `args` resolved up
  * front instead of lazily, since smoke checks need the launched app, not a screenshot of it.
@@ -38,8 +47,11 @@ export async function launchSmoke(args: readonly string[] = []): Promise<SmokeSe
   const options = await appLaunchOptions();
   const home = await mkdtemp(join(tmpdir(), 'wisp-smoke-home-'));
   await mkdir(join(home, '.wisp'), { recursive: true });
-  const withHome: LaunchOptions = { ...options, env: { ...options.env, HOME: home } };
-  const session = await launchApp(withHome, () => Promise.resolve(args));
+  const withHome: LaunchOptions = {
+    ...options,
+    env: { ...options.env, HOME: home, [WISPD_PATH_ENV]: join(home, 'no-such-wispd') },
+  };
+  const session = await launchApp(withHome, { args: () => Promise.resolve(args) });
   const close = async (): Promise<void> => {
     await session.close();
     await rm(home, { recursive: true, force: true, maxRetries: 3 });
