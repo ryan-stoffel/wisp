@@ -1,0 +1,53 @@
+#!/bin/sh
+# #95's own check: `wispd attach` through a real `ssh localhost`, once scripts/ci/ssh-localhost has
+# set it up. Mirrors daemon/README.md's own "Testing attach over ssh on your Mac" recipe, but
+# checked instead of eyeballed, and skipped wherever ssh-localhost was skipped (never fails CI, so
+# #95 stays open instead).
+set -eu
+
+status_file=${1:?"usage: $0 <status-file> <wispd-binary>"}
+wispd=${2:?"usage: $0 <status-file> <wispd-binary>"}
+
+ready=$(grep '^WISP_E2E_SSH_READY=' "$status_file" 2>/dev/null | cut -d= -f2- || true)
+if [ "$ready" != "true" ]; then
+  reason=$(grep '^WISP_E2E_SSH_REASON=' "$status_file" 2>/dev/null | cut -d= -f2- || true)
+  echo "check-ssh-attach: skipping: ${reason:-ssh to localhost is not ready (see #95)}"
+  exit 0
+fi
+
+[ -x "$wispd" ] || { echo "check-ssh-attach: $wispd is not an executable file" >&2; exit 1; }
+
+data_dir=$(mktemp -d "${TMPDIR:-/tmp}/wisp-e2e-ssh-attach.XXXXXX")
+trap 'rm -rf "$data_dir"' EXIT
+
+request='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol":{"min":1,"max":1},"client":{"name":"ci-ssh-attach","version":"0"},"capabilities":{}}}'
+set +e
+response=$(printf '%s\n' "$request" | ssh -T -o BatchMode=yes -o ControlPath=none -- localhost "WISPD_DATA_DIR=$data_dir $wispd attach")
+status=$?
+set -e
+
+echo "check-ssh-attach: response: $response"
+if [ "$status" -ne 0 ]; then
+  echo "check-ssh-attach: ssh exited $status, expected 0 once wispd answered" >&2
+  exit 1
+fi
+case "$response" in
+  *'"protocol":1'*) ;;
+  *)
+    echo "check-ssh-attach: expected a successful initialize with protocol 1, got: $response" >&2
+    exit 1
+    ;;
+esac
+
+if [ ! -f "$data_dir/wispd.lock" ]; then
+  echo "check-ssh-attach: no $data_dir/wispd.lock; wispd never started serve" >&2
+  exit 1
+fi
+serve_pid=$(cat "$data_dir/wispd.lock")
+if ! kill -0 "$serve_pid" 2>/dev/null; then
+  echo "check-ssh-attach: serve (pid $serve_pid) was not still running after the ssh session ended" >&2
+  exit 1
+fi
+kill "$serve_pid"
+
+echo "check-ssh-attach: ok (serve pid $serve_pid was running after ssh closed, then stopped)"
