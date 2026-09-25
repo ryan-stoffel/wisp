@@ -1,0 +1,40 @@
+#!/bin/sh
+set -eu
+
+root=$(cd "$(dirname "$0")/../.." && pwd)
+want=$(cut -d. -f1 "$root/.nvmrc")
+have=$(node -p 'process.versions.node.split(".")[0]')
+if [ "$have" != "$want" ]; then
+  echo "${0##*/}: Node $want is required (.nvmrc pins $(cat "$root/.nvmrc")), but node is $(node --version)" >&2
+  exit 1
+fi
+
+set -x
+"$root/scripts/editor/test"
+"$root/scripts/editor/prepare"
+"$root/scripts/editor/export-patches" --check
+if ! cmp -s "$root/.nvmrc" "$root/editor/vscode/.nvmrc"; then
+  echo "${0##*/}: .nvmrc pins Node $(cat "$root/.nvmrc"), but Code - OSS in editor/upstream.json requires $(cat "$root/editor/vscode/.nvmrc"); copy editor/vscode/.nvmrc to .nvmrc" >&2
+  exit 1
+fi
+
+# An upgrade that renames an id in wisp's exclusion lists would bring that feature back
+# without an error, so every listed id must still appear in upstream's source.
+for exclusions in \
+  editor/overlay/src/vs/workbench/common/wisp/exclusions.ts \
+  editor/overlay/src/vs/platform/wisp/common/excludedActions.ts; do
+  missing=$(sed -n "s/^[[:space:]]*'\([^']*\)',.*/\1/p" "$root/$exclusions" | while read -r id; do
+    grep -rqF --include='*.ts' --exclude-dir=wisp "'$id'" "$root/editor/vscode/src/vs" || echo "$id"
+  done)
+  if [ -n "$missing" ]; then
+    echo "${0##*/}: $exclusions lists ids that Code - OSS no longer defines:" $missing >&2
+    exit 1
+  fi
+done
+
+cd "$root/editor/vscode"
+# Keeps an existing development install: npm ci --ignore-scripts would replace
+# its Electron-built native modules with an install that cannot run.
+[ -d node_modules ] || npm ci --ignore-scripts --no-audit --no-fund
+node build/npm/electronTypes.ts
+npm run typecheck-client

@@ -1,0 +1,39 @@
+#!/bin/sh
+set -eu
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/editor/make-icon [icon.svg]
+
+Renders an SVG (default: editor/branding/icon.svg) into
+editor/overlay/resources/darwin/code.icns, the macOS app icon that
+scripts/editor/prepare copies into the tree. Needs macOS with Xcode's swift.
+EOF
+}
+
+case "${1-}" in
+  -h | --help)
+    usage
+    exit 0
+    ;;
+esac
+[ $# -le 1 ] || {
+  usage >&2
+  exit 2
+}
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
+svg=${1:-$root/editor/branding/icon.svg}
+out="$root/editor/overlay/resources/darwin/code.icns"
+[ "$(uname -s)" = Darwin ] || {
+  echo "make-icon: needs macOS" >&2
+  exit 1
+}
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/wisp-icon.XXXXXX")
+trap 'rm -rf "$work"' EXIT
+swift "$here/render-icon.swift" "$svg" "$work/icon.iconset"
+mkdir -p "$(dirname "$out")"
+iconutil --convert icns --output "$out" "$work/icon.iconset"
+echo "make-icon: wrote $out"

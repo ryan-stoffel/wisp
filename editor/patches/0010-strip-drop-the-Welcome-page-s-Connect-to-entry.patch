@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ryan Stoffel <stoffel.thomas.ryan@gmail.com>
+Date: Thu, 24 Sep 2026 07:42:32 -0700
+Subject: [PATCH] strip: drop the Welcome page's Connect to entry
+
+"Connect to..." on the Welcome page runs workbench.action.remote.showMenu,
+which the remote indicator registers. wisp leaves the remote indicator
+out, because its status bar slot becomes wisp's host status and wisp
+ships no remote extensions, so the entry would fail with an unknown
+command. Its condition becomes false; the entry stays in upstream's list.
+
+diff --git a/src/vs/workbench/contrib/welcomeGettingStarted/common/gettingStartedContent.ts b/src/vs/workbench/contrib/welcomeGettingStarted/common/gettingStartedContent.ts
+index 168a3d01b40e08de829484106c0a3d9f669a273f..917800e2eebad689473d57e966bdaf0e533f67a8 100644
+--- a/src/vs/workbench/contrib/welcomeGettingStarted/common/gettingStartedContent.ts
++++ b/src/vs/workbench/contrib/welcomeGettingStarted/common/gettingStartedContent.ts
+@@ -192,7 +192,7 @@ export const startEntries: GettingStartedStartEntryContent = [
+ 		id: 'topLevelRemoteOpen',
+ 		title: localize('gettingStarted.topLevelRemoteOpen.title', "Connect to..."),
+ 		description: localize('gettingStarted.topLevelRemoteOpen.description', "Connect to remote development workspaces."),
+-		when: '!isWeb',
++		when: 'false',
+ 		icon: Codicon.remote,
+ 		content: {
+ 			type: 'startEntry',

@@ -1,0 +1,6 @@
+[
+  {"init": {"sessionId": "limited-1"}},
+  {"emit": {"kind": "rateLimit", "window": "seven_day", "usedPercent": 100, "status": "rejected"}},
+  {"emit": {"kind": "finished", "outcome": {"status": "failed", "failure": "rateLimited", "message": "weekly limit reached"}}},
+  {"exit": 1}
+]

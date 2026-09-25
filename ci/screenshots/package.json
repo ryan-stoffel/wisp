@@ -1,0 +1,26 @@
+{
+  "name": "wisp-ci-screenshots",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Drives the built app with Playwright and captures the views that screenshots.yml posts on each PR",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": "^24.16.0"
+  },
+  "scripts": {
+    "lint": "eslint --max-warnings=0 .",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/**/*.test.ts\""
+  },
+  "dependencies": {
+    "playwright-core": "^1.63.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.13.6",
+    "eslint": "^10.11.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.70.1"
+  }
+}

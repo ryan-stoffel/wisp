@@ -1,0 +1,160 @@
+/*---------------------------------------------------------------------------------------------
+ *  wisp: not part of Code - OSS. Edit editor/overlay in the wisp repo, not this copy.
+ *--------------------------------------------------------------------------------------------*/
+
+/*
+ * Only theme and size tokens, so light, dark, and high contrast themes need no rules of their own.
+ * The background and text color come from the custom view host, which matches a session view.
+ */
+
+/* The view draws its own heading, so it drops the host's header and padding. */
+.custom-view-node[data-view-id="wisp.agents.noHost"] > .custom-view-header {
+	display: none;
+}
+
+.custom-view-node[data-view-id="wisp.agents.noHost"] .custom-view-content {
+	padding: 0;
+}
+
+.wisp-agents-no-host {
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	justify-content: safe center;
+	box-sizing: border-box;
+	padding: var(--vscode-spacing-size240) var(--vscode-spacing-size160);
+	font-size: var(--vscode-fontSize-body1);
+}
+
+.wisp-no-host-message {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: var(--vscode-spacing-size100);
+	text-align: center;
+}
+
+.wisp-no-host-heading {
+	margin: 0;
+	font-size: var(--vscode-fontSize-heading2);
+	font-weight: var(--vscode-fontWeight-semiBold);
+}
+
+.wisp-no-host-body {
+	max-width: 460px;
+	margin: 0;
+	color: var(--vscode-descriptionForeground);
+	line-height: 20px;
+}
+
+.wisp-no-host-actions {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: center;
+	gap: var(--vscode-spacing-size80);
+	margin-top: var(--vscode-spacing-size60);
+}
+
+.wisp-no-host-actions[hidden] {
+	display: none;
+}
+
+.wisp-no-host-action.monaco-button {
+	width: auto;
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size120);
+}
+
+.wisp-no-host-composer {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size100);
+	margin-top: var(--vscode-spacing-size280);
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size80) var(--vscode-spacing-size80) var(--vscode-spacing-size100);
+	border: 1px solid var(--vscode-agentsChatInput-border, transparent);
+	border-radius: var(--vscode-cornerRadius-xLarge);
+	background-color: var(--vscode-agentsChatInput-background);
+	color: var(--vscode-agentsChatInput-foreground);
+}
+
+.wisp-no-host-composer:has(> .wisp-no-host-input:focus) {
+	border-color: var(--vscode-focusBorder);
+}
+
+.wisp-no-host-attach {
+	display: inline-flex;
+	flex: none;
+	align-items: center;
+	justify-content: center;
+	width: 26px;
+	height: 26px;
+	border-radius: var(--vscode-cornerRadius-circle);
+	background-color: var(--vscode-agentStatusIndicator-background);
+	color: var(--vscode-disabledForeground);
+}
+
+.wisp-no-host-input {
+	display: block;
+	flex: 1 1 auto;
+	box-sizing: border-box;
+	min-width: 0;
+	height: 20px;
+	margin: 0;
+	padding: 0;
+	border: none;
+	resize: none;
+	overflow: hidden;
+	background: none;
+	color: inherit;
+	font-family: inherit;
+	font-size: var(--vscode-fontSize-body1);
+	line-height: 20px;
+}
+
+/* The composer's border shows focus instead. */
+.monaco-workbench .wisp-no-host-input:focus {
+	outline: none;
+}
+
+.wisp-no-host-input::placeholder {
+	color: var(--vscode-agentsChatInput-placeholderForeground);
+	opacity: 1;
+}
+
+.wisp-no-host-input[aria-disabled="true"] {
+	cursor: default;
+}
+
+.wisp-no-host-send.monaco-button {
+	display: inline-flex;
+	flex: none;
+	align-items: center;
+	justify-content: center;
+	box-sizing: border-box;
+	width: 28px;
+	height: 28px;
+	padding: 0;
+	border-radius: var(--vscode-cornerRadius-circle);
+}
+
+.wisp-no-host-composer-footer {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size160);
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size40) 0;
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+	white-space: nowrap;
+}
+
+.wisp-no-host-branch,
+.wisp-no-host-host {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+}
+
+.wisp-no-host-host-name {
+	max-width: 240px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}

@@ -1,0 +1,102 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocol": { "min": 1, "max": 4 },
+      "client": { "name": "wisp", "version": "0.9.0", "locale": "en" },
+      "capabilities": { "agents": {}, "coordinator": { "planApproval": true } },
+      "trace": "off"
+    },
+    "meta": { "sentAt": "2027-01-01T00:00:00Z" }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "protocol": 1,
+      "wispd": "0.9.0",
+      "logId": "01a0d86f-ca00-7148-bf36-ad249b128900",
+      "capabilities": { "agents": {}, "triggers": { "kinds": ["schedule"] } },
+      "maxFrameBytes": 8388608,
+      "hostName": "mac-mini"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "host/health"
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "result": { "uptimeSeconds": 5, "store": "migrating", "runningAgents": 2, "load": 0.5 }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "project/list",
+    "params": null
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "result": {
+      "projects": [
+        {
+          "id": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+          "name": "wisp",
+          "repoPath": "/Users/me/src/wisp",
+          "createdAt": "2026-09-24T14:00:00+02:00",
+          "updatedAt": "2026-09-24T12:00:00.000Z",
+          "color": "teal"
+        }
+      ],
+      "seq": 42,
+      "hasMore": false
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0d34a-5860-7ee2-a66a-aef2367abe02",
+      "seq": 43,
+      "time": "2026-09-24T12:30:00Z",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "event": { "kind": "agent.started", "runId": "01a0d352-95c0-7026-8cf2-58be248af056" }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "events/subscribe",
+    "params": { "after": 43, "kinds": ["agent.output"] }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "error": {
+      "code": -32000,
+      "message": "the plan was replaced",
+      "data": { "kind": "planReplaced", "detail": { "planId": "01a0d352-95c0-7026-8cf2-58be248af056" } }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "$/progress",
+    "params": { "token": 1, "value": 0.5 }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "method": "project/create",
+    "params": {
+      "id": "01a0d352-95c0-7026-8cf2-58be248af056",
+      "name": "later",
+      "repoPath": "/Users/me/src/later",
+      "template": "rust"
+    }
+  }
+]

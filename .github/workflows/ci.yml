@@ -1,0 +1,302 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+# A new push to a PR cancels its running check. Each push to develop or main gets its own group,
+# because a shared group cancels a pending run whenever a newer one queues.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  rust:
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Cache Rust toolchain
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.rustup/toolchains/*
+            !~/.rustup/toolchains/stable-*
+          key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Lint, type-check, build, and test
+        run: scripts/ci/check-rust
+
+      # wispd builds only on macOS, so the editor's tests against a real wispd run here, on the binary check-rust built.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          # Upstream's lockfile exists only after scripts/editor/prepare runs, and the pin decides it.
+          cache-dependency-path: editor/upstream.json
+
+      - name: Test the editor's wispd client
+        run: scripts/editor/test-wisp target/debug/wispd
+
+  # ci/screenshots holds screenshots.yml's harness and publish script, including the checks that keep publish's token safe.
+  screenshots:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: ci/screenshots/package-lock.json
+
+      - name: Lint, type-check, and test
+        run: scripts/ci/check-screenshots
+
+  # The Code - OSS type-check needs about 6.4 GB, which swaps on the 7 GB macOS runner, and does not depend on the platform.
+  fork:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # git ls-files -s lists each tracked file's mode, blob, and path, which hashFiles leaves out.
+      - name: Hash the inputs of the Code - OSS check
+        id: inputs
+        run: |
+          inputs=$(git ls-files -s -- editor .nvmrc .gitattributes scripts/editor scripts/ci/check-fork .github/workflows/ci.yml)
+          echo "key=fork-check-$(printf '%s\n' "$inputs" | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      # Each pass saves an empty marker under its inputs' hash, so a PR can reuse a pass from develop or from an earlier push.
+      - name: Look for an earlier pass with the same inputs
+        id: earlier
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .fork-check-passed
+          key: ${{ steps.inputs.outputs.key }}
+          lookup-only: true
+
+      - name: Decide whether to run the check
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          PASSED_BEFORE: ${{ steps.earlier.outputs.cache-hit }}
+        run: |
+          if [ "$EVENT" = pull_request ] && [ "$PASSED_BEFORE" = true ]; then
+            echo "Skipping: these inputs already passed the Code - OSS check."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: steps.decide.outputs.run == 'true'
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          # Upstream's lockfile exists only after scripts/editor/prepare runs, and the pin decides it.
+          cache-dependency-path: editor/upstream.json
+
+      - name: Check the pin and patches, and type-check the patched tree
+        if: steps.decide.outputs.run == 'true'
+        timeout-minutes: 10
+        run: scripts/ci/check-fork
+
+      - name: Record the pass
+        if: steps.decide.outputs.run == 'true' && steps.earlier.outputs.cache-hit != 'true'
+        run: git rev-parse HEAD > .fork-check-passed
+
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.decide.outputs.run == 'true' && steps.earlier.outputs.cache-hit != 'true'
+        with:
+          path: .fork-check-passed
+          key: ${{ steps.inputs.outputs.key }}
+
+  # Builds the packaged Wisp.app, or restores the build of the same inputs from an earlier run (scripts/ci/README.md).
+  app:
+    runs-on: macos-26
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+    env:
+      ARCH: ${{ matrix.arch }}
+      ZIP: dist/editor/wisp-darwin-${{ matrix.arch }}.zip
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The inputs are what scripts/editor/build-app reads, plus this job's own definition. screenshots.yml restores the same key.
+      - name: Hash the inputs of the app build
+        id: inputs
+        run: |
+          key=$(scripts/ci/app-cache-key "$ARCH")
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the app built from the same inputs
+        id: cached
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.ZIP }}
+          key: ${{ steps.inputs.outputs.key }}
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: ${{ steps.cached.outputs.cache-hit != 'true' && 'npm' || '' }}
+          # Upstream's lockfiles exist only after scripts/editor/prepare runs, and the pin decides them.
+          cache-dependency-path: editor/upstream.json
+
+      # build-app also builds wispd for this leg's architecture (#62), only needed on a miss.
+      # The key matches the rust job's, so the two jobs can share one cached toolchain download.
+      - name: Cache Rust toolchain
+        if: steps.cached.outputs.cache-hit != 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.rustup/toolchains/*
+            !~/.rustup/toolchains/stable-*
+          key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
+
+      - name: Install Rust toolchain
+        if: steps.cached.outputs.cache-hit != 'true'
+        run: rustup toolchain install --no-self-update
+
+      - name: Build the app
+        if: steps.cached.outputs.cache-hit != 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          bundle=$(scripts/editor/build-app "$ARCH")
+          mkdir -p "$(dirname "$ZIP")"
+          ditto -c -k --keepParent --norsrc --noextattr --noacl "$bundle" "$ZIP"
+
+      - name: Check the app
+        run: scripts/ci/check-app "$ZIP" "$ARCH"
+
+      - name: Save the app for runs with the same inputs
+        if: steps.cached.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.ZIP }}
+          key: ${{ steps.inputs.outputs.key }}
+
+  # Playwright Electron smoke tests against the packaged app (#13), restoring the arm64 zip the app job
+  # above just built or restored, the way screenshots.yml's capture job does. Running after app instead of
+  # alongside it means this restore is always a hit: app has already saved that key by the time this job
+  # starts, so smoke adds only its own runtime (about a minute), never a second app build. arm64 only,
+  # matching screenshots.yml's choice, since a bug this suite would catch is not architecture-specific.
+  smoke:
+    runs-on: macos-26
+    needs: [app]
+    timeout-minutes: 20
+    env:
+      ZIP: dist/editor/wisp-darwin-arm64.zip
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Hash the inputs of the app build
+        id: inputs
+        run: |
+          key=$(scripts/ci/app-cache-key arm64)
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      # Restore only: the app job is the one writer of this cache, and it saves only builds that pass check-app.
+      - name: Restore the app the app job built
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.ZIP }}
+          key: ${{ steps.inputs.outputs.key }}
+          fail-on-cache-miss: true
+
+      - name: Unpack the app
+        run: |
+          mkdir -p "$RUNNER_TEMP/app"
+          ditto -x -k "$ZIP" "$RUNNER_TEMP/app"
+          echo "WISP_APP_BUNDLE=$RUNNER_TEMP/app/Wisp.app" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            ci/screenshots/package-lock.json
+            ci/smoke/package-lock.json
+
+      - name: Run the smoke tests
+        run: scripts/ci/smoke
+
+  actionlint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      ACTIONLINT_VERSION: 1.7.12
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install actionlint
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/actionlint.tar.gz" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP/bin" actionlint
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Lint workflows
+        run: actionlint -color
+
+      - name: Require ci to need every other job
+        run: |
+          workflow_jobs=$(yq -o=json '.jobs' .github/workflows/ci.yml)
+          if ! jq -e '(keys - ["ci"]) == (.ci.needs | sort)' <<< "$workflow_jobs" > /dev/null; then
+            echo "::error file=.github/workflows/ci.yml::ci.needs must list exactly the other jobs: $(jq -c 'keys - ["ci"]' <<< "$workflow_jobs")"
+            exit 1
+          fi
+
+  # Branch protection requires this job's name, ci, as the only check (#6). Renaming it blocks every merge.
+  ci:
+    if: always()
+    needs: [rust, screenshots, fork, app, smoke, actionlint]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to succeed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$NEEDS"
+          if ! jq -e 'all(.[]; .result == "success")' <<< "$NEEDS" > /dev/null; then
+            echo "::error::Every job in ci.yml must succeed."
+            exit 1
+          fi

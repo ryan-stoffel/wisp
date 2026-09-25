@@ -1,0 +1,17 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": 11,
+    "method": "events/subscribe",
+    "params": { "after": 1 }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 11,
+    "error": {
+      "code": -32000,
+      "message": "the events after seq 1 are no longer available",
+      "data": { "kind": "resyncRequired" }
+    }
+  }
+]

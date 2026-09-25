@@ -1,0 +1,53 @@
+{
+	"nameShort": "Wisp",
+	"nameLong": "Wisp",
+	"applicationName": "wisp",
+	"dataFolderName": ".wisp",
+	"sharedDataFolderName": ".wisp-shared",
+	"win32MutexName": "wisp",
+	"serverApplicationName": "wisp-server",
+	"serverDataFolderName": ".wisp-server",
+	"tunnelApplicationName": "wisp-tunnel",
+	"win32DirName": "Wisp",
+	"win32NameVersion": "Wisp",
+	"win32RegValueName": "Wisp",
+	"win32x64AppId": "{{61A8B2AD-4CD6-4A1E-A2D0-06189B9479B7}",
+	"win32arm64AppId": "{{7658B7E1-E3F7-41A5-A350-755C23A13411}",
+	"win32x64UserAppId": "{{93E55866-1751-4271-B344-C3CD1B1CBDBC}",
+	"win32arm64UserAppId": "{{23A8B946-B2A7-4C2E-9E8D-E607AA0D6F15}",
+	"win32AppUserModelId": "Wisp.Wisp",
+	"win32ShellNameShort": "&Wisp",
+	"win32TunnelServiceMutex": "wisp-tunnelservice",
+	"win32TunnelMutex": "wisp-tunnel",
+	"darwinBundleIdentifier": "io.github.ryan-stoffel.wisp",
+	"darwinProfileUUID": "F40BB8FC-C66C-4D67-B7BD-B1581026EA95",
+	"darwinProfilePayloadUUID": "411383F0-B0F7-4023-9138-3CD3353B00DC",
+	"linuxDesktopName": "io.github.ryan_stoffel.Wisp",
+	"linuxIconName": "wisp",
+	"reportIssueUrl": "https://github.com/ryan-stoffel/wisp/issues/new",
+	"urlProtocol": "wisp",
+	"quality": "stable",
+	"extensionsGallery": {
+		"serviceUrl": "https://open-vsx.org/vscode/gallery",
+		"itemUrl": "https://open-vsx.org/vscode/item",
+		"latestUrlTemplate": "https://open-vsx.org/vscode/gallery/{publisher}/{name}/latest",
+		"controlUrl": "https://raw.githubusercontent.com/EclipseFdn/publish-extensions/refs/heads/master/extension-control/extensions.json"
+	},
+	"linkProtectionTrustedDomains": [
+		"https://open-vsx.org"
+	],
+	"builtInExtensionsEnabledWithAutoUpdates": [],
+	"enableTelemetry": false,
+	"aiConfig": null,
+	"appCenter": null,
+	"crashReporter": null,
+	"tasConfig": null,
+	"updateUrl": null,
+	"downloadUrl": null,
+	"builtInExtensions": [],
+	"trustedExtensionAuthAccess": null,
+	"voiceWsUrl": null,
+	"defaultChatAgent": {
+		"chatExtensionId": ""
+	}
+}

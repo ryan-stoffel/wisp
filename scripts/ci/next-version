@@ -1,0 +1,17 @@
+#!/usr/bin/env node
+'use strict';
+
+const path = require('node:path');
+const { requirePinnedNode } = require('./release/node-version.js');
+const { computeVersion } = require('./release/version.js');
+
+requirePinnedNode('next-version');
+
+try {
+  const { version, reason } = computeVersion(path.resolve(__dirname, '..', '..'));
+  process.stderr.write(`next-version: ${reason}: ${version}\n`);
+  process.stdout.write(`${version}\n`);
+} catch (error) {
+  process.stderr.write(`next-version: ${error.message}\n`);
+  process.exit(1);
+}

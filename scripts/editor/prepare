@@ -1,0 +1,95 @@
+#!/bin/sh
+set -eu
+
+. "$(dirname "$0")/lib.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/editor/prepare [--force]
+
+Fetches Code - OSS at the tag and commit pinned in editor/upstream.json into
+editor/vscode. On top of it, commits wisp's overlay (editor/product.json merged
+into product.json, and the files in editor/overlay), then applies
+editor/patches/*.patch in order as one commit per patch on the branch "wisp".
+Build the result with the steps in docs/editor-upgrade.md.
+
+Stops if editor/vscode has uncommitted changes, untracked files, or commits
+that scripts/editor/export-patches has not written back to editor/patches.
+
+  --force  discard those changes, files, and commits instead of stopping
+EOF
+}
+
+force=false
+case "${1-}" in
+  '') ;;
+  --force) force=true ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
+
+read_pin
+
+stamp=$(inputs_stamp)
+
+if [ -d "$tree/.git" ]; then
+  if operation_in_progress; then
+    $force || fail "a rebase, am, merge, or cherry-pick is in progress in $tree; finish or abort it, or rerun with --force"
+    tree_git am --quit 2>/dev/null || true
+    tree_git rebase --quit 2>/dev/null || true
+    tree_git reset --quiet --hard
+  fi
+  if [ -n "$(uncommitted_changes)" ]; then
+    $force || fail "$tree has uncommitted changes or untracked files (git status there); commit and export them, or rerun with --force"
+    tree_git reset --quiet --hard
+    tree_git clean -d --force --quiet
+  fi
+  head=$(tree_git rev-parse -q --verify HEAD || true)
+  applied=$(tree_git rev-parse -q --verify refs/wisp/applied || true)
+  if [ "$head" != "$applied" ] && ! $force; then
+    fail "$tree has commits that are not in editor/patches; run scripts/editor/export-patches, or rerun with --force to discard them"
+  fi
+  if [ "$head" = "$applied" ] && [ "$(tree_git config --get wisp.stamp || true)" = "$stamp" ]; then
+    printf 'editor/vscode is already prepared: Code - OSS %s plus editor/patches\n' "$tag"
+    exit 0
+  fi
+else
+  [ ! -e "$tree" ] || fail "$tree exists but is not a git repository; move it away and rerun"
+  mkdir -p "$tree"
+  tree_git init --quiet --initial-branch=wisp
+  tree_git remote add origin "$repository"
+fi
+
+tree_git remote set-url origin "$repository"
+resolved=$(fetch_tag "$tag")
+[ "$resolved" = "$commit" ] || fail "tag $tag resolves to $resolved, but $pin_file pins $commit"
+
+base=$(make_base "$commit")
+tree_git checkout --quiet --force -B wisp "$base"
+tree_git update-ref refs/wisp/base "$base"
+overlay='no overlay'
+[ "$base" = "$commit" ] || overlay='the overlay'
+
+set -- "$patch_dir"/*.patch
+[ -e "$1" ] || shift
+if [ $# -gt 0 ]; then
+  if ! GIT_COMMITTER_NAME=$prepare_name GIT_COMMITTER_EMAIL=$prepare_email \
+    tree_git -c advice.mergeConflict=false -c advice.amWorkDir=false \
+      am --quiet --keep-non-patch --keep-cr --quoted-cr=nowarn --committer-date-is-author-date "$@"; then
+    tree_git am --abort
+    tree_git update-ref refs/wisp/applied HEAD
+    tree_git config --unset wisp.stamp || true
+    fail "a patch in editor/patches does not apply to $tag; see the output above and docs/editor-upgrade.md"
+  fi
+fi
+
+tree_git update-ref refs/wisp/applied HEAD
+tree_git config wisp.stamp "$stamp"
+printf 'editor/vscode: Code - OSS %s (%s) with %s and %d patch(es) applied, HEAD %s\n' \
+  "$tag" "$(tree_git rev-parse --short "$commit")" "$overlay" $# "$(tree_git rev-parse --short HEAD)"

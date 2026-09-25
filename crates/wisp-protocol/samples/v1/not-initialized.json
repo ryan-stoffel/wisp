@@ -1,0 +1,17 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "project/list",
+    "params": {}
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "error": {
+      "code": -32000,
+      "message": "initialize must be the first request",
+      "data": { "kind": "notInitialized" }
+    }
+  }
+]

@@ -1,0 +1,56 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": 6,
+    "method": "accounts/list",
+    "params": {}
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 6,
+    "result": {
+      "clis": [
+        {
+          "cli": "claude",
+          "installed": true,
+          "path": "/opt/homebrew/bin/claude",
+          "version": "2.1.281",
+          "signedIn": true,
+          "authKind": "subscription",
+          "plan": "max"
+        },
+        {
+          "cli": "codex",
+          "installed": true,
+          "path": "/usr/local/bin/codex",
+          "signedIn": false
+        },
+        {
+          "cli": "cursor",
+          "installed": false
+        }
+      ],
+      "checkedAt": "2026-09-25T12:00:00Z"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 7,
+    "method": "accounts/refresh",
+    "params": {}
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 7,
+    "result": {
+      "clis": [
+        {
+          "cli": "claude",
+          "installed": true,
+          "note": "timed out after 5s"
+        }
+      ],
+      "checkedAt": "2026-09-25T12:00:05Z"
+    }
+  }
+]

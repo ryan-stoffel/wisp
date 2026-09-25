@@ -1,0 +1,256 @@
+name: Release
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, closed]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.merged && 'publish' || format('pr-{0}', github.event.pull_request.number) }}
+  cancel-in-progress: ${{ !github.event.pull_request.merged }}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # Add x64 to ship an Intel build as well; generate-cask and the cask template handle both. The build job
+  # builds each arch in turn, so raise its timeout-minutes too.
+  RELEASE_ARCHES: arm64
+
+jobs:
+  build:
+    name: build
+    if: >-
+      github.head_ref == 'develop'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && (github.event.action != 'closed' || github.event.pull_request.merged)
+    runs-on: macos-26
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    env:
+      MERGED: ${{ github.event.pull_request.merged }}
+      MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.merged && github.event.pull_request.merge_commit_sha || '' }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require a merge commit
+        if: github.event.pull_request.merged
+        run: |
+          if [ "$(git rev-parse -q --verify "$MERGE_SHA^2" || true)" != "$HEAD_SHA" ]; then
+            echo "::error title=Not released::PR #$PR_NUMBER was not merged with a merge commit, so $MERGE_SHA does not have its head $HEAD_SHA as second parent. Release PRs must use Create a merge commit, or the version would count the wrong commits. Nothing was tagged or released."
+            exit 1
+          fi
+
+      # The release is built from source with nothing restored from Actions' cache, which has no provenance
+      # (scripts/ci/README.md, "The app job").
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+
+      - name: Test the release scripts
+        run: scripts/ci/check-release
+
+      - name: Compute the version
+        id: version
+        run: |
+          version=$(scripts/ci/next-version)
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse a tag that points at another commit
+        if: github.event.pull_request.merged
+        run: |
+          if tagged=$(git rev-parse -q --verify "refs/tags/v$VERSION^{commit}"); then
+            if [ "$tagged" != "$MERGE_SHA" ]; then
+              echo "::error::v$VERSION already exists on $tagged, not on the merge commit $MERGE_SHA."
+              exit 1
+            fi
+          fi
+
+      - name: Reuse the published zips if this version is already released
+        id: published
+        if: github.event.pull_request.merged
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2> /dev/null)" = false ]; then
+            mkdir -p dist
+            gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --pattern "wisp-$VERSION-*.zip" --dir dist
+            echo "reused=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # package-app builds wispd too (#62). The key matches ci.yml's rust and app jobs, so a
+      # runner that already warmed this cache under the same key skips the download.
+      - name: Cache Rust toolchain
+        if: steps.published.outputs.reused != 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.rustup/toolchains/*
+            !~/.rustup/toolchains/stable-*
+          key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
+
+      - name: Install Rust toolchain
+        if: steps.published.outputs.reused != 'true'
+        run: rustup toolchain install --no-self-update
+
+      - name: Build and package Wisp.app
+        if: steps.published.outputs.reused != 'true'
+        env:
+          # Upstream's build downloads from GitHub (ripgrep, the built-in extensions, Electron), and anonymous
+          # API calls from shared runners hit the rate limit. This job's token can only read.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          for arch in $RELEASE_ARCHES; do
+            scripts/ci/package-app "$VERSION" "$arch"
+          done
+
+      - name: Generate the cask
+        run: scripts/ci/generate-cask "$VERSION" dist/wisp-"$VERSION"-*.zip > dist/wisp.rb
+
+      - name: Style, audit, and install the cask in a throwaway tap
+        run: scripts/ci/audit-cask dist/wisp.rb dist/wisp-"$VERSION"-*.zip
+
+      - name: Summarize
+        run: |
+          {
+            if [ "$MERGED" = true ]; then
+              echo "## wisp $VERSION, built for the release job"
+            else
+              echo "## Release dry run: wisp $VERSION"
+              echo
+              echo "Nothing was published. Merging this PR with a merge commit tags \`v$VERSION\`, creates the GitHub Release, and pushes \`Casks/wisp.rb\` to ryan-stoffel/homebrew-taps."
+            fi
+            echo
+            echo '```'
+            (cd dist && shasum -a 256 wisp-"$VERSION"-*.zip)
+            echo '```'
+            echo
+            echo '```ruby'
+            cat dist/wisp.rb
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wisp-${{ env.VERSION }}${{ !github.event.pull_request.merged && '-dry-run' || '' }}
+          path: |
+            dist/wisp-${{ env.VERSION }}-*.zip
+            dist/wisp.rb
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+          overwrite: true
+
+  # The only job with write access. Keep npm installs and builds of repo code out of it, and treat the
+  # artifact as untrusted input.
+  release:
+    name: release
+    needs: build
+    if: github.event.pull_request.merged
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+    steps:
+      - name: Require TAP_GITHUB_TOKEN before anything is tagged
+        env:
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          if [ -z "$TAP_GITHUB_TOKEN" ]; then
+            echo "::error title=TAP_GITHUB_TOKEN is missing::The cask cannot be pushed to ryan-stoffel/homebrew-taps without it, so nothing was tagged or released. Create the secret as described in ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/issues/28, then use Re-run failed jobs on this run."
+            exit 1
+          fi
+
+      - name: Check out the release scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+
+      - name: Check that TAP_GITHUB_TOKEN can reach the tap
+        env:
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: scripts/ci/publish-cask --check
+
+      - name: Download the release files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: wisp-${{ needs.build.outputs.version }}
+          path: ${{ runner.temp }}/release
+
+      - name: Check the release files
+        run: |
+          read -r -a arches <<< "$RELEASE_ARCHES"
+          scripts/ci/check-release-artifact "$RUNNER_TEMP/release" "$VERSION" "${arches[@]}"
+
+      - name: Check for an existing release
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          draft=$(gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2> /dev/null || true)
+          if [ "$draft" = true ]; then
+            echo "::error title=Draft release v$VERSION::An earlier run left a draft release, and its assets may be incomplete. Delete it with \`gh release delete v$VERSION --repo $GITHUB_REPOSITORY\` or on the Releases page, then use Re-run failed jobs on this run."
+            exit 1
+          fi
+          if [ "$draft" = false ]; then
+            gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --pattern "wisp-$VERSION-*.zip" --dir "$RUNNER_TEMP/published"
+            for zip in "$RUNNER_TEMP"/release/wisp-"$VERSION"-*.zip; do
+              if ! cmp -s "$zip" "$RUNNER_TEMP/published/${zip##*/}"; then
+                echo "::error::${zip##*/} in the artifact differs from the one already attached to v$VERSION, so the cask would not match the release."
+                exit 1
+              fi
+            done
+            echo "released=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Tag the merge commit and create the GitHub Release
+        if: steps.existing.outputs.released != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$VERSION" "$RUNNER_TEMP"/release/wisp-"$VERSION"-*.zip \
+            --repo "$GITHUB_REPOSITORY" --target "$MERGE_SHA" \
+            --title "wisp $VERSION" --generate-notes
+
+      - name: Push the cask to ryan-stoffel/homebrew-taps
+        env:
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          if ! scripts/ci/publish-cask "$RUNNER_TEMP/release/wisp.rb" "$VERSION"; then
+            echo "::error title=Cask not pushed::v$VERSION is released, but ryan-stoffel/homebrew-taps was not updated; the error above says why. If TAP_GITHUB_TOKEN is missing, expired, or cannot write to the tap, fix it as described in ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/issues/28, then use Re-run failed jobs on this run. The re-run reuses v$VERSION and only pushes the cask. If the tap already has a newer wisp, there is nothing to fix."
+            exit 1
+          fi
+
+      - name: Summarize
+        run: |
+          {
+            echo "## Released wisp $VERSION"
+            echo
+            echo "- Release: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/v$VERSION"
+            echo "- Cask: https://github.com/ryan-stoffel/homebrew-taps/blob/main/Casks/wisp.rb"
+            echo "- Install: \`brew install --cask ryan-stoffel/taps/wisp\`"
+          } >> "$GITHUB_STEP_SUMMARY"

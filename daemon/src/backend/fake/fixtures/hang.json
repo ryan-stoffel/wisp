@@ -1,0 +1,6 @@
+[
+  {"init": {"sessionId": "hang-1"}},
+  "echoPid",
+  {"emit": {"kind": "textDelta", "text": "Working"}},
+  "hang"
+]

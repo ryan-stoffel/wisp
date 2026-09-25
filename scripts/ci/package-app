@@ -1,0 +1,62 @@
+#!/bin/sh
+set -eu
+
+usage="usage: ${0##*/} <version> [arm64|x64]"
+fail() {
+  echo "${0##*/}: $*" >&2
+  exit 1
+}
+
+[ $# -ge 1 ] && [ $# -le 2 ] || fail "$usage"
+version=$1
+printf '%s\n' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' ||
+  fail "version must be MAJOR.MINOR.PATCH, got '$version'"
+case ${2:-$(uname -m)} in
+  arm64) arch=arm64 ;;
+  x64 | x86_64) arch=x64 ;;
+  *) fail "arch must be arm64 or x64, got '${2:-$(uname -m)}'" ;;
+esac
+[ "$(uname -s)" = Darwin ] || fail "packaging needs macOS"
+
+root=$(cd "$(dirname "$0")/../.." && pwd)
+want=$(cut -d. -f1 "$root/.nvmrc")
+have=$(node -p 'process.versions.node.split(".")[0]')
+[ "$have" = "$want" ] || fail "Node $want is required (.nvmrc pins $(cat "$root/.nvmrc")), but node is $(node --version)"
+bundle_id=io.github.ryan-stoffel.wisp
+zip="$root/dist/wisp-$version-$arch.zip"
+
+# build-app stamps the version, ad-hoc signs the bundle, and checks every Mach-O file's architecture.
+# check-app checks the zip's signature below.
+bundle=$("$root/scripts/editor/build-app" --app-version "$version" "$arch")
+[ -d "$bundle" ] || fail "scripts/editor/build-app printed '$bundle', which is not a directory"
+
+plist="$bundle/Contents/Info.plist"
+for pair in "CFBundleShortVersionString=$version" "CFBundleVersion=$version" "CFBundleIdentifier=$bundle_id"; do
+  key=${pair%%=*}
+  actual=$(plutil -extract "$key" raw -o - "$plist")
+  [ "$actual" = "${pair#*=}" ] || fail "$key is '$actual' in $plist, expected '${pair#*=}'"
+done
+# product.json's version is the one the About dialog and wisp --version show.
+for file in product.json package.json; do
+  actual=$(node -p 'require(process.argv[1]).version' "$bundle/Contents/Resources/app/$file")
+  [ "$actual" = "$version" ] || fail "version is '$actual' in the app's $file, expected '$version'"
+done
+
+# wispd's version comes from WISP_VERSION at build time (#44, #62), not a file this script can
+# read without running it, and running an x64 binary here needs Rosetta, as check-app also allows.
+case $arch in
+  arm64) lipo_arch=arm64 ;;
+  x64) lipo_arch=x86_64 ;;
+esac
+wispd="$bundle/Contents/Resources/app/bin/wispd"
+if [ "$lipo_arch" = "$(uname -m)" ] || { [ "$lipo_arch" = x86_64 ] && [ -e /Library/Apple/usr/libexec/oah/libRosettaRuntime ]; }; then
+  actual=$("$wispd" --version) || fail "$wispd --version failed"
+  [ "$actual" = "wispd $version" ] || fail "wispd --version printed '$actual', expected 'wispd $version'"
+fi
+
+mkdir -p "$root/dist"
+rm -f "$zip"
+ditto -c -k --keepParent --norsrc --noextattr --noacl "$bundle" "$zip"
+"$root/scripts/ci/check-app" "$zip" "$arch"
+echo "${0##*/}: wrote $zip" >&2
+printf '%s\n' "$bundle"

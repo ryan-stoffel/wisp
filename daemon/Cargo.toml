@@ -1,0 +1,37 @@
+[package]
+name = "wispd"
+description = "The wisp host daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+clap = { workspace = true, features = ["derive", "env"] }
+futures-util = { workspace = true, features = ["sink", "std"] }
+jiff = { workspace = true, features = ["serde", "tz-system", "tzdb-zoneinfo"] }
+nix = { workspace = true, features = ["process", "signal"] }
+rustix = { workspace = true, features = ["fs", "process"] }
+security-framework.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-std", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = { workspace = true, features = ["codec", "rt"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["fmt", "std"] }
+uuid.workspace = true
+wisp-protocol = { path = "../crates/wisp-protocol" }
+wisp-store = { path = "../crates/wisp-store" }
+zeroize.workspace = true
+
+[dev-dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+tempfile = "3"
+tokio = { workspace = true, features = ["process"] }

@@ -1,0 +1,28 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocol": { "min": 2, "max": 3 },
+      "client": { "name": "wisp", "version": "0.4.0" },
+      "capabilities": { "agents": {} }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "error": {
+      "code": -32000,
+      "message": "wispd 0.1.0 speaks protocol versions 1 to 1, but the client asked for 2 to 3",
+      "data": {
+        "kind": "incompatibleProtocol",
+        "detail": {
+          "requested": { "min": 2, "max": 3 },
+          "supported": { "min": 1, "max": 1 },
+          "wispd": "0.1.0"
+        }
+      }
+    }
+  }
+]

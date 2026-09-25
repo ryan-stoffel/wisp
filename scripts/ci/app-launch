@@ -1,0 +1,52 @@
+#!/usr/bin/env node
+'use strict';
+
+const { execFileSync } = require('node:child_process');
+const { existsSync, readdirSync } = require('node:fs');
+const path = require('node:path');
+
+const root = path.resolve(__dirname, '..', '..');
+const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+const buildDir = path.join(root, 'editor', `VSCode-darwin-${arch}`);
+const buildHint = 'run scripts/ci/build-app first, or set WISP_APP_BUNDLE to a Wisp.app';
+
+function fail(message) {
+  process.stderr.write(`app-launch: ${message}\n`);
+  process.exit(1);
+}
+
+function builtBundle() {
+  const apps = existsSync(buildDir) ? readdirSync(buildDir).filter((name) => name.endsWith('.app')) : [];
+  if (apps.length !== 1) {
+    fail(`found ${apps.length === 0 ? 'no app' : `${apps.length} apps`} in ${buildDir}; ${buildHint}`);
+  }
+  return path.join(buildDir, apps[0]);
+}
+
+function fromBundle(bundle) {
+  const infoPlist = path.join(bundle, 'Contents', 'Info.plist');
+  if (!existsSync(infoPlist)) {
+    fail(`${bundle} is not an app bundle: ${infoPlist} does not exist`);
+  }
+  let executable;
+  try {
+    executable = execFileSync(
+      'plutil',
+      ['-extract', 'CFBundleExecutable', 'raw', '-o', '-', infoPlist],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    ).trim();
+  } catch (error) {
+    fail(`cannot read CFBundleExecutable from ${infoPlist}: ${error.message}`);
+  }
+  if (!executable) {
+    fail(`CFBundleExecutable is empty in ${infoPlist}`);
+  }
+  const executablePath = path.join(bundle, 'Contents', 'MacOS', executable);
+  if (!existsSync(executablePath)) {
+    fail(`${executablePath} does not exist; rebuild the bundle`);
+  }
+  return { executablePath, args: [] };
+}
+
+const bundle = process.env.WISP_APP_BUNDLE ? path.resolve(process.env.WISP_APP_BUNDLE) : builtBundle();
+process.stdout.write(`${JSON.stringify(fromBundle(bundle))}\n`);

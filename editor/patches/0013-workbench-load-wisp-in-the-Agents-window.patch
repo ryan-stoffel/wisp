@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ryan Stoffel <stoffel.thomas.ryan@gmail.com>
+Date: Thu, 24 Sep 2026 21:28:24 -0700
+Subject: [PATCH] workbench: load wisp in the Agents window
+
+The Agents window is a separate workbench. Its entry point,
+sessions.desktop.main.ts, never imports workbench.desktop.main.ts, so
+the editor window's wisp contribution never runs there.
+
+src/vs/sessions/contrib/wisp/electron-browser/wisp.sessions.contribution.ts
+comes from the overlay and is wisp's entry point in this window, the way
+wisp.contribution.ts is in the editor window. wisp's sessions provider,
+sidebar view, and wispd connection are imported from it without another
+patch.
+
+The import goes last, after every upstream contribution it adjusts.
+
+diff --git a/src/vs/sessions/sessions.desktop.main.ts b/src/vs/sessions/sessions.desktop.main.ts
+index 15b895783966169aa4c2d012a1c76f5e4a190a4e..6c5bda29ecaff779fd94eafeba2b1a00858e6c32 100644
+--- a/src/vs/sessions/sessions.desktop.main.ts
++++ b/src/vs/sessions/sessions.desktop.main.ts
+@@ -265,6 +265,9 @@ import './contrib/tunnelHost/electron-browser/tunnelHost.contribution.js';
+ // Sessions (desktop only)
+ import './contrib/sessions/electron-browser/sessions.contribution.js';
+ 
++// wisp
++import './contrib/wisp/electron-browser/wisp.sessions.contribution.js';
++
+ //#endregion
+ 
+ export { main } from './electron-browser/sessions.main.js';
