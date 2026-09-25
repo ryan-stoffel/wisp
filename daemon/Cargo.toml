@@ -16,11 +16,13 @@ clap = { workspace = true, features = ["derive", "env"] }
 futures-util = { workspace = true, features = ["sink", "std"] }
 jiff = { workspace = true, features = ["serde", "tz-system", "tzdb-zoneinfo"] }
 nix = { workspace = true, features = ["process", "signal"] }
+notify.workspace = true
 rustix = { workspace = true, features = ["fs", "process"] }
 security-framework.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-std", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { workspace = true, features = ["codec", "rt"] }
@@ -33,5 +35,4 @@ zeroize.workspace = true
 
 [dev-dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }
-tempfile = "3"
 tokio = { workspace = true, features = ["process"] }

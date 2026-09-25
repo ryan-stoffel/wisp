@@ -24,6 +24,7 @@ use setup::{InstanceLock, Socket};
 
 use crate::VERSION;
 use crate::backend::process::{Environment, Launcher};
+use crate::context::ContextIndex;
 use crate::detect::CliDetector;
 use crate::event_log::EventLog;
 use crate::keystore::{KeyStore, KeychainStore};
@@ -163,6 +164,11 @@ pub(crate) struct Daemon {
     pub cli_detector: CliDetector,
     /// Where key accounts' API keys live (#117): the real login Keychain, except in tests.
     pub keys: Arc<dyn KeyStore>,
+    /// wispd's data folder, so `context/*` (#155) and #156's backends can find a project's shared
+    /// context folder.
+    pub data_dir: DataDir,
+    /// In-memory bookkeeping for shared context writes (#155): idempotency and `lastWriter`.
+    pub context: ContextIndex,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -173,13 +179,26 @@ pub(crate) struct Limits {
 }
 
 /// A started server, bound to its socket and holding the instance lock.
-#[derive(Debug)]
 pub struct Server {
     config: Config,
     daemon: Arc<Daemon>,
     lock: InstanceLock,
     socket: Socket,
     listener: StdUnixListener,
+    /// Kept alive for as long as the server runs; dropping it stops the watch (#155).
+    context_watcher: Option<notify::RecommendedWatcher>,
+}
+
+impl std::fmt::Debug for Server {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Server")
+            .field("config", &self.config)
+            .field("daemon", &self.daemon)
+            .field("lock", &self.lock)
+            .field("socket", &self.socket)
+            .field("listener", &self.listener)
+            .finish_non_exhaustive()
+    }
 }
 
 impl std::fmt::Debug for Daemon {
@@ -227,7 +246,22 @@ impl Server {
                 outbound_queue: config.outbound_queue.max(1),
             },
             keys: Arc::new(KeychainStore::new()),
+            data_dir: data_dir.clone(),
+            context: ContextIndex::default(),
         });
+        // Best effort: a project's context folder is also ensured lazily on its first
+        // `context/*` call (#155), so a watcher that fails to start only loses live updates for
+        // agents' own writes, not the feature.
+        if let Err(error) = std::fs::create_dir_all(data_dir.context_root()) {
+            warn!(%error, "could not create the shared context folder");
+        }
+        let context_watcher = match crate::context::watcher::start(Arc::clone(&daemon)) {
+            Ok(watcher) => Some(watcher),
+            Err(error) => {
+                warn!(%error, "could not watch the shared context folder for agents' own writes");
+                None
+            }
+        };
         info!(
             version = VERSION,
             pid = std::process::id(),
@@ -242,6 +276,7 @@ impl Server {
             lock,
             socket,
             listener,
+            context_watcher,
         })
     }
 
@@ -266,7 +301,10 @@ impl Server {
             lock,
             mut socket,
             listener,
+            context_watcher,
         } = self;
+        // Kept alive to the end of `run`, so the watch lasts exactly as long as the server does.
+        let _context_watcher = context_watcher;
         let mut listener = match UnixListener::from_std(listener) {
             Ok(listener) => listener,
             Err(error) => {
@@ -409,6 +447,8 @@ impl Daemon {
                 outbound_queue: 32,
             },
             keys: Arc::new(crate::keystore::MemoryKeyStore::new()),
+            data_dir: DataDir::new(dir).unwrap(),
+            context: ContextIndex::default(),
         })
     }
 }
