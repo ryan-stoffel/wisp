@@ -20,11 +20,13 @@ const STDERR_TAIL_BYTES = 4096;
 export const ATTACH_EXIT_UNREACHABLE = 4;
 
 /**
- * Turns a closed process's exit code, signal, and recent stderr into a close reason. The default,
- * `classifyLocalExit`, is what a bundled `wispd attach` needs; the ssh transport (#64) supplies its
- * own, since ssh's own exit codes (127, 255) mean something different from `attach`'s.
+ * Turns a closed process's exit code, signal, recent stderr, and whether any line was ever
+ * received into a close reason. The default, `classifyLocalExit`, is what a bundled `wispd attach`
+ * needs; the ssh transport (#64) supplies its own, since ssh's own exit codes (127, 255) mean
+ * something different from `attach`'s, and since stderr from early in a long session (an auth
+ * prompt ssh never got to show, say) shouldn't be blamed for a later, unrelated disconnect.
  */
-export type WispdCloseClassifier = (exitCode: number | undefined, signal: NodeJS.Signals | null, stderrTail: string) => Omit<IWispdTransportClose, 'stderr'>;
+export type WispdCloseClassifier = (exitCode: number | undefined, signal: NodeJS.Signals | null, stderrTail: string, receivedLine: boolean) => Omit<IWispdTransportClose, 'stderr'>;
 
 export const classifyLocalExit: WispdCloseClassifier = (exitCode, signal) => {
 	const unreachable = exitCode === ATTACH_EXIT_UNREACHABLE;
@@ -136,6 +138,7 @@ export class WispdProcessTransport extends Disposable implements IWispdTransport
 
 	private readonly reader: WispdLineReader;
 	private stderrTail = '';
+	private receivedLine = false;
 	private closed = false;
 	private pendingClose: Omit<IWispdTransportClose, 'stderr'> | undefined;
 
@@ -145,12 +148,14 @@ export class WispdProcessTransport extends Disposable implements IWispdTransport
 		private readonly logger: ILogger,
 		maxFrameBytes: number = MAX_FRAME_BYTES,
 		private readonly classifyExit: WispdCloseClassifier = classifyLocalExit,
+		private readonly notFoundHint: string = 'Install wisp, or set WISP_WISPD_PATH to a wispd binary.',
 	) {
 		super();
 		this.reader = this._register(new WispdLineReader(child.stdout, maxFrameBytes));
 		this.onDidReceiveLine = this.reader.onLine;
 		this.onDidReceiveData = this.reader.onData;
 
+		this._register(this.reader.onLine(() => { this.receivedLine = true; }));
 		this._register(this.reader.onOverflow(length => {
 			this.pendingClose = { reason: 'frameTooLarge', message: `wispd sent a line of more than ${maxFrameBytes} bytes (${length} so far), so the connection was closed.` };
 			this.kill();
@@ -170,13 +175,13 @@ export class WispdProcessTransport extends Disposable implements IWispdTransport
 			this.finish({
 				reason: 'spawnFailed',
 				message: error.code === 'ENOENT'
-					? `${this.command} was not found. Install wisp, or set WISP_WISPD_PATH to a wispd binary.`
+					? `${this.command} was not found. ${this.notFoundHint}`
 					: `Could not run ${this.command}: ${error.message}`,
 			});
 		});
 		child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
 			const exitCode = code ?? undefined;
-			this.finish(this.pendingClose ?? this.classifyExit(exitCode, signal, this.stderrTail));
+			this.finish(this.pendingClose ?? this.classifyExit(exitCode, signal, this.stderrTail, this.receivedLine));
 		});
 	}
 

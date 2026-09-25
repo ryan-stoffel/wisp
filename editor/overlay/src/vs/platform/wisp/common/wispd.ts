@@ -17,12 +17,15 @@ export const IWispdService = createDecorator<IWispdService>('wispdService');
  *
  * - `notStarted`: nothing has asked for the connection yet.
  * - `spawnFailed`: the `wispd` (or `ssh`) binary could not be started, for example because it is missing.
- * - `invalidHost`: `wisp.host` is not `local` and not a usable ssh destination (decision record 0007).
+ * - `invalidHost`: `wisp.host` is not `local` and not a usable ssh destination, or
+ *   `wisp.remoteWispdPath` is not a plain absolute path (decision record 0007).
  * - `unreachable`: `wispd attach` exited 4, so it never reached wispd (decision record 0010).
  * - `noRoute`: ssh could not reach the host, or the attempt timed out.
  * - `authFailed`: ssh could not authenticate. `BatchMode` turns any prompt, including one for
  *   interactive two-factor login, into this error (decision record 0007).
  * - `hostKeyUnknown`: ssh doesn't recognize the host's key yet, and `BatchMode` can't prompt to accept it.
+ * - `hostKeyChanged`: the host's key doesn't match what ssh has saved for it, which can mean a
+ *   possible attack, not just a reinstalled host. Never treat this the same as `hostKeyUnknown`.
  * - `wispdNotFound`: the remote shell exited 127; `wispd` isn't on the host's `PATH` or at the
  *   configured `wisp.remoteWispdPath`.
  * - `exited`: the `attach` (or `ssh`) process ended.
@@ -39,6 +42,7 @@ export type WispdDisconnectReason =
 	| 'noRoute'
 	| 'authFailed'
 	| 'hostKeyUnknown'
+	| 'hostKeyChanged'
 	| 'wispdNotFound'
 	| 'exited'
 	| 'timedOut'
