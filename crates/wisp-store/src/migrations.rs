@@ -81,6 +81,22 @@ const MIGRATIONS: &[Migration] = &[
             PRIMARY KEY (session_id, model)
         );",
     },
+    // A run's worktree (#154): one row per run, keyed by the run id, so startup garbage
+    // collection can tell a worktree the store still knows about from an orphan left behind by
+    // a crash. `base` is the concrete commit the worktree was created from, resolved once at
+    // creation time so a later diff or commit is never against a base that moved.
+    Migration {
+        version: 5,
+        sql: "CREATE TABLE worktrees (
+            id TEXT NOT NULL PRIMARY KEY,
+            repo_path TEXT NOT NULL,
+            path TEXT NOT NULL,
+            branch TEXT NOT NULL,
+            base TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX worktrees_repo_path ON worktrees (repo_path);",
+    },
 ];
 
 /// Bootstraps the `schema_version` table and applies any migration whose
