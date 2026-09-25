@@ -15,6 +15,12 @@
 //! - **Reaping**: a thread per child waits for it to exit, kills whatever it left running in its
 //!   process group, then reaps it. Signals are never sent after the reap, so they can't reach a
 //!   process that reused the pid.
+//!
+//! **Limit:** a process that leaves the group, with `setsid` or `setpgid`, escapes all of this,
+//! since macOS has no way to follow it short of scanning the process table. It is reparented
+//! to launchd, which reaps it; wispd never waits for it. It can't hold a run open either: stdout
+//! gets [`OutputLimits::drain_after_exit`] after the CLI exits, and stdin writes stop at a
+//! timeout. Daemons an agent starts on purpose, such as a dev server, therefore outlive the run.
 
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
@@ -535,7 +541,7 @@ impl Signals {
     }
 
     /// Asks the process to stop with `policy`'s signal, then kills its group if it is still
-    /// running after the grace period. Returns at once. Must be called inside a tokio runtime.
+    /// running after the grace period. Returns at once, from any thread.
     pub fn cancel(&self, policy: CancelPolicy) {
         let sent = if policy.group {
             self.signal_group(policy.signal)
@@ -546,10 +552,19 @@ impl Signals {
             return;
         }
         let signals = self.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(policy.grace).await;
-            let _ = signals.signal_group(Signal::KILL);
-        });
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                tokio::time::sleep(policy.grace).await;
+                let _ = signals.signal_group(Signal::KILL);
+            });
+        } else {
+            let _ = std::thread::Builder::new()
+                .name("wispd-cancel".into())
+                .spawn(move || {
+                    std::thread::sleep(policy.grace);
+                    let _ = signals.signal_group(Signal::KILL);
+                });
+        }
     }
 }
 
@@ -630,6 +645,18 @@ async fn pump<R: AsyncRead + Unpin>(
                     if output.send(line).await.is_err() {
                         return;
                     }
+                    // Something outside the process group may keep writing after the exit. With
+                    // `biased`, a stdout that is always ready would keep the other arms from
+                    // ever seeing the exit or the deadline, so check both here too.
+                    if exit.is_none()
+                        && let Ok(info) = exited.try_recv()
+                    {
+                        exit = Some(info);
+                        deadline = Some(Instant::now() + drain);
+                    }
+                    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                        break;
+                    }
                 }
                 Ok(None) | Err(_) => break,
             },
@@ -699,12 +726,15 @@ impl Tail {
 /// Splits a byte stream into lines of at most `max` bytes. A longer line is dropped as it
 /// arrives, so memory stays within about `max` plus one read, and reported as
 /// [`Output::Oversized`] once it ends.
+///
+/// Consumed lines only advance `start`; the buffer is compacted once per read, not per line.
 #[derive(Debug)]
 struct LineReader<R> {
     inner: R,
     max: usize,
     chunk: Vec<u8>,
     buf: Vec<u8>,
+    start: usize,
     scanned: usize,
     skipping: Option<usize>,
     eof: bool,
@@ -717,51 +747,69 @@ impl<R: AsyncRead + Unpin> LineReader<R> {
             max,
             chunk: vec![0; 64 * 1024],
             buf: Vec::new(),
+            start: 0,
             scanned: 0,
             skipping: None,
             eof: false,
         }
     }
 
+    fn pending(&self) -> usize {
+        self.buf.len() - self.start
+    }
+
+    fn discard_pending(&mut self) {
+        self.buf.clear();
+        self.start = 0;
+        self.scanned = 0;
+    }
+
     async fn next(&mut self) -> io::Result<Option<Output>> {
         loop {
-            if let Some(offset) = self.buf[self.scanned..].iter().position(|&b| b == b'\n') {
-                let end = self.scanned + offset;
-                let mut line: Vec<u8> = self.buf.drain(..=end).collect();
-                line.pop();
-                self.scanned = 0;
-                if let Some(skipped) = self.skipping.take() {
-                    return Ok(Some(Output::Oversized {
-                        bytes: skipped + line.len(),
-                    }));
-                }
-                if line.len() > self.max {
-                    return Ok(Some(Output::Oversized { bytes: line.len() }));
-                }
-                return Ok(Some(Output::Line(line)));
+            let from = self.scanned.max(self.start);
+            if let Some(offset) = self.buf[from..].iter().position(|&b| b == b'\n') {
+                let end = from + offset;
+                let length = end - self.start;
+                let line = &self.buf[self.start..end];
+                let output = if let Some(skipped) = self.skipping.take() {
+                    Output::Oversized {
+                        bytes: skipped + length,
+                    }
+                } else if length > self.max {
+                    Output::Oversized { bytes: length }
+                } else {
+                    Output::Line(line.to_vec())
+                };
+                self.start = end + 1;
+                self.scanned = self.start;
+                return Ok(Some(output));
             }
             self.scanned = self.buf.len();
             if let Some(skipped) = &mut self.skipping {
-                *skipped += self.buf.len();
-                self.buf.clear();
-                self.scanned = 0;
-            } else if self.buf.len() > self.max {
-                self.skipping = Some(self.buf.len());
-                self.buf.clear();
-                self.scanned = 0;
+                *skipped += self.buf.len() - self.start;
+                self.discard_pending();
+            } else if self.pending() > self.max {
+                self.skipping = Some(self.pending());
+                self.discard_pending();
             }
             if self.eof {
                 if let Some(skipped) = self.skipping.take() {
                     return Ok(Some(Output::Oversized { bytes: skipped }));
                 }
-                if self.buf.is_empty() {
+                if self.pending() == 0 {
                     return Ok(None);
                 }
-                self.scanned = 0;
-                return Ok(Some(Output::Line(std::mem::take(&mut self.buf))));
+                let line = self.buf[self.start..].to_vec();
+                self.discard_pending();
+                return Ok(Some(Output::Line(line)));
             }
             // Only complete reads change state, so a caller may drop this future at any await.
             let n = self.inner.read(&mut self.chunk).await?;
+            if self.start > 0 {
+                self.buf.drain(..self.start);
+                self.scanned -= self.start;
+                self.start = 0;
+            }
             if n == 0 {
                 self.eof = true;
             }
@@ -1093,12 +1141,55 @@ mod tests {
                 Output::Line(b"three".to_vec()),
             ]
         );
+        let many = b"a\nbb\n\nccc\n".repeat(10_000);
+        let mut reader = LineReader::new(&many[..], 8);
+        let mut count = 0;
+        while let Some(line) = reader.next().await.unwrap() {
+            assert!(matches!(line, Output::Line(_)), "{line:?}");
+            count += 1;
+        }
+        assert_eq!(count, 40_000);
         let mut reader = LineReader::new(&b"0123456789"[..], 4);
         assert_eq!(
             reader.next().await.unwrap(),
             Some(Output::Oversized { bytes: 10 })
         );
         assert_eq!(reader.next().await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn stdout_that_never_ends_cannot_hold_the_exit_back() {
+        // Like a process outside the group that keeps writing after the CLI exited.
+        let endless = LineReader::new(tokio::io::repeat(b'\n'), 1024);
+        let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
+        exit_tx
+            .send(ExitInfo {
+                code: Some(0),
+                signal: None,
+            })
+            .unwrap();
+        let stderr = super::StderrTail {
+            task: tokio::spawn(async {}),
+            tail: std::sync::Arc::new(std::sync::Mutex::new(Tail::new(16))),
+        };
+        let (output_tx, mut output) = tokio::sync::mpsc::channel(64);
+        tokio::spawn(super::pump(
+            endless,
+            exit_rx,
+            stderr,
+            output_tx,
+            Duration::from_millis(100),
+        ));
+        let exit = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(Output::Exited(exit)) = output.recv().await {
+                    return exit;
+                }
+            }
+        })
+        .await
+        .expect("the exit never came");
+        assert!(exit.info.success());
     }
 
     #[test]
