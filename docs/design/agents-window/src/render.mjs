@@ -13,7 +13,7 @@ const src = dirname(fileURLToPath(import.meta.url));
 const out = dirname(src);
 
 const pages = [];
-for (const scene of ['coordinator', 'subagent', 'review', 'host', 'm0']) {
+for (const scene of ['coordinator', 'agents', 'subagent', 'review', 'host', 'm0']) {
 	for (const [suffix, theme] of [['dark', 'dark-modern'], ['light', 'light-modern']]) {
 		pages.push([`${scene}-${suffix}`, `scene=${scene}&theme=${theme}&notes=0`]);
 	}

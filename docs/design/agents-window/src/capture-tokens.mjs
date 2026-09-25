@@ -57,6 +57,9 @@ for (const [id, label] of themes) {
 			throw new Error('the Agents window did not open; is patch 0010 still redirecting it?');
 		}
 		await window.waitForSelector('.monaco-workbench .part.sessionspart', { timeout: 60000 });
+		// The theme applies after the parts render; wait until theme tokens resolve and settle.
+		await window.waitForFunction(() => getComputedStyle(document.querySelector('.monaco-workbench')).getPropertyValue('--vscode-widget-border').trim() !== '', undefined, { timeout: 60000 });
+		await new Promise((r) => setTimeout(r, 3000));
 		const values = await window.evaluate((names) => {
 			const style = getComputedStyle(document.querySelector('.monaco-workbench'));
 			return names.map((n) => [n, style.getPropertyValue(n).trim()]);
