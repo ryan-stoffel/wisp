@@ -526,14 +526,18 @@ pub enum PolicyCheckError {
 }
 
 /// Takes a fingerprint of `repo_path`'s working tree: `git status --porcelain=v1 -z
-/// --untracked-files=all --ignore-submodules=none`, `git diff HEAD --binary`, and the contents of
-/// every untracked file the status lists, all under one hash. [`check`] compares it against a
-/// later snapshot to tell whether a coordinator's no-write turn changed anything (0004): a tree
-/// that was already dirty when this is taken and stays exactly as dirty is not a violation.
+/// --untracked-files=all --ignore-submodules=none`, a `git diff --binary --no-ext-diff` against
+/// `HEAD` (or the empty tree, in a repository with no commits yet), and the contents of every
+/// untracked file the status lists, all under one hash. [`check`] compares it against a later
+/// snapshot to tell whether a coordinator's no-write turn changed anything (0004): a tree that was
+/// already dirty when this is taken and stays exactly as dirty is not a violation.
 ///
 /// Runs git with `-c core.fsmonitor=false`, so an untrusted repo's `fsmonitor` hook never runs as
-/// part of wispd, and `GIT_OPTIONAL_LOCKS=0`, so this never waits on or takes the user's index
-/// lock.
+/// part of wispd, `GIT_OPTIONAL_LOCKS=0`, so this never waits on or takes the user's index lock,
+/// and `--no-ext-diff`, so a repo's configured `diff.external` never runs inside wispd either.
+///
+/// This only ever sees what `git status` and `git diff` see: a write to a file `.gitignore`
+/// excludes passes uncaught (0004 accepts this; see decision 0012).
 ///
 /// # Errors
 ///
@@ -563,12 +567,47 @@ pub async fn check(
     if after == *before {
         return Ok(None);
     }
+    // Cheap next to the hashing `snapshot` already did, and only run on the rare violation path:
+    // a second, human-readable status naming what changed, for 0004's "shows the diff" (#119's
+    // review, N5). If this second call itself fails, the violation is still reported, just
+    // without the paths.
+    let paths = changed_paths(repo_path).await.unwrap_or_default();
+    let message = if paths.is_empty() {
+        "the coordinator's no-write turn changed the working tree".to_owned()
+    } else {
+        format!(
+            "the coordinator's no-write turn changed the working tree:\n{}",
+            paths.join("\n")
+        )
+    };
     Ok(Some(Failure {
         failure: FailureKind::PolicyViolation,
-        message: "the coordinator's no-write turn changed the working tree".to_owned(),
+        message,
         exit: None,
         stderr_tail: None,
     }))
+}
+
+/// The empty tree's well-known object id, the same for every git repository: `git hash-object -t
+/// tree /dev/null`. [`fingerprint`] diffs against it instead of `HEAD` in a repository with no
+/// commits yet, where `HEAD` doesn't resolve to anything `git diff` can use.
+const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// What [`fingerprint`] diffs the working tree against: `HEAD` once it resolves to a commit, or
+/// the empty tree before the repository's first commit, so a coordinator working in a brand new
+/// project doesn't fail every turn's check.
+fn diff_target(repo_path: &Path) -> Result<&'static str, PolicyCheckError> {
+    let resolves = std::process::Command::new("git")
+        .arg("-c")
+        .arg("core.fsmonitor=false")
+        .args(["rev-parse", "--verify", "-q", "HEAD"])
+        .current_dir(repo_path)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()?
+        .success();
+    Ok(if resolves { "HEAD" } else { EMPTY_TREE })
 }
 
 fn fingerprint(repo_path: &Path) -> Result<[u8; 32], PolicyCheckError> {
@@ -582,7 +621,8 @@ fn fingerprint(repo_path: &Path) -> Result<[u8; 32], PolicyCheckError> {
             "--ignore-submodules=none",
         ],
     )?;
-    let diff = run_git(repo_path, &["diff", "HEAD", "--binary"])?;
+    let target = diff_target(repo_path)?;
+    let diff = run_git(repo_path, &["diff", target, "--binary", "--no-ext-diff"])?;
     let mut hasher = Sha256::new();
     hasher.update(&status);
     hasher.update(&diff);
@@ -596,6 +636,31 @@ fn fingerprint(repo_path: &Path) -> Result<[u8; 32], PolicyCheckError> {
     let mut digest = [0u8; 32];
     digest.copy_from_slice(&hasher.finalize());
     Ok(digest)
+}
+
+/// The paths `git status` lists as changed, one per line, for a violation's message. A separate,
+/// human-readable call from [`fingerprint`]'s hashed one, made only once a violation is already
+/// known.
+async fn changed_paths(repo_path: &Path) -> Result<Vec<String>, PolicyCheckError> {
+    let repo_path = repo_path.to_owned();
+    let output = tokio::task::spawn_blocking(move || {
+        run_git(
+            &repo_path,
+            &[
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+                "--ignore-submodules=none",
+            ],
+        )
+    })
+    .await
+    .map_err(|error| PolicyCheckError::Panicked(error.to_string()))??;
+    Ok(String::from_utf8_lossy(&output)
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect())
 }
 
 fn run_git(repo_path: &Path, args: &[&str]) -> Result<Vec<u8>, PolicyCheckError> {

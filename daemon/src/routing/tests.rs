@@ -761,6 +761,33 @@ async fn a_further_edit_to_an_already_modified_file_is_still_a_violation() {
 }
 
 #[tokio::test]
+async fn a_repository_with_no_commits_yet_can_still_be_snapshotted() {
+    let dir = tempfile::tempdir().unwrap();
+    git(dir.path(), &["init", "-q"]);
+
+    let before = snapshot(dir.path()).await.unwrap();
+    assert_eq!(check(dir.path(), &before).await.unwrap(), None);
+
+    std::fs::write(dir.path().join("new.txt"), "first write, ever").unwrap();
+    let violation = check(dir.path(), &before).await.unwrap().unwrap();
+    assert_eq!(violation.failure, FailureKind::PolicyViolation);
+}
+
+#[tokio::test]
+async fn a_violation_names_the_changed_paths() {
+    let dir = committed_repo();
+    let before = snapshot(dir.path()).await.unwrap();
+    std::fs::write(dir.path().join("README.md"), "changed\n").unwrap();
+
+    let violation = check(dir.path(), &before).await.unwrap().unwrap();
+    assert!(
+        violation.message.contains("README.md"),
+        "{}",
+        violation.message
+    );
+}
+
+#[tokio::test]
 async fn a_directory_that_is_not_a_git_repository_is_an_error() {
     let dir = tempfile::tempdir().unwrap();
     let error = snapshot(dir.path()).await.unwrap_err();
