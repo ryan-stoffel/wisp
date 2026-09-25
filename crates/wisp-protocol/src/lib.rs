@@ -30,6 +30,7 @@
 #![warn(missing_docs)]
 
 mod agent;
+mod cli_account;
 mod error;
 mod events;
 pub mod framing;
@@ -45,6 +46,10 @@ pub mod typescript;
 mod samples;
 
 pub use agent::{RunId, TurnId};
+pub use cli_account::{
+    AccountsListParams, AccountsListResult, AccountsRefreshParams, AccountsRefreshResult, AuthKind,
+    CliKind, DetectedCli,
+};
 pub use error::{ErrorData, ErrorKind, IncompatibleProtocolDetail};
 pub use events::{
     EventsEventParams, EventsSubscribeParams, EventsSubscribeResult, EventsUnsubscribeParams,
@@ -177,6 +182,42 @@ mod tests {
             requested: ProtocolRange { min: 2, max: 2 },
             supported: ProtocolRange::SUPPORTED,
             wispd: "0.1.0".to_owned(),
+        });
+    }
+
+    #[test]
+    fn accounts_messages_round_trip() {
+        round_trip(&AccountsListParams {});
+        round_trip(&AccountsRefreshParams {});
+        let clis = vec![
+            DetectedCli {
+                cli: CliKind::Claude,
+                installed: true,
+                path: Some("/usr/local/bin/claude".to_owned()),
+                version: Some("2.1.281".to_owned()),
+                signed_in: Some(true),
+                auth_kind: Some(AuthKind::Subscription),
+                plan: Some("max".to_owned()),
+                note: None,
+            },
+            DetectedCli {
+                cli: CliKind::Codex,
+                installed: false,
+                path: None,
+                version: None,
+                signed_in: None,
+                auth_kind: None,
+                plan: None,
+                note: None,
+            },
+        ];
+        round_trip(&AccountsListResult {
+            clis: clis.clone(),
+            checked_at: "2026-09-25T12:00:00Z".parse().unwrap(),
+        });
+        round_trip(&AccountsRefreshResult {
+            clis,
+            checked_at: "2026-09-25T12:00:00Z".parse().unwrap(),
         });
     }
 }

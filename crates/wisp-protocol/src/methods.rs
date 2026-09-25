@@ -26,6 +26,7 @@ use ts_rs::TS;
 
 use crate::jsonrpc::CancelRequestParams;
 use crate::{
+    AccountsListParams, AccountsListResult, AccountsRefreshParams, AccountsRefreshResult,
     EventsEventParams, EventsSubscribeParams, EventsSubscribeResult, EventsUnsubscribeParams,
     EventsUnsubscribeResult, HostHealthParams, HostHealthResult, HostVersionParams,
     HostVersionResult, InitializeParams, InitializeResult, ProjectCreateParams,
@@ -120,6 +121,13 @@ method_table! {
         EventsSubscribe = "events/subscribe": EventsSubscribeParams => EventsSubscribeResult;
         /// `events/unsubscribe`: ends a subscription.
         EventsUnsubscribe = "events/unsubscribe": EventsUnsubscribeParams => EventsUnsubscribeResult;
+        /// `accounts/list`: the vendor CLIs wispd detects (#114), installed, signed in, and their
+        /// plan where exposed. May answer from a short-lived cache. Gated on the `agentClis`
+        /// capability.
+        AccountsList = "accounts/list": AccountsListParams => AccountsListResult;
+        /// `accounts/refresh`: like `accounts/list`, but always probes again instead of using the
+        /// cache. Gated on the `agentClis` capability.
+        AccountsRefresh = "accounts/refresh": AccountsRefreshParams => AccountsRefreshResult;
     }
     notifications {
         /// `$/cancelRequest`: cancels a request, which still gets exactly one response. Either
@@ -165,6 +173,8 @@ mod tests {
                 "project/create",
                 "events/subscribe",
                 "events/unsubscribe",
+                "accounts/list",
+                "accounts/refresh",
                 "$/cancelRequest",
                 "events/event",
             ]
