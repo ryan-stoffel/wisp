@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use tracing::info;
+use tracing::{info, warn};
 use wisp_protocol::jsonrpc::ErrorObject;
 use wisp_protocol::{
     ProjectCreateParams, ProjectCreateResult, ProjectListParams, ProjectListResult, WispEvent,
@@ -44,6 +44,7 @@ pub(crate) async fn create(
 ) -> Result<ProjectCreateResult, ErrorObject> {
     check(&params)?;
     let log = Arc::clone(&context.daemon.log);
+    let data_dir = context.daemon.data_dir.clone();
     context
         .daemon
         .store
@@ -66,6 +67,11 @@ pub(crate) async fn create(
                     },
                 );
                 info!(project = %project.id, seq, "created a project");
+                // Best effort (#155): a project's shared context folder is also ensured lazily on
+                // its first `context/*` call, so a failure here never blocks project creation.
+                if let Err(error) = crate::context::ensure_dir(&data_dir, project.id) {
+                    warn!(project = %project.id, %error, "could not create the shared context folder");
+                }
             }
             Ok(ProjectCreateResult { project })
         })
