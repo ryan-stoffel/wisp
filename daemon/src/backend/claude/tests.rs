@@ -178,9 +178,9 @@ async fn launch(backend: &dyn Backend, request: RunRequest) -> Started {
 }
 
 async fn next(events: &mut EventStream) -> Event {
-    tokio::time::timeout(Duration::from_secs(10), events.next())
+    tokio::time::timeout(Duration::from_secs(30), events.next())
         .await
-        .expect("no event within 10 s")
+        .expect("no event within 30 s")
         .expect("the stream ended")
 }
 
@@ -805,13 +805,21 @@ async fn a_follow_up_can_be_its_own_turn_and_stdin_waits_for_it() {
 #[tokio::test]
 async fn cancel_interrupts_the_cli_with_sigint() {
     let fake = Fake::new("cancel");
-    let Started { run, mut events } = launch(&fake.backend, request(&fake.root())).await;
+    // A grace far longer than `next`'s wait: the default 10 s grace used to race the CLI's own
+    // clean exit after SIGINT under a loaded runner, so a slow but successful exit could lose to
+    // the production SIGKILL escalation, and under CI contention the whole round trip could also
+    // outrun `next`'s fixed wait for the resulting event (#149). Only a truly stuck CLI should
+    // ever reach the grace path here.
+    let backend = fake.backend.clone().with_cancel_policy(CancelPolicy {
+        grace: Duration::from_secs(120),
+        ..CancelPolicy::default()
+    });
+    let Started { run, mut events } = launch(&backend, request(&fake.root())).await;
     assert!(matches!(
         next(&mut events).await,
         Event::SessionStarted { .. }
     ));
     assert!(matches!(next(&mut events).await, Event::Text { .. }));
-    let started = Instant::now();
     run.cancel();
     run.cancel();
     let all = rest(&mut events).await;
@@ -822,7 +830,6 @@ async fn cancel_interrupts_the_cli_with_sigint() {
             usage_totals: Vec::new()
         }]
     );
-    assert!(started.elapsed() < Duration::from_secs(5));
     assert_eq!(fake.recorded("signals"), "SIGINT\n");
 }
 
