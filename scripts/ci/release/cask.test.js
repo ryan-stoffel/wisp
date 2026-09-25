@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const { createHash } = require('node:crypto');
-const { mkdtempSync, rmSync, writeFileSync } = require('node:fs');
+const { mkdtempSync, readFileSync, rmSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
 const { after, describe, it } = require('node:test');
@@ -24,7 +24,8 @@ describe('renderCask', () => {
     assert.ok(all.includes('  version "0.1.0"'));
     assert.ok(all.includes(`  sha256 "${ARM}"`));
     assert.ok(all.includes('  depends_on arch: :arm64'));
-    assert.ok(all.includes('  app "wisp.app"'));
+    assert.ok(all.includes('  app "Wisp.app"'));
+    assert.ok(all.includes('  binary "#{appdir}/Wisp.app/Contents/Resources/app/bin/wisp"'));
     assert.ok(
       all.includes(
         '  url "https://github.com/ryan-stoffel/wisp/releases/download/v#{version}/wisp-#{version}-#{arch}.zip"',
@@ -45,6 +46,38 @@ describe('renderCask', () => {
       assert.doesNotMatch(cask, /[ \t]$/m);
       assert.doesNotMatch(cask, /\n\n\n/);
       assert.ok(cask.endsWith('end\n'));
+    }
+  });
+
+  // The app's name, its launcher, and its data folders all follow editor/product.json.
+  it('installs and zaps what editor/product.json builds', () => {
+    const product = JSON.parse(readFileSync(path.join(__dirname, '../../../editor/product.json'), 'utf8'));
+    const all = lines(renderCask('0.1.0', { arm64: ARM }));
+    const app = `${product.nameLong}.app`;
+    assert.ok(all.includes(`  app "${app}"`));
+    assert.ok(all.includes(`  binary "#{appdir}/${app}/Contents/Resources/app/bin/${product.applicationName}"`));
+    assert.ok(all.includes(`      xattr -dr com.apple.quarantine #{appdir}/${app}`));
+
+    const zap = all.slice(all.indexOf('  zap trash: ['), all.indexOf('  ]'));
+    const globs = zap.map((line) => /^ {4}"([^"]+)",$/.exec(line)?.[1]).filter(Boolean);
+    const escaped = (glob) => glob.replace(/[.+^$(){}|\\]/g, '\\$&').replace(/\*/g, '[^/]*');
+    const covers = (glob, file) => new RegExp(`^${escaped(glob)}$`).test(file);
+    const id = product.darwinBundleIdentifier;
+    for (const file of [
+      `~/${product.dataFolderName}`,
+      `~/${product.sharedDataFolderName}`,
+      `~/Library/Application Support/${product.nameShort}`,
+      // wispd's data folder (docs/decisions/0009)
+      '~/Library/Application Support/wisp',
+      `~/Library/Caches/${id}`,
+      `~/Library/HTTPStorages/${id}`,
+      `~/Library/Preferences/${id}.plist`,
+      `~/Library/Saved Application State/${id}.savedState`,
+    ]) {
+      assert.ok(
+        globs.some((glob) => covers(glob, file)),
+        `zap does not cover ${file}`,
+      );
     }
   });
 

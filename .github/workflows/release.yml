@@ -16,7 +16,8 @@ defaults:
     shell: bash
 
 env:
-  # Add x64 to ship an Intel build as well; generate-cask and the cask template handle both.
+  # Add x64 to ship an Intel build as well; generate-cask and the cask template handle both. The build job
+  # builds each arch in turn, so raise its timeout-minutes too.
   RELEASE_ARCHES: arm64
 
 jobs:
@@ -27,7 +28,7 @@ jobs:
       && github.event.pull_request.head.repo.full_name == github.repository
       && (github.event.action != 'closed' || github.event.pull_request.merged)
     runs-on: macos-26
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: read
     outputs:
@@ -52,11 +53,12 @@ jobs:
             exit 1
           fi
 
+      # The release is built from source with nothing restored from Actions' cache, which has no provenance
+      # (scripts/ci/README.md, "The app job").
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
-          cache: npm
-          cache-dependency-path: ci/fixtures/electron-smoke/package-lock.json
+          package-manager-cache: false
 
       - name: Test the release scripts
         run: scripts/ci/check-release
@@ -90,8 +92,12 @@ jobs:
             echo "reused=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build and package wisp.app
+      - name: Build and package Wisp.app
         if: steps.published.outputs.reused != 'true'
+        env:
+          # Upstream's build downloads from GitHub (ripgrep, the built-in extensions, Electron), and anonymous
+          # API calls from shared runners hit the rate limit. This job's token can only read.
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           for arch in $RELEASE_ARCHES; do
             scripts/ci/package-app "$VERSION" "$arch"

@@ -22,36 +22,13 @@ root=$(cd "$(dirname "$0")/../.." && pwd)
 want=$(cut -d. -f1 "$root/.nvmrc")
 have=$(node -p 'process.versions.node.split(".")[0]')
 [ "$have" = "$want" ] || fail "Node $want is required (.nvmrc pins $(cat "$root/.nvmrc")), but node is $(node --version)"
-fixture="$root/ci/fixtures/electron-smoke"
 bundle_id=io.github.ryan-stoffel.wisp
-bundle="$root/dist/wisp-darwin-$arch/wisp.app"
 zip="$root/dist/wisp-$version-$arch.zip"
 
-# The version is stamped into the checkout only; put the files back so it is never committed.
-saved=$(mktemp -d)
-cp "$fixture/package.json" "$fixture/package-lock.json" "$saved/"
-trap 'cp "$saved/package.json" "$saved/package-lock.json" "$fixture/"; rm -rf "$saved"' EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
-
-set -x
-cd "$fixture"
-npm version "$version" --no-git-tag-version --allow-same-version --ignore-scripts >&2
-npm pkg set productName=wisp >&2
-"$root/scripts/ci/build-app" >&2
-
-rm -rf "$(dirname "$bundle")" "$zip"
-npx --no electron-packager . wisp \
-  --platform=darwin --arch="$arch" --out="$root/dist" \
-  --app-version="$version" --build-version="$version" \
-  --app-bundle-id="$bundle_id" --app-category-type=public.app-category.developer-tools \
-  --ignore='^/(?!(?:package\.json|out|static)(?:/|$))' >&2
-
-# Packager leaves Electron's per-binary signatures, which no longer match the renamed bundle.
-# Without a valid signature, Gatekeeper reports the app as damaged and offers no Open Anyway.
-codesign --force --deep --sign - "$bundle"
-codesign --verify --deep --strict "$bundle"
-set +x
+# build-app stamps the version, ad-hoc signs the bundle, and checks every Mach-O file's architecture.
+# check-app checks the zip's signature below.
+bundle=$("$root/scripts/editor/build-app" --app-version "$version" "$arch")
+[ -d "$bundle" ] || fail "scripts/editor/build-app printed '$bundle', which is not a directory"
 
 plist="$bundle/Contents/Info.plist"
 for pair in "CFBundleShortVersionString=$version" "CFBundleVersion=$version" "CFBundleIdentifier=$bundle_id"; do
@@ -59,7 +36,15 @@ for pair in "CFBundleShortVersionString=$version" "CFBundleVersion=$version" "CF
   actual=$(plutil -extract "$key" raw -o - "$plist")
   [ "$actual" = "${pair#*=}" ] || fail "$key is '$actual' in $plist, expected '${pair#*=}'"
 done
+# product.json's version is the one the About dialog and wisp --version show.
+for file in product.json package.json; do
+  actual=$(node -p 'require(process.argv[1]).version' "$bundle/Contents/Resources/app/$file")
+  [ "$actual" = "$version" ] || fail "version is '$actual' in the app's $file, expected '$version'"
+done
 
+mkdir -p "$root/dist"
+rm -f "$zip"
 ditto -c -k --keepParent --norsrc --noextattr --noacl "$bundle" "$zip"
+"$root/scripts/ci/check-app" "$zip" "$arch"
 echo "${0##*/}: wrote $zip" >&2
 printf '%s\n' "$bundle"
