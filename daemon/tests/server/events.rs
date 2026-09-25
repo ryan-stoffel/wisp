@@ -49,7 +49,7 @@ async fn event(client: &mut Client) -> EventsEventParams {
 fn created(event: &EventsEventParams) -> &Project {
     match &event.event {
         WispEvent::ProjectCreated { project } => project,
-        WispEvent::Unknown => panic!("expected project.created, got an unknown event"),
+        other => panic!("expected project.created, got {other:?}"),
     }
 }
 
