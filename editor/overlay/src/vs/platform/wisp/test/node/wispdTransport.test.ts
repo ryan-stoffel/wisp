@@ -3,6 +3,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { realpathSync } from 'fs';
+import { homedir } from 'os';
 import { PassThrough } from 'stream';
 import { join } from '../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
@@ -82,7 +84,7 @@ suite('WispdProcessTransport', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
 	function run(script: string): Promise<{ lines: string[]; close: IWispdTransportClose }> {
-		const factory = new WispdProcessTransportFactory({ executable: process.execPath, args: ['-e', script], env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, maxFrameBytes: 64 }, new NullLogger());
+		const factory = new WispdProcessTransportFactory({ executable: process.execPath, args: ['-e', script], env: { ...process.env, VSCODE_IPC_HOOK: '/tmp/editor.sock', ELECTRON_RUN_AS_NODE: '1', WISPD_DATA_DIR: '/tmp/wispd-data' }, maxFrameBytes: 1024 }, new NullLogger());
 		const transport = store.add(factory.create());
 		const lines: string[] = [];
 		store.add(transport.onDidReceiveLine(line => lines.push(line)));
@@ -95,8 +97,13 @@ suite('WispdProcessTransport', () => {
 		assert.deepStrictEqual(close, { reason: 'unreachable', message: 'wispd attach could not reach or start wispd.', exitCode: 4, stderr: 'wispd attach: could not start wispd' });
 	});
 
+	test('leaves out the editor\'s variables and runs in the home folder', async () => {
+		const { lines } = await run(`const e = process.env; process.stdout.write(JSON.stringify({ hook: e.VSCODE_IPC_HOOK ?? null, electron: e.ELECTRON_RUN_AS_NODE ?? null, data: e.WISPD_DATA_DIR ?? null, cwd: process.cwd() }) + '\\n');`);
+		assert.deepStrictEqual(JSON.parse(lines[0]), { hook: null, electron: null, data: '/tmp/wispd-data', cwd: realpathSync(homedir()) });
+	});
+
 	test('closes on a frame over maxFrameBytes', async () => {
-		const { close } = await run(`process.stdout.write('x'.repeat(100)); setTimeout(() => {}, 10000);`);
+		const { close } = await run(`process.stdout.write('x'.repeat(2000)); setTimeout(() => {}, 10000);`);
 		assert.strictEqual(close.reason, 'frameTooLarge');
 	});
 

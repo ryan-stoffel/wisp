@@ -3,9 +3,11 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as cp from 'child_process';
+import { homedir } from 'os';
 import type { Readable, Writable } from 'stream';
 import { Emitter } from '../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../base/common/lifecycle.js';
+import { sanitizeProcessEnvironment } from '../../../base/common/processes.js';
 import { StreamSplitter } from '../../../base/node/nodeStreams.js';
 import { ILogger } from '../../log/common/log.js';
 import { IWispdTransport, IWispdTransportClose, IWispdTransportFactory } from '../common/wispdClient.js';
@@ -203,7 +205,10 @@ export interface IWispdLaunch {
 	readonly executable: string;
 	/** Usually `['attach']`. */
 	readonly args: readonly string[];
+	/** The environment before the editor's own variables are removed. Defaults to this process's. */
 	readonly env?: NodeJS.ProcessEnv;
+	/** Defaults to the home folder, so a `serve` that `attach` starts keeps no workspace busy. */
+	readonly cwd?: string;
 	readonly maxFrameBytes?: number;
 }
 
@@ -216,9 +221,14 @@ export class WispdProcessTransportFactory implements IWispdTransportFactory {
 	}
 
 	create(): IWispdTransport {
+		// A serve that attach starts outlives the editor, and from M3 so do its agents, so none of
+		// them should inherit the editor's VSCODE_* and ELECTRON_* variables or its working folder.
+		const env = { ...(this.launch.env ?? process.env) };
+		sanitizeProcessEnvironment(env);
 		const child = cp.spawn(this.launch.executable, [...this.launch.args], {
 			stdio: ['pipe', 'pipe', 'pipe'],
-			env: this.launch.env ?? process.env,
+			env,
+			cwd: this.launch.cwd ?? homedir(),
 		});
 		return new WispdProcessTransport(child, this.command, this.logger, this.launch.maxFrameBytes);
 	}
