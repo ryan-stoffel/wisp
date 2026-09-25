@@ -5,8 +5,8 @@
 import { existsSync } from 'fs';
 import { join } from '../../../base/common/path.js';
 import { CancellationToken } from '../../../base/common/cancellation.js';
-import { Emitter, Event } from '../../../base/common/event.js';
-import { Disposable, IDisposable } from '../../../base/common/lifecycle.js';
+import { Event } from '../../../base/common/event.js';
+import { Disposable } from '../../../base/common/lifecycle.js';
 import { joinPath } from '../../../base/common/resources.js';
 import { IConfigurationService } from '../../configuration/common/configuration.js';
 import { INativeEnvironmentService } from '../../environment/common/environment.js';
@@ -15,8 +15,9 @@ import { ILogger, ILoggerService } from '../../log/common/log.js';
 import { INativeHostService } from '../../native/common/native.js';
 import { IProductService } from '../../product/common/productService.js';
 import { IWispdService, IWispdSubscribeOptions, WispdMethod, WispdState, WispdSubscriptionMessage } from '../common/wispd.js';
-import { IWispdTransportFactory, WispdClient } from '../common/wispdClient.js';
+import { IWispdTransportFactory } from '../common/wispdClient.js';
 import { WISP_HOST_LOCAL, WISP_HOST_SETTING, WISP_REMOTE_WISPD_PATH_SETTING } from '../common/wispdConfiguration.js';
+import { WispdHostConnection } from '../common/wispdHostConnection.js';
 import { WispRequests } from '../common/wispProtocol.js';
 import { DEFAULT_REMOTE_WISPD_CANDIDATES, WispdInvalidHostTransportFactory, WispdSshTransportFactory, validateRemoteWispdPath, validateSshDestination } from './wispdSshTransport.js';
 import { WispdProcessTransportFactory } from './wispdTransport.js';
@@ -94,7 +95,7 @@ export function createWispdTransportFactory(
 export class WispdService extends Disposable implements IWispdService {
 	declare readonly _serviceBrand: undefined;
 
-	private readonly client: WispdClient;
+	private readonly connection: WispdHostConnection;
 
 	readonly onDidChangeState: Event<WispdState>;
 
@@ -109,43 +110,42 @@ export class WispdService extends Disposable implements IWispdService {
 		super();
 		const logger = this._register(loggerService.createLogger(joinPath(environmentService.logsHome, 'wispd.log'), { id: 'wispd', name: 'wispd' }));
 		const executable = resolveWispdExecutable(process.env, environmentService.appRoot, environmentService.isBuilt);
-		const factory = createWispdTransportFactory(
-			configurationService.getValue(WISP_HOST_SETTING),
-			configurationService.getValue(WISP_REMOTE_WISPD_PATH_SETTING),
-			executable,
+		this.connection = this._register(new WispdHostConnection(
+			() => createWispdTransportFactory(
+				configurationService.getValue(WISP_HOST_SETTING),
+				configurationService.getValue(WISP_REMOTE_WISPD_PATH_SETTING),
+				executable,
+				logger,
+			),
+			{ client: { name: 'wisp', version: productService.version } },
 			logger,
-		);
-		this.client = this._register(new WispdClient(factory, { client: { name: 'wisp', version: productService.version } }, logger));
-		this.onDidChangeState = this.client.onDidChangeState;
+		));
+		this.onDidChangeState = this.connection.onDidChangeState;
 
-		this._register(nativeHostService.onDidResumeOS(() => this.client.onWake()));
+		// The shared process outlives every window, so a new host applies without restarting Wisp.
+		this._register(configurationService.onDidChangeConfiguration(event => {
+			if (event.affectsConfiguration(WISP_HOST_SETTING) || event.affectsConfiguration(WISP_REMOTE_WISPD_PATH_SETTING)) {
+				this.connection.update();
+			}
+		}));
+		this._register(nativeHostService.onDidResumeOS(() => this.connection.onWake()));
 		this._register(sharedProcessLifecycleService.onWillShutdown(() => this.dispose()));
 	}
 
 	async getState(): Promise<WispdState> {
-		this.client.start();
-		return this.client.state;
+		this.connection.start();
+		return this.connection.state;
 	}
 
 	async retry(): Promise<void> {
-		this.client.retry();
+		this.connection.retry();
 	}
 
 	request<M extends WispdMethod>(method: M, params: WispRequests[M]['params'], token?: CancellationToken): Promise<WispRequests[M]['result']> {
-		return this.client.request(method, params, token);
+		return this.connection.request(method, params, token);
 	}
 
 	subscribe(options: IWispdSubscribeOptions): Event<WispdSubscriptionMessage> {
-		let subscription: IDisposable | undefined;
-		const emitter = new Emitter<WispdSubscriptionMessage>({
-			onWillAddFirstListener: () => {
-				subscription = this.client.subscribe(options, message => emitter.fire(message));
-			},
-			onDidRemoveLastListener: () => {
-				subscription?.dispose();
-				subscription = undefined;
-			},
-		});
-		return emitter.event;
+		return this.connection.subscribe(options);
 	}
 }
