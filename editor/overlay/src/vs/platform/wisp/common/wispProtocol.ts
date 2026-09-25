@@ -258,6 +258,11 @@ export type Project = {
 	 */
 	repoPath: string,
 	/**
+	 * The branch checked out in the repository, or the first 7 digits of the commit when `HEAD`
+	 * is detached, read when wispd sends the project. Absent when wispd can't read it.
+	 */
+	branch?: string,
+	/**
 	 * When the project was created, in RFC 3339 UTC.
 	 */
 	createdAt: string,
@@ -277,7 +282,9 @@ export type ProjectId = string;
  * Params of `project/create`.
  *
  * It is idempotent on `id`: if a project with that id exists, wispd returns it instead of
- * creating another, and fails with `idConflict` if `name` or `repoPath` differ.
+ * creating another, and fails with `idConflict` if `name` or `repoPath` differ. A new project's
+ * `repoPath` must be the top folder of a git working tree on this host, or it fails with
+ * `notARepository`.
  */
 export type ProjectCreateParams = {
 	/**
@@ -429,7 +436,7 @@ export type ErrorData = {
  * A newer wispd may send kinds that are not listed here. Treat those as unknown errors, so a
  * `switch` over this type must not end in an exhaustiveness assertion.
  */
-export type ErrorKind = "notInitialized" | "incompatibleProtocol" | "resyncRequired" | "projectNotFound" | "idConflict";
+export type ErrorKind = "notInitialized" | "incompatibleProtocol" | "resyncRequired" | "projectNotFound" | "idConflict" | "notARepository";
 
 /**
  * The `detail` of `incompatibleProtocol`. Its shape never changes, so every editor can read it

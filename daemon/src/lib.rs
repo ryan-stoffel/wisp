@@ -26,6 +26,7 @@ pub mod launch_agent;
 pub mod logging;
 mod methods;
 pub mod paths;
+mod repo;
 pub mod server;
 pub mod service;
 mod spawn;

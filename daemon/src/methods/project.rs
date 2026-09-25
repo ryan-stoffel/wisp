@@ -6,10 +6,12 @@ use std::sync::Arc;
 use tracing::info;
 use wisp_protocol::jsonrpc::ErrorObject;
 use wisp_protocol::{
-    ProjectCreateParams, ProjectCreateResult, ProjectListParams, ProjectListResult, WispEvent,
+    ErrorKind, ProjectCreateParams, ProjectCreateResult, ProjectListParams, ProjectListResult,
+    WispEvent,
 };
 
 use super::Context;
+use crate::repo;
 use crate::store::{self, store_error};
 
 /// Every project, oldest first, with the `seq` of the last event the list reflects.
@@ -38,6 +40,9 @@ pub(crate) async fn list(
 /// `project.created` is appended only when the row is new. The store's thread is the only
 /// writer, since the lock admits one wispd per data folder, so the lookup before the create can't
 /// race another create.
+///
+/// Only a new project's `repoPath` has to be a repository, so a retry still returns the project
+/// after its folder is gone.
 pub(crate) async fn create(
     context: &Context,
     params: ProjectCreateParams,
@@ -53,6 +58,11 @@ pub(crate) async fn create(
                 .get_project(id)
                 .map_err(|error| store_error(&error))?
                 .is_some();
+            if !existed {
+                repo::check(Path::new(&fields.repo_path)).map_err(|error| {
+                    ErrorObject::wisp(ErrorKind::NotARepository, error.to_string())
+                })?;
+            }
             let row = store
                 .create_project(id, &fields)
                 .map_err(|error| store_error(&error))?;

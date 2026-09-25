@@ -1,0 +1,68 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "project/create",
+    "params": {
+      "id": "01a0d34e-01e0-7dc0-b326-598cbff22558",
+      "name": "notes",
+      "repoPath": "/Users/me/notes"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "error": {
+      "code": -32000,
+      "message": "/Users/me/notes is not the top folder of a git repository: it has no .git.",
+      "data": { "kind": "notARepository" }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "project/create",
+    "params": {
+      "id": "01a0d34e-01e0-7dc0-b326-598cbff22558",
+      "name": "wisp",
+      "repoPath": "/Users/me/src/wisp"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "result": {
+      "project": {
+        "id": "01a0d34e-01e0-7dc0-b326-598cbff22558",
+        "name": "wisp",
+        "repoPath": "/Users/me/src/wisp",
+        "branch": "main",
+        "createdAt": "2026-09-25T12:00:00Z",
+        "updatedAt": "2026-09-25T12:00:00Z"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "project/list",
+    "params": {}
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "result": {
+      "projects": [
+        {
+          "id": "01a0d34e-01e0-7dc0-b326-598cbff22558",
+          "name": "wisp",
+          "repoPath": "/Users/me/src/wisp",
+          "branch": "4ecd1f0",
+          "createdAt": "2026-09-25T12:00:00Z",
+          "updatedAt": "2026-09-25T12:00:00Z"
+        }
+      ],
+      "seq": 1
+    }
+  }
+]
