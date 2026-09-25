@@ -27,7 +27,8 @@ use ts_rs::TS;
 use crate::jsonrpc::CancelRequestParams;
 use crate::{
     AccountsKeysAddParams, AccountsKeysAddResult, AccountsKeysListParams, AccountsKeysListResult,
-    AccountsKeysRemoveParams, AccountsKeysRemoveResult, EventsEventParams, EventsSubscribeParams,
+    AccountsKeysRemoveParams, AccountsKeysRemoveResult, AccountsListParams, AccountsListResult,
+    AccountsRefreshParams, AccountsRefreshResult, EventsEventParams, EventsSubscribeParams,
     EventsSubscribeResult, EventsUnsubscribeParams, EventsUnsubscribeResult, HostHealthParams,
     HostHealthResult, HostVersionParams, HostVersionResult, InitializeParams, InitializeResult,
     ProjectCreateParams, ProjectCreateResult, ProjectListParams, ProjectListResult, UsageGetParams,
@@ -130,6 +131,13 @@ method_table! {
         /// `accounts/keys/remove`: removes a key account's key from the Keychain, and its
         /// record. Fails with `accountNotFound` if the id does not exist.
         AccountsKeysRemove = "accounts/keys/remove": AccountsKeysRemoveParams => AccountsKeysRemoveResult;
+        /// `accounts/list`: the vendor CLIs wispd detects (#114), installed, signed in, and their
+        /// plan where exposed. May answer from a short-lived cache. Gated on the `agentClis`
+        /// capability.
+        AccountsList = "accounts/list": AccountsListParams => AccountsListResult;
+        /// `accounts/refresh`: like `accounts/list`, but always probes again instead of using the
+        /// cache. Gated on the `agentClis` capability.
+        AccountsRefresh = "accounts/refresh": AccountsRefreshParams => AccountsRefreshResult;
         /// `usage/get`: per-account tokens and cost for today and this week (local time on this
         /// host), and the latest limit windows.
         UsageGet = "usage/get": UsageGetParams => UsageGetResult;
@@ -181,6 +189,8 @@ mod tests {
                 "accounts/keys/add",
                 "accounts/keys/list",
                 "accounts/keys/remove",
+                "accounts/list",
+                "accounts/refresh",
                 "usage/get",
                 "$/cancelRequest",
                 "events/event",

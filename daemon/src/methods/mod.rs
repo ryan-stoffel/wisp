@@ -18,8 +18,9 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use wisp_protocol::jsonrpc::{ErrorObject, INVALID_REQUEST, Request, RequestId, Response};
 use wisp_protocol::methods::{
-    AccountsKeysAdd, AccountsKeysList, AccountsKeysRemove, EventsSubscribe, EventsUnsubscribe,
-    HostHealth, HostVersion, Initialize, ProjectCreate, ProjectList, RequestMethod, UsageGet,
+    AccountsKeysAdd, AccountsKeysList, AccountsKeysRemove, AccountsList, AccountsRefresh,
+    EventsSubscribe, EventsUnsubscribe, HostHealth, HostVersion, Initialize, ProjectCreate,
+    ProjectList, RequestMethod, UsageGet,
 };
 use wisp_protocol::{EventsSubscribeResult, EventsUnsubscribeResult, SubscriptionId};
 
@@ -70,14 +71,21 @@ pub(crate) async fn dispatch(context: Context, request: Request) -> Reply {
         ProjectCreate::NAME => {
             handle::<ProjectCreate, _, _>(&request, |p| project::create(&context, p)).await
         }
+        AccountsList::NAME => {
+            handle::<AccountsList, _, _>(&request, |p| accounts::list(&context, p)).await
+        }
+        AccountsRefresh::NAME => {
+            handle::<AccountsRefresh, _, _>(&request, |p| accounts::refresh(&context, p)).await
+        }
         AccountsKeysAdd::NAME => {
-            handle::<AccountsKeysAdd, _, _>(&request, |p| accounts::add(&context, p)).await
+            handle::<AccountsKeysAdd, _, _>(&request, |p| accounts::keys::add(&context, p)).await
         }
         AccountsKeysList::NAME => {
-            handle::<AccountsKeysList, _, _>(&request, |p| accounts::list(&context, p)).await
+            handle::<AccountsKeysList, _, _>(&request, |p| accounts::keys::list(&context, p)).await
         }
         AccountsKeysRemove::NAME => {
-            handle::<AccountsKeysRemove, _, _>(&request, |p| accounts::remove(&context, p)).await
+            handle::<AccountsKeysRemove, _, _>(&request, |p| accounts::keys::remove(&context, p))
+                .await
         }
         UsageGet::NAME => handle::<UsageGet, _, _>(&request, |p| usage::get(&context, p)).await,
         EventsSubscribe::NAME => {
