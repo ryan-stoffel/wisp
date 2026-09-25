@@ -1,5 +1,7 @@
 //! `initialize` and the host methods.
 
+use std::collections::BTreeMap;
+
 use serde_json::json;
 use wisp_protocol::framing::MAX_FRAME_BYTES;
 use wisp_protocol::jsonrpc::{INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, Request};
@@ -21,7 +23,13 @@ async fn the_handshake_agrees_on_a_version_and_reports_the_host() {
     let init = client.initialize().await.unwrap();
     assert_eq!(init.protocol, 1);
     assert_eq!(init.wispd, VERSION);
-    assert_eq!(init.capabilities, Capabilities::default());
+    assert_eq!(
+        init.capabilities,
+        Capabilities(BTreeMap::from([
+            ("accounts".to_owned(), serde_json::Map::new()),
+            ("agentClis".to_owned(), serde_json::Map::new()),
+        ]))
+    );
     assert_eq!(init.max_frame_bytes, MAX_FRAME_BYTES as u64);
 
     let health = client

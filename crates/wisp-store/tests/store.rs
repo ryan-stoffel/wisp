@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use rusqlite::Connection;
 use uuid::Uuid;
-use wisp_store::{ProjectFields, Store, StoreError};
+use wisp_store::{AccountFields, ProjectFields, Store, StoreError, UsageDelta};
 
 fn temp_db_path() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().expect("create temp dir");
@@ -17,6 +17,14 @@ fn sample_fields() -> ProjectFields {
     ProjectFields {
         name: "wisp".to_string(),
         repo_path: "/Users/ryan/dev/wisp".to_string(),
+    }
+}
+
+fn sample_account_fields() -> AccountFields {
+    AccountFields {
+        provider: "anthropic".to_string(),
+        label: "Personal".to_string(),
+        masked_key: "sk-ant-...abcd".to_string(),
     }
 }
 
@@ -418,5 +426,218 @@ fn a_version_1_database_migrates_and_keeps_its_projects() {
             row.get(0)
         })
         .expect("read schema version");
-    assert_eq!(version, 2);
+    assert_eq!(
+        version, 4,
+        "migrations 3 (accounts, #117) and 4 (usage, #120) also apply"
+    );
+    let account_columns: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('accounts')")
+        .expect("prepare")
+        .query_map([], |row| row.get(0))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("collect");
+    assert_eq!(
+        account_columns,
+        ["id", "provider", "label", "masked_key", "created_at"]
+    );
+}
+
+/// A database as `develop` (schema version 3, `accounts` but no usage tables) leaves it, opened by
+/// a build that also knows migration 4 (#120). Both the pre-existing `accounts` row and the new
+/// usage tables must be intact afterward.
+#[test]
+fn a_version_3_database_from_develop_migrates_to_usage_tables_and_keeps_its_account() {
+    let (_dir, path) = temp_db_path();
+    let account_id = Uuid::now_v7();
+    let conn = Connection::open(&path).expect("open raw connection");
+    conn.execute_batch(&format!(
+        "CREATE TABLE schema_version (
+             version INTEGER NOT NULL PRIMARY KEY,
+             applied_at TEXT NOT NULL
+         );
+         CREATE TABLE projects (
+             id TEXT NOT NULL PRIMARY KEY,
+             name TEXT NOT NULL,
+             repo_path TEXT NOT NULL,
+             created_at TEXT NOT NULL,
+             updated_at TEXT NOT NULL
+         );
+         CREATE TABLE accounts (
+             id TEXT NOT NULL PRIMARY KEY,
+             provider TEXT NOT NULL,
+             label TEXT NOT NULL,
+             masked_key TEXT NOT NULL,
+             created_at TEXT NOT NULL
+         );
+         INSERT INTO schema_version VALUES
+             (1, '2026-09-24T12:00:00.000000000Z'),
+             (2, '2026-09-24T12:00:00.000000000Z'),
+             (3, '2026-09-24T12:00:00.000000000Z');
+         INSERT INTO accounts VALUES ('{account_id}', 'anthropic', 'Personal', 'sk-ant-...abcd',
+             '2026-09-24T12:00:00.000000000Z');"
+    ))
+    .expect("write a version 3 database, as develop's #117 leaves it");
+    drop(conn);
+
+    let store = Store::open(&path).expect("open should migrate to version 4");
+    let account = store
+        .get_account(account_id)
+        .expect("get")
+        .expect("the pre-existing account row should survive the migration");
+    assert_eq!(account.masked_key, "sk-ant-...abcd");
+
+    // The new usage tables work: a delta records and reads back.
+    store
+        .record_usage_delta(&UsageDelta {
+            run_id: Uuid::now_v7(),
+            account_id: account_id.to_string(),
+            model: None,
+            input_tokens: 5,
+            output_tokens: 1,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            cost_usd_micros: None,
+            at: "2026-09-24T12:00:00Z".parse().unwrap(),
+        })
+        .expect("record a usage delta after migrating");
+    let summary = store
+        .usage_summary(
+            &account_id.to_string(),
+            "2026-01-01T00:00:00Z".parse().unwrap(),
+            "2027-01-01T00:00:00Z".parse().unwrap(),
+        )
+        .expect("summary");
+    assert_eq!(summary.input_tokens, 5);
+
+    let conn = Connection::open(&path).expect("open verification connection");
+    let version: i64 = conn
+        .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+            row.get(0)
+        })
+        .expect("read schema version");
+    assert_eq!(version, 4);
+}
+
+#[test]
+fn creating_an_account_with_the_same_id_and_fields_is_idempotent() {
+    let (_dir, path) = temp_db_path();
+    let mut store = Store::open(&path).expect("open");
+    let id = Uuid::now_v7();
+
+    let first = store
+        .create_account(id, &sample_account_fields())
+        .expect("first create should succeed");
+    let second = store
+        .create_account(id, &sample_account_fields())
+        .expect("repeat create with identical fields should succeed");
+
+    assert_eq!(first, second);
+    assert_eq!(first.masked_key, "sk-ant-...abcd");
+    assert_eq!(store.list_accounts().expect("list").len(), 1);
+}
+
+#[test]
+fn creating_an_account_with_the_same_id_and_different_fields_conflicts() {
+    let (_dir, path) = temp_db_path();
+    let mut store = Store::open(&path).expect("open");
+    let id = Uuid::now_v7();
+    let mut other = sample_account_fields();
+    other.label = "Work".to_string();
+
+    store
+        .create_account(id, &sample_account_fields())
+        .expect("first create should succeed");
+    let err = store
+        .create_account(id, &other)
+        .expect_err("repeat create with different fields should fail");
+
+    match err {
+        StoreError::IdConflict { id: conflicting } => assert_eq!(conflicting, id),
+        other => panic!("expected IdConflict, got {other:?}"),
+    }
+    assert_eq!(
+        store.list_accounts().expect("list").len(),
+        1,
+        "a rejected conflicting create must not change the stored row"
+    );
+}
+
+#[test]
+fn accounts_list_oldest_first_and_delete_removes_them_idempotently() {
+    let (_dir, path) = temp_db_path();
+    let mut store = Store::open(&path).expect("open");
+    let first_id = Uuid::now_v7();
+    store
+        .create_account(first_id, &sample_account_fields())
+        .expect("create first");
+    let second_id = Uuid::now_v7();
+    let mut second_fields = sample_account_fields();
+    second_fields.provider = "openai".to_string();
+    second_fields.label = "Work".to_string();
+    second_fields.masked_key = "sk-proj-...wxyz".to_string();
+    store
+        .create_account(second_id, &second_fields)
+        .expect("create second");
+
+    let listed: Vec<Uuid> = store
+        .list_accounts()
+        .expect("list")
+        .into_iter()
+        .map(|a| a.id)
+        .collect();
+    assert_eq!(listed, [first_id, second_id]);
+
+    let deleted_first = store.delete_account(first_id).expect("delete");
+    let deleted_second = store
+        .delete_account(first_id)
+        .expect("deleting twice should not error");
+    assert!(deleted_first, "the first delete should report a removal");
+    assert!(
+        !deleted_second,
+        "the second delete should report nothing removed"
+    );
+    assert_eq!(store.get_account(first_id).expect("get"), None);
+    assert_eq!(store.list_accounts().expect("list").len(), 1);
+}
+
+/// A key account's row never holds the key itself: only its masked display form.
+#[test]
+fn account_rows_never_hold_more_than_the_masked_key() {
+    let (_dir, path) = temp_db_path();
+    let mut store = Store::open(&path).expect("open");
+    let id = Uuid::now_v7();
+    let secret = "sk-ant-api03-thisisaveryrealsecretabcd";
+    store
+        .create_account(
+            id,
+            &AccountFields {
+                provider: "anthropic".to_string(),
+                label: "Personal".to_string(),
+                masked_key: "sk-ant-...abcd".to_string(),
+            },
+        )
+        .expect("create");
+
+    let conn = Connection::open(&path).expect("open raw connection");
+    let columns: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('accounts')")
+        .expect("prepare")
+        .query_map([], |row| row.get(0))
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("collect");
+    assert_eq!(
+        columns,
+        ["id", "provider", "label", "masked_key", "created_at"],
+        "no column exists for the real key"
+    );
+    let stored: String = conn
+        .query_row(
+            "SELECT masked_key FROM accounts WHERE id = ?1",
+            [id.to_string()],
+            |row| row.get(0),
+        )
+        .expect("read the stored masked_key");
+    assert_ne!(stored, secret, "the real key must never be stored");
 }

@@ -11,7 +11,7 @@ const PRINTER: DateTimePrinter = DateTimePrinter::new().precision(Some(9));
 
 /// Formats `timestamp` as fixed-width RFC 3339 UTC, the format used for
 /// every stored column.
-fn format(timestamp: Timestamp) -> String {
+pub(crate) fn format(timestamp: Timestamp) -> String {
     PRINTER.timestamp_to_string(&timestamp)
 }
 

@@ -29,7 +29,9 @@
 
 #![warn(missing_docs)]
 
+mod account;
 mod agent;
+mod cli_account;
 mod error;
 mod events;
 pub mod framing;
@@ -40,11 +42,21 @@ pub mod jsonrpc;
 pub mod methods;
 mod project;
 pub mod typescript;
+mod usage;
 
 #[cfg(test)]
 mod samples;
 
+pub use account::{
+    AccountId, AccountsKeysAddParams, AccountsKeysAddResult, AccountsKeysListParams,
+    AccountsKeysListResult, AccountsKeysRemoveParams, AccountsKeysRemoveResult, KeyAccount,
+    Provider, RawKey,
+};
 pub use agent::{RunId, TurnId};
+pub use cli_account::{
+    AccountsListParams, AccountsListResult, AccountsRefreshParams, AccountsRefreshResult, AuthKind,
+    CliKind, DetectedCli,
+};
 pub use error::{ErrorData, ErrorKind, IncompatibleProtocolDetail};
 pub use events::{
     EventsEventParams, EventsSubscribeParams, EventsSubscribeResult, EventsUnsubscribeParams,
@@ -61,6 +73,7 @@ pub use project::{
     Project, ProjectCreateParams, ProjectCreateResult, ProjectId, ProjectListParams,
     ProjectListResult,
 };
+pub use usage::{AccountUsage, UsageGetParams, UsageGetResult, UsageLimitWindow, UsagePeriod};
 
 /// The newest protocol version this crate speaks. Versions start at 1.
 ///
@@ -92,6 +105,16 @@ mod tests {
             repo_path: "/Users/me/src/wisp".to_owned(),
             created_at: "2026-09-24T12:00:00Z".parse().unwrap(),
             updated_at: "2026-09-24T12:05:00.125Z".parse().unwrap(),
+        }
+    }
+
+    fn key_account() -> KeyAccount {
+        KeyAccount {
+            id: AccountId::generate(),
+            provider: Provider::Anthropic,
+            label: "Personal".to_owned(),
+            created_at: "2026-09-24T12:00:00Z".parse().unwrap(),
+            masked_key: "sk-ant-...abcd".to_owned(),
         }
     }
 
@@ -177,6 +200,101 @@ mod tests {
             requested: ProtocolRange { min: 2, max: 2 },
             supported: ProtocolRange::SUPPORTED,
             wispd: "0.1.0".to_owned(),
+        });
+        round_trip(&AccountsKeysAddParams {
+            id: AccountId::generate(),
+            provider: Provider::Anthropic,
+            label: "Personal".to_owned(),
+            key: serde_json::from_value(json!("sk-ant-secret")).unwrap(),
+        });
+        round_trip(&AccountsKeysAddResult {
+            account: key_account(),
+        });
+        round_trip(&AccountsKeysListParams {});
+        round_trip(&AccountsKeysListResult {
+            accounts: vec![key_account(), key_account()],
+        });
+        round_trip(&AccountsKeysRemoveParams {
+            id: AccountId::generate(),
+        });
+        round_trip(&AccountsKeysRemoveResult {});
+    }
+
+    #[test]
+    fn accounts_messages_round_trip() {
+        round_trip(&AccountsListParams {});
+        round_trip(&AccountsRefreshParams {});
+        let clis = vec![
+            DetectedCli {
+                cli: CliKind::Claude,
+                installed: true,
+                path: Some("/usr/local/bin/claude".to_owned()),
+                version: Some("2.1.281".to_owned()),
+                signed_in: Some(true),
+                auth_kind: Some(AuthKind::Subscription),
+                plan: Some("max".to_owned()),
+                note: None,
+            },
+            DetectedCli {
+                cli: CliKind::Codex,
+                installed: false,
+                path: None,
+                version: None,
+                signed_in: None,
+                auth_kind: None,
+                plan: None,
+                note: None,
+            },
+        ];
+        round_trip(&AccountsListResult {
+            clis: clis.clone(),
+            checked_at: "2026-09-25T12:00:00Z".parse().unwrap(),
+        });
+        round_trip(&AccountsRefreshResult {
+            clis,
+            checked_at: "2026-09-25T12:00:00Z".parse().unwrap(),
+        });
+    }
+
+    #[test]
+    fn usage_types_round_trip_and_omit_what_is_not_reported() {
+        round_trip(&UsageGetParams {});
+        for cost in [None, Some(45_000)] {
+            round_trip(&UsagePeriod {
+                input_tokens: 100,
+                output_tokens: 10,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                cost_usd_micros: cost,
+            });
+        }
+        for (used_percent, resets_at) in [(None, None), (Some(42.5), Some(project().created_at))] {
+            round_trip(&UsageLimitWindow {
+                window: "five_hour".to_owned(),
+                used_percent,
+                resets_at,
+                captured_at: project().created_at,
+            });
+        }
+        round_trip(&UsageGetResult {
+            accounts: vec![AccountUsage {
+                account_id: "claude-max".to_owned(),
+                today: UsagePeriod {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                    cost_usd_micros: None,
+                },
+                week: UsagePeriod {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                    cost_usd_micros: Some(1),
+                },
+                limits: Vec::new(),
+            }],
         });
     }
 }
