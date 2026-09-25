@@ -5,12 +5,15 @@
 import '../browser/wisp.contribution.js';
 import '../../../../platform/wisp/electron-browser/wispdService.js';
 
+import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import Severity from '../../../../base/common/severity.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
+import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IWispdService, WispdState, describeIncompatible } from '../../../../platform/wisp/common/wispd.js';
 import { IWorkbenchContribution, WorkbenchPhase, registerWorkbenchContribution2 } from '../../../common/contributions.js';
@@ -117,5 +120,26 @@ registerAction2(class extends Action2 {
 
 	run(accessor: ServicesAccessor): Promise<void> {
 		return accessor.get(IWispdService).retry();
+	}
+});
+
+// Upstream's Open Agents Window is disabled while AI features are off, which they are in this
+// window. The Agents window is wisp's main UI, so the editor window keeps a way back to it.
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'wisp.openAgentsWindow',
+			title: localize2('wisp.openAgentsWindow', "Open Agents Window"),
+			category,
+			f1: true,
+			keybinding: {
+				primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyA,
+				weight: KeybindingWeight.WorkbenchContrib,
+			},
+		});
+	}
+
+	run(accessor: ServicesAccessor): Promise<void> {
+		return accessor.get(INativeHostService).openAgentsWindow();
 	}
 });
