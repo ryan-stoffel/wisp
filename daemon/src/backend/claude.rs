@@ -17,8 +17,8 @@
 //!     Seatbelt sandbox holds every command: writes only to the working directories and the
 //!     session temp folder, no reads of the sandbox's `unreadable` paths, and no writes to git
 //!     metadata. `failIfUnavailable` and `allowUnsandboxedCommands: false` keep a command from
-//!     ever running outside it. Commands, `WebFetch`, and `WebSearch` reach any host but localhost
-//!     (Ryan, #137), so the unreadable paths are what keep secrets in.
+//!     ever running outside it. Commands, `WebFetch`, and `WebSearch` reach any host but
+//!     [`WORKER_DENIED_HOSTS`] (Ryan, #137), so the unreadable paths are what keep secrets in.
 //!   - `--strict-mcp-config` connects no MCP servers, including the repository's `.mcp.json`.
 //!
 //!   As a second check, a worker whose `system/init` lists a tool outside [`WORKER_TOOLS`], or
@@ -143,9 +143,12 @@ pub const WORKER_TOOLS: &[&str] = &[
 pub const WORKER_TOOL_LIST: &str =
     "Read,Edit,Write,Glob,Grep,NotebookEdit,Bash,WebFetch,WebSearch,TodoWrite";
 
-/// Hosts no worker command may reach, even with network access: this Mac's own services wait
-/// on #168.
-pub const WORKER_DENIED_HOSTS: &[&str] = &["localhost", "127.0.0.1", "[::1]"];
+/// The names for this Mac that no worker command or `WebFetch` may reach, even with network
+/// access: this Mac's own services wait on #168. The sandbox's proxy canonicalizes other
+/// spellings of loopback (`127.1`, `[::ffff:127.0.0.1]`) and refuses names that resolve to this
+/// Mac, but it doesn't check IP literals, so the unspecified addresses are listed too. This Mac's
+/// interface addresses aren't: 0013 records that gap.
+pub const WORKER_DENIED_HOSTS: &[&str] = &["localhost", "127.0.0.1", "[::1]", "0.0.0.0", "[::]"];
 
 /// [`ToolPolicy::WorkspaceWrite`]'s fixed arguments (0013). [`arguments`] adds the run's
 /// [`worker_settings`] and `--add-dir` folders after them.
@@ -274,7 +277,9 @@ pub fn arguments(request: &RunRequest) -> Result<Vec<OsString>, StartError> {
 /// The `--settings` a worker runs with (0013): hooks off; the web tools allowed; and Claude Code's
 /// Bash sandbox on, with no way around it, `sandbox`'s paths, and every host but
 /// [`WORKER_DENIED_HOSTS`]. `WebFetch(domain:*)` is what opens the network: the sandbox takes its
-/// allowlist from `WebFetch` allow rules, and a bare `*` matches every host. `cwd` and the writable folders stay
+/// allowlist from `WebFetch` allow rules, and a bare `*` matches every host. The denied hosts are
+/// `WebFetch` deny rules as well as `deniedDomains`, because the sandbox's list binds only
+/// commands, and a deny rule beats the `*` allow for the tool. `cwd` and the writable folders stay
 /// readable inside an unreadable path, such as wispd's data folder, which holds both. A second
 /// account's `config_home` is unreadable too.
 #[must_use]
@@ -289,10 +294,15 @@ pub fn worker_settings(sandbox: &WorkerSandbox, cwd: &Path, config_home: Option<
     let readable =
         strings(std::iter::once(cwd).chain(sandbox.writable.iter().map(PathBuf::as_path)));
     let read_only = strings(sandbox.read_only.iter().map(PathBuf::as_path));
+    let denied_fetches: Vec<String> = WORKER_DENIED_HOSTS
+        .iter()
+        .map(|host| format!("WebFetch(domain:{host})"))
+        .collect();
     serde_json::json!({
         "disableAllHooks": true,
         "permissions": {
             "allow": ["WebFetch(domain:*)", "WebSearch"],
+            "deny": denied_fetches,
         },
         "sandbox": {
             "enabled": true,

@@ -379,7 +379,16 @@ fn assert_worker_invocation(fake: &Fake) {
         settings,
         serde_json::json!({
             "disableAllHooks": true,
-            "permissions": {"allow": ["WebFetch(domain:*)", "WebSearch"]},
+            "permissions": {
+                "allow": ["WebFetch(domain:*)", "WebSearch"],
+                "deny": [
+                    "WebFetch(domain:localhost)",
+                    "WebFetch(domain:127.0.0.1)",
+                    "WebFetch(domain:[::1])",
+                    "WebFetch(domain:0.0.0.0)",
+                    "WebFetch(domain:[::])",
+                ],
+            },
             "sandbox": {
                 "enabled": true,
                 "failIfUnavailable": true,
@@ -388,7 +397,7 @@ fn assert_worker_invocation(fake: &Fake) {
                 "excludedCommands": [],
                 "network": {
                     "strictAllowlist": true,
-                    "deniedDomains": ["localhost", "127.0.0.1", "[::1]"],
+                    "deniedDomains": ["localhost", "127.0.0.1", "[::1]", "0.0.0.0", "[::]"],
                     "allowLocalBinding": false,
                 },
                 "filesystem": {
@@ -419,6 +428,35 @@ fn assert_worker_invocation(fake: &Fake) {
 }
 
 #[test]
+fn a_worker_s_settings_deny_every_name_for_this_mac_to_commands_and_web_fetch() {
+    let sandbox = worker_sandbox(Path::new("/Users/u/wt"));
+    let settings = super::worker_settings(&sandbox, Path::new("/Users/u/wt"), None);
+    let list = |pointer: &str| -> Vec<String> {
+        settings
+            .pointer(pointer)
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .map(|entry| entry.as_str().unwrap().to_owned())
+            .collect()
+    };
+    let denied_hosts = list("/sandbox/network/deniedDomains");
+    let denied_fetches = list("/permissions/deny");
+    for host in ["localhost", "127.0.0.1", "[::1]", "0.0.0.0", "[::]"] {
+        assert!(
+            denied_hosts.iter().any(|h| h == host),
+            "commands reach {host}"
+        );
+        let rule = format!("WebFetch(domain:{host})");
+        assert!(denied_fetches.contains(&rule), "WebFetch reaches {host}");
+    }
+    assert_eq!(
+        list("/permissions/allow"),
+        ["WebFetch(domain:*)", "WebSearch"]
+    );
+}
+
+#[test]
 fn a_worker_without_a_usable_sandbox_is_refused_before_anything_runs() {
     let fake = Fake::new("tool-call");
     let mut worker = request(&fake.root());
@@ -442,6 +480,7 @@ fn a_worker_without_a_usable_sandbox_is_refused_before_anything_runs() {
 
     for glob in [
         "/Users/u/src/app[old]/.git",
+        "/Users/u/src/app]/.git",
         "/Users/u/src/a*/.git",
         "/Users/u/src/a?/.git",
     ] {

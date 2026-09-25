@@ -86,7 +86,7 @@ pub const UNREADABLE_IN_HOME: &[&str] = &[
 
 /// Characters the vendors' sandbox settings read as wildcards in a path. A path holding one would
 /// become a pattern that may not match itself, and a deny rule would fail open.
-const GLOB_CHARACTERS: &[char] = &['*', '?', '['];
+const GLOB_CHARACTERS: &[char] = &['*', '?', '[', ']'];
 
 /// A worker run's boundary beyond its cwd, which is always readable and writable. Build it with
 /// [`WorkerSandbox::for_worktree`]; a sandbox with nothing unreadable is refused.
@@ -148,7 +148,7 @@ impl WorkerSandbox {
 /// [`StartError::Invalid`] if a worker has no sandbox, which is how a caller that predates 0013
 /// is refused; if its sandbox has nothing unreadable; or if any of its paths, its cwd, or its
 /// account's configuration folder is relative, isn't valid UTF-8, or holds a character the
-/// vendors' settings read as a wildcard (`*`, `?`, `[`).
+/// vendors' settings read as a wildcard (`*`, `?`, `[`, `]`).
 pub fn worker_sandbox(request: &RunRequest) -> Result<Option<&WorkerSandbox>, StartError> {
     if request.policy == ToolPolicy::NoWrite {
         return Ok(None);
@@ -173,7 +173,7 @@ pub fn worker_sandbox(request: &RunRequest) -> Result<Option<&WorkerSandbox>, St
         .chain(config_home);
     if let Some(path) = paths.find(|path| !usable(path)) {
         return Err(StartError::Invalid(format!(
-            "the worker path {} must be absolute UTF-8 with no *, ?, or [",
+            "the worker path {} must be absolute UTF-8 with no *, ?, [, or ]",
             path.display()
         )));
     }

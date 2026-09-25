@@ -26,13 +26,13 @@ A worker is a vendor CLI running headless in its own worktree (#154). The same l
 | Write | Its worktree; the project's shared context folder (0005); its temp folder | Anything else. This includes the worktree's `.git` file and the repository's git folder, so wispd makes every commit (0004) |
 | Read | The whole disk | wispd's data folder, except its own worktree and context folder, and every path in `UNREADABLE_IN_HOME` (`daemon/src/backend/sandbox.rs`). That list covers keys and the Keychain folder; cloud, container, and infrastructure credentials; git and git-host credentials, including Copilot's token; package-registry and database credentials; password managers (`pass`, 1Password, Bitwarden); shell and REPL histories, including `~/.zsh_sessions`; browser profiles and cookies (Safari, Chrome, Firefox, Arc, Brave, Edge); and the agent CLIs' own folders |
 | Execute | Any command, inside the vendor's OS sandbox (Seatbelt on macOS) | Anything outside it: no unsandboxed retries, no hooks, no MCP servers, no repository-supplied settings |
-| Network | Any public host, from commands and from the web search and fetch tools (Ryan, #137) | This Mac's own services: localhost stays denied until #168 |
+| Network | Any public host, from commands and from the web search and fetch tools (Ryan, #137) | This Mac's loopback and unspecified addresses (`localhost`, `127.0.0.1`, `[::1]`, `0.0.0.0`, `[::]`), until #168. Not this Mac's interface addresses: see the threat model |
 
 `WorkerSandbox` (`daemon/src/backend/sandbox.rs`) carries the paths. Every backend refuses a `workspace-write` run in any of these cases, with an error that names the problem:
 
 - it has no sandbox, or its sandbox has nothing unreadable;
 - a sandbox path, its cwd, or its account's configuration folder is relative or not UTF-8;
-- any of those paths holds `*`, `?`, or `[`. The vendors read those as wildcards, so a deny rule for a folder such as `~/src/app[old]/.git` would not match it and would fail open [4].
+- any of those paths holds `*`, `?`, `[`, or `]`. The vendors read those as wildcards, so a deny rule for a folder such as `~/src/app[old]/.git` would not match it and would fail open [4][13].
 
 ### Threat model
 
@@ -41,7 +41,8 @@ With network on, anything a worker's commands can read, they can send anywhere. 
 - **What stays in.** The paths in the list, and wispd's data folder, which holds other projects' context, the store, and the log. Credentials in the environment are scrubbed as well (0004, `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`).
 - **What can leave.** The worktree's own source, which the vendor's model sees anyway, and any secret the list doesn't name. That includes `.env` files in other projects and credentials a tool keeps somewhere we didn't list. It also includes another account's configuration folder, if one lives outside the data folder: only the run's own account's is denied. The vendors have no built-in list [1], so new entries go in `UNREADABLE_IN_HOME`.
 - **What comes in.** Fetched pages, search results, and downloaded packages can carry prompt injection or malicious code. They run inside the same sandbox as everything else, so their reach is the same as the agent's own.
-- **Localhost** stays denied, because the host's own services (databases, Docker, wispd) are a larger target than any one remote host. #168 decides whether tests may use it.
+- **This Mac's own services** (databases, Docker's published ports, dev servers) are a larger target than any one remote host, so its loopback and unspecified addresses are denied to commands and to WebFetch alike. The sandbox's proxy canonicalizes other spellings of loopback (`127.1`, `[::ffff:127.0.0.1]`) and refuses names that resolve to this Mac, but it doesn't check IP literals [13]. So `0.0.0.0` and `[::]` are listed explicitly.
+- **Gap: this Mac's interface addresses.** A service bound to `0.0.0.0` also listens on the Mac's LAN address, such as its Wi-Fi IP, and a worker that uses that literal address reaches it. wisp doesn't list those addresses, because they change with the network during a run. Other machines on the LAN are reachable too, since network access is on. #168 decides whether to enumerate the Mac's addresses at run start or to accept the gap.
 
 ### Claude Code
 
@@ -63,7 +64,11 @@ claude -p --output-format stream-json --verbose --input-format stream-json \
 ```json
 {
   "disableAllHooks": true,
-  "permissions": { "allow": ["WebFetch(domain:*)", "WebSearch"] },
+  "permissions": {
+    "allow": ["WebFetch(domain:*)", "WebSearch"],
+    "deny": ["WebFetch(domain:localhost)", "WebFetch(domain:127.0.0.1)", "WebFetch(domain:[::1])",
+             "WebFetch(domain:0.0.0.0)", "WebFetch(domain:[::])"]
+  },
   "sandbox": {
     "enabled": true,
     "failIfUnavailable": true,
@@ -72,7 +77,7 @@ claude -p --output-format stream-json --verbose --input-format stream-json \
     "excludedCommands": [],
     "network": {
       "strictAllowlist": true,
-      "deniedDomains": ["localhost", "127.0.0.1", "[::1]"],
+      "deniedDomains": ["localhost", "127.0.0.1", "[::1]", "0.0.0.0", "[::]"],
       "allowLocalBinding": false
     },
     "filesystem": {
@@ -86,7 +91,7 @@ claude -p --output-format stream-json --verbose --input-format stream-json \
 
 - **`--restricted`** loads only managed settings and `--settings`. It skips the user, project, and local settings files, so a repository can't add allow rules, directories, hooks, or an `env` block. It also confines the file tools to the working directories, and it removes the command tools and WebFetch unless `--tools` names them [2]. It needs Claude Code 2.1.248 or later (`WORKER_MIN_VERSION`). We chose it over `--setting-sources user`, which would still merge the user's own sandbox arrays and allow rules into a worker's [1].
 - **`--tools`** is an explicit list. `Bash` is on it without an allowlist, because the OS boundary holds whatever the command string says [1]. Argument patterns such as `Bash(npm test *)` are fragile by the vendor's own account [3], and the sandbox makes them unnecessary. The list leaves out `Agent`, `Skill`, `Monitor`, and every MCP tool. Leaving out `Skill` and `Agent` also means a repository's skills and subagents can't be invoked.
-- **Network.** The sandbox takes its allowlist from `allowedDomains` and from `WebFetch(domain:...)` allow rules, and it honors a bare `*` in those rules [1]. So `WebFetch(domain:*)` opens every host to commands and approves WebFetch; `WebSearch` approves search. `strictAllowlist` makes any host outside the list, which is only `deniedDomains`, fail instead of prompting. `deniedDomains` wins over the allowlist [4].
+- **Network.** The sandbox takes its allowlist from `allowedDomains` and from `WebFetch(domain:...)` allow rules, and it honors a bare `*` in those rules [1]. So `WebFetch(domain:*)` opens every host to commands and approves WebFetch; `WebSearch` approves search. `strictAllowlist` makes any host outside the list, which is only `deniedDomains`, fail instead of prompting. `deniedDomains` wins over the allowlist, but it binds sandboxed commands only; WebFetch runs in-process and follows permission rules [4]. So each denied host is also a `WebFetch(domain:...)` deny rule, which beats the `*` allow for the tool [3].
 - **`failIfUnavailable`** makes a run fail when the sandbox can't start, instead of running commands unsandboxed. **`allowUnsandboxedCommands: false`** ignores `dangerouslyDisableSandbox`, the model's escape hatch [1][4].
 - **`--strict-mcp-config`** with no `--mcp-config` connects no MCP servers, including `.mcp.json` [2]. wispd's own MCP tools join in M4.
 - **`acceptEdits`** approves the file tools inside the working directories. Writes to the permission system's protected paths (`.git`, `.claude`, `.vscode`, `.husky`, `.mcp.json`, shell startup files, ...) still prompt, and `-p` denies them [5]. That covers the Edit and Write tools only. The sandbox's own protected paths are a shorter list, and `.husky` isn't on it [1]. So a Claude worker's Bash can write `.husky/_/post-commit`, which git would run, outside any sandbox, when wispd commits. #166 is needed for Claude workers too.
@@ -167,13 +172,13 @@ wisp's own profile does have one use: commands wispd runs itself, such as a setu
 
 ## Deferred
 
-- Localhost and Unix sockets (#168), dependency caches or a setup step (#167), and a check against a real Claude login (#124).
+- Localhost and Unix sockets for tests, and this Mac's interface addresses (#168); dependency caches or a setup step (#167); and a check against a real Claude login (#124).
 - Denying other accounts' configuration folders, once #114's successors give wispd a list of them.
 
 ## Consequences
 
 - Workers can build, test, search, and fetch. JavaScript projects in a fresh worktree still need #167 before `npm install` works.
-- A worker's own shell can't commit or reach this Mac's own services, and an agent that expects to will see its command fail. Its prompt (#156) should say so.
+- A worker's own shell can't commit, or reach this Mac's services through its loopback or unspecified addresses, and an agent that expects to will see its command fail. Its prompt (#156) should say so.
 - With network on, the denylist is the whole of the secrecy boundary. It can't cover every secret, and a gap in it is a leak, not just a read.
 - The worker contract depends on vendor flags that change often: `--restricted` is weeks old, and Codex's permission profiles are in beta. Each adapter pins a tested CLI version (0004), and CI's argv tests pin the flags.
 - Reviewing the diff is the last gate. A worker can change files that run later outside any sandbox, such as `package.json` scripts, `Makefile`, `.husky/*`, or `.vscode/tasks.json`. The Edit tool refuses some of these, but a command doesn't.
@@ -215,5 +220,5 @@ Read on 2026-09-25, as raw Markdown (`.md` appended to each page URL).
 10. Cursor CLI parameters (`--sandbox`, `agent sandbox run`): https://cursor.com/docs/cli/reference/parameters
 11. Cursor CLI configuration (`sandbox.mode`, `sandbox.networkAccess`, project `.cursor/cli.json`): https://cursor.com/docs/cli/reference/configuration
 12. Git, `git commit --no-verify` and githooks: https://git-scm.com/docs/git-commit, https://git-scm.com/docs/githooks
-13. sandbox-runtime, macOS sandbox profile (Mach lookups it allows): https://github.com/anthropic-experimental/sandbox-runtime/blob/main/src/sandbox/macos-sandbox-utils.ts
+13. sandbox-runtime, the engine behind Claude Code's sandbox: its macOS profile (Mach lookups it allows), host canonicalization and the resolved-address guard (which skips IP literals), and glob characters in paths: https://github.com/anthropic-experimental/sandbox-runtime (`src/sandbox/macos-sandbox-utils.ts`, `parent-proxy.ts`, `resolved-address-guard.ts`, `sandbox-utils.ts`)
 14. Claude Code environment variables (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`): https://code.claude.com/docs/en/env-vars
