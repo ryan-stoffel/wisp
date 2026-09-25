@@ -76,7 +76,7 @@
 	overflow-wrap: anywhere;
 }
 
-.wisp-composer-footer-item {
+.monaco-action-bar .action-item.wisp-composer-footer-item {
 	display: inline-flex;
 	align-items: center;
 	gap: var(--vscode-spacing-size40);
@@ -89,16 +89,16 @@
 	white-space: nowrap;
 }
 
-.wisp-composer-footer-host {
+.monaco-action-bar .action-item.wisp-composer-footer-host {
 	cursor: pointer;
 }
 
-.wisp-composer-footer-host:hover {
+.monaco-action-bar .action-item.wisp-composer-footer-host:hover {
 	background-color: var(--vscode-toolbar-hoverBackground);
 	color: var(--vscode-foreground);
 }
 
-.wisp-composer-footer-host:focus-visible {
+.monaco-action-bar .action-item.wisp-composer-footer-host:focus-visible {
 	outline: 1px solid var(--vscode-focusBorder);
 	outline-offset: -1px;
 }

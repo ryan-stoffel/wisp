@@ -411,7 +411,7 @@ suite('wisp: projects', () => {
 			assert.strictEqual(containers.getDefaultViewContainers(ViewContainerLocation.AuxiliaryBar)[0]?.id, WISP_PROJECT_CONTAINER_ID);
 			const view = Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry).getView(WISP_PROJECT_VIEW_ID);
 			assert.strictEqual(view?.windowEnablement, WindowEnablement.Sessions);
-			assert.strictEqual(view?.when?.serialize(), `sessionType == '${WISP_PROJECT_SESSION_TYPE}'`);
+			assert.strictEqual(view?.canToggleVisibility, false);
 		});
 
 		test('the Project tab lists the repository from wispd, and says what isn\'t there yet', () => {

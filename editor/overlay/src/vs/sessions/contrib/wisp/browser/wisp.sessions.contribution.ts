@@ -31,5 +31,8 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		'chat.remoteAgentHostsEnabled': false,
 		// Copilot voice mode.
 		'agents.voice.enabled': false,
+		// The right panel keeps its own tab strip (Project, Changes, Files), as in the design,
+		// instead of docking inside the editor with no tabs of its own.
+		'sessions.layout.singlePaneDetailPanel': false,
 	},
 }]);
