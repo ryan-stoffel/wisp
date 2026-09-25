@@ -256,9 +256,14 @@ pub enum FailureKind {
     NotSignedIn,
     /// The account hit a usage limit.
     RateLimited,
-    /// The run broke the account or tool policy: for example a subscription run whose
-    /// `apiKeySource` is not `none`, or a no-write turn that changed the repository.
+    /// The run broke the tool policy: for example a no-write run whose CLI offered write tools,
+    /// or a no-write turn that changed the repository.
     PolicyViolation,
+    /// The CLI took credentials or a provider other than the account's, so the run would be
+    /// billed elsewhere: for example a subscription run whose Claude `apiKeySource` is not
+    /// `none` (0004), or whose `modelUsage` names a provider other than `firstParty`. The backend
+    /// stops the CLI as soon as it reports them.
+    UnexpectedApiKey,
     /// The CLI reported an error of its own, such as Claude's `error_max_turns`.
     VendorError,
     /// The process died from a signal, or exited unsuccessfully without saying why.

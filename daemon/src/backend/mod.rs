@@ -17,6 +17,7 @@
 //! failure, arrives on the stream; and `send` and `cancel` only enqueue. The price is a virtual
 //! call per start, send, or cancel, never per event.
 
+pub mod claude;
 pub mod event;
 pub mod fake;
 pub mod process;

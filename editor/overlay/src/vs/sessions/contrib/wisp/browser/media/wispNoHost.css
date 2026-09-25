@@ -47,6 +47,23 @@
 	line-height: 20px;
 }
 
+.wisp-no-host-actions {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: center;
+	gap: var(--vscode-spacing-size80);
+	margin-top: var(--vscode-spacing-size60);
+}
+
+.wisp-no-host-actions[hidden] {
+	display: none;
+}
+
+.wisp-no-host-action.monaco-button {
+	width: auto;
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size120);
+}
+
 .wisp-no-host-composer {
 	display: flex;
 	align-items: center;
@@ -134,4 +151,10 @@
 	display: inline-flex;
 	align-items: center;
 	gap: var(--vscode-spacing-size60);
+}
+
+.wisp-no-host-host-name {
+	max-width: 240px;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
