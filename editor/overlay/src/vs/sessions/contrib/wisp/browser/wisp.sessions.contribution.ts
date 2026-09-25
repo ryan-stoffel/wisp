@@ -15,6 +15,10 @@ import '../../providers/wisp/browser/wispSessionsProvider.contribution.js';
 import './wispThreads.contribution.js';
 import './wispNoHost.contribution.js';
 import './wispHostMenu.js';
+import './wispNewProject.js';
+import './wispSearch.js';
+import './wispProject.contribution.js';
+import './wispComposerFooter.js';
 
 registerSingleton(IWispHostStatusService, WispHostStatusService, InstantiationType.Delayed);
 

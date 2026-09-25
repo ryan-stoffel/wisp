@@ -3,11 +3,12 @@
  *--------------------------------------------------------------------------------------------*/
 
 import './media/wispThreads.css';
-import { $, addDisposableListener, append, EventType } from '../../../../base/browser/dom.js';
+import { $, addDisposableListener, append, clearNode, EventType, getWindow } from '../../../../base/browser/dom.js';
 import { status as ariaStatus } from '../../../../base/browser/ui/aria/aria.js';
 import { Codicon } from '../../../../base/common/codicons.js';
-import { MutableDisposable } from '../../../../base/common/lifecycle.js';
-import { autorun } from '../../../../base/common/observable.js';
+import { fromNow } from '../../../../base/common/date.js';
+import { DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { autorun, observableSignal, observableSignalFromEvent } from '../../../../base/common/observable.js';
 import { basename } from '../../../../base/common/resources.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
@@ -19,24 +20,34 @@ import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
-import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IViewPaneOptions, ViewPane } from '../../../../workbench/browser/parts/views/viewPane.js';
 import { IViewDescriptorService } from '../../../../workbench/common/views.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
+import { ISessionsService } from '../../../services/sessions/browser/sessionsService.js';
+import { ISession } from '../../../services/sessions/common/session.js';
+import { ISessionsManagementService } from '../../../services/sessions/common/sessionsManagement.js';
+import { IWispProjectsService } from '../../providers/wisp/browser/wispProjectsService.js';
+import { compactAge, projectGlyph, projectIdOf } from '../../providers/wisp/common/wispProjects.js';
 import { WISP_SHOW_HOST_MENU_COMMAND } from './wispHostMenu.js';
 import { IWispHostStatusService } from './wispHostStatusService.js';
+import { WISP_NEW_PROJECT_COMMAND } from './wispNewProject.js';
+import { projectSessions, WISP_SEARCH_COMMAND } from './wispSearch.js';
 
 export const WISP_THREADS_CONTAINER_ID = 'wisp.threads';
 export const WISP_THREADS_VIEW_ID = 'wisp.threads.view';
+
+/** How often the rows' ages are refreshed. */
+const AGE_REFRESH_MS = 60_000;
 
 let instanceCount = 0;
 
 /**
  * wisp's left sidebar in the Agents window (decision record 0011, docs/design/agents-window.md in
  * wisp): actions, then Projects, Repositories, and No Repo, then a footer with the user, the host,
- * and settings. The host chip follows the wispd connection. Projects and threads come with #104,
- * so until then there are none, and New Chat is disabled.
+ * and settings. Projects are read through `ISessionsManagementService` and opened through
+ * `ISessionsService`. Normal threads, and with them New Chat, Repositories, and No Repo, come with
+ * #110.
  */
 export class WispThreadsView extends ViewPane {
 
@@ -55,9 +66,11 @@ export class WispThreadsView extends ViewPane {
 		@IThemeService themeService: IThemeService,
 		@IHoverService hoverService: IHoverService,
 		@ICommandService private readonly commandService: ICommandService,
-		@IQuickInputService private readonly quickInputService: IQuickInputService,
 		@IPathService private readonly pathService: IPathService,
 		@IWispHostStatusService private readonly hostStatusService: IWispHostStatusService,
+		@IWispProjectsService private readonly projectsService: IWispProjectsService,
+		@ISessionsManagementService private readonly sessionsManagementService: ISessionsManagementService,
+		@ISessionsService private readonly sessionsService: ISessionsService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 	}
@@ -69,45 +82,166 @@ export class WispThreadsView extends ViewPane {
 		const root = this.root = append(container, $('.wisp-threads'));
 
 		const actions = append(root, $('.wisp-threads-actions', { role: 'group', 'aria-label': localize('wispThreads.actions', "Actions") }));
-		const noHostReason = localize('wispThreads.newChatDisabled', "Connect to a host to start a chat.");
-		this.firstAction = this.renderAction(actions, Codicon.edit, localize('wispThreads.newChat', "New Chat"), { disabledReason: noHostReason });
-		this.renderAction(actions, Codicon.search, localize('wispThreads.search', "Search"), { run: () => this.search() });
+		this.firstAction = this.renderAction(actions, Codicon.edit, localize('wispThreads.newChat', "New Chat"), { disabledReason: localize('wispThreads.newChatDisabled', "Chats outside a project are not available yet.") });
+		this.renderAction(actions, Codicon.search, localize('wispThreads.search', "Search"), { run: () => this.commandService.executeCommand(WISP_SEARCH_COMMAND), keybinding: WISP_SEARCH_COMMAND });
 		// Automations stays hidden until wisp decides on triggers (M6).
 		this.renderAction(actions, Codicon.settings, localize('wispThreads.customize', "Customize"), { disabledReason: localize('wispThreads.customizeDisabled', "Host and account settings are not available yet.") });
 
 		const lists = append(root, $('.wisp-threads-lists'));
-		const projects = this.renderSection(lists, `${idPrefix}-projects`, localize('wispThreads.projects', "Projects"));
-		const newProject = append(projects.header, $<HTMLButtonElement>('button.wisp-threads-icon-button', { type: 'button', 'aria-label': localize('wispThreads.newProject', "New Project") }));
-		append(newProject, $(`span${ThemeIcon.asCSSSelector(Codicon.add)}`, { 'aria-hidden': 'true' }));
-		this.setDisabled(newProject, localize('wispThreads.newProjectDisabled', "Connect to a host to start a project."));
-		append(projects.section, $('p.wisp-threads-empty', undefined, localize('wispThreads.noProjects', "No projects yet. A project runs on a host, so it shows here once wisp connects to one.")));
-		// Repositories and No Repo render only once they have threads (M3).
+		this.renderProjects(lists, `${idPrefix}-projects`);
+		// Repositories and No Repo render only once they have threads (#110).
 
 		this.renderFooter(root);
 	}
 
-	private renderAction(parent: HTMLElement, icon: ThemeIcon, label: string, options: { run?: () => void; disabledReason?: string }): HTMLButtonElement {
+	private renderProjects(parent: HTMLElement, id: string): void {
+		const { section, header } = this.renderSection(parent, id, localize('wispThreads.projects', "Projects"));
+		const newProjectLabel = localize('wispThreads.newProject', "New Project");
+		const newProject = append(header, $<HTMLButtonElement>('button.wisp-threads-icon-button.wisp-threads-new-project', { type: 'button', 'aria-label': newProjectLabel }));
+		append(newProject, $(`span${ThemeIcon.asCSSSelector(Codicon.add)}`, { 'aria-hidden': 'true' }));
+		const setNewProjectEnabled = this.enableable(newProject, newProjectLabel, () => this.commandService.executeCommand(WISP_NEW_PROJECT_COMMAND));
+
+		const list = append(section, $('ul.wisp-threads-rows', { 'aria-labelledby': id }));
+		const empty = append(section, $('.wisp-threads-empty'));
+		const rowStore = this._register(new DisposableStore());
+		const emptyStore = this._register(new DisposableStore());
+
+		const sessionsChanged = observableSignalFromEvent(this, this.sessionsManagementService.onDidChangeSessions);
+		const tick = observableSignal(this);
+		const interval = getWindow(section).setInterval(() => tick.trigger(undefined), AGE_REFRESH_MS);
+		this._register(toDisposable(() => getWindow(section).clearInterval(interval)));
+
+		this._register(autorun(reader => {
+			sessionsChanged.read(reader);
+			tick.read(reader);
+			const hostStatus = this.hostStatusService.status.read(reader);
+			const state = this.projectsService.state.read(reader);
+			const connected = hostStatus.kind === 'connected';
+			setNewProjectEnabled(connected ? undefined : localize('wispThreads.newProjectDisabled', "Connect to a host to start a project."));
+
+			const sessions = projectSessions(this.sessionsManagementService);
+			for (const session of sessions) {
+				session.title.read(reader);
+				session.updatedAt.read(reader);
+			}
+			const active = this.sessionsService.activeSession.read(reader);
+			const focused = list.ownerDocument.activeElement instanceof HTMLElement && list.contains(list.ownerDocument.activeElement)
+				? list.ownerDocument.activeElement.dataset.session
+				: undefined;
+
+			rowStore.clear();
+			clearNode(list);
+			const now = Date.now();
+			for (const session of sessions) {
+				const row = this.renderRow(list, session, now, active?.resource.toString() === session.resource.toString(), rowStore);
+				if (focused === session.resource.toString()) {
+					row.focus();
+				}
+			}
+			list.hidden = sessions.length === 0;
+
+			emptyStore.clear();
+			clearNode(empty);
+			empty.hidden = sessions.length > 0;
+			if (sessions.length === 0) {
+				this.renderEmpty(empty, connected, hostStatus.host, state, emptyStore);
+			}
+		}));
+	}
+
+	private renderRow(list: HTMLElement, session: ISession, now: number, selected: boolean, store: DisposableStore): HTMLButtonElement {
+		const title = session.title.get();
+		const updated = session.updatedAt.get();
+		const item = append(list, $('li'));
+		const row = append(item, $<HTMLButtonElement>('button.wisp-threads-row', { type: 'button' }));
+		row.dataset.session = session.resource.toString();
+		row.setAttribute('aria-label', localize('wispThreads.rowLabel', "{0}, project, updated {1}", title, fromNow(updated, true)));
+		if (selected) {
+			row.classList.add('selected');
+			row.setAttribute('aria-current', 'true');
+		}
+		const glyph = projectGlyph({ id: projectIdOf(session.resource) ?? session.resource.toString(), name: title });
+		append(row, $('span.wisp-threads-glyph', { 'aria-hidden': 'true', 'data-color': glyph.color }, glyph.letter));
+		append(row, $('span.wisp-threads-row-title', { 'aria-hidden': 'true' }, title));
+		append(row, $('span.wisp-threads-row-age', { 'aria-hidden': 'true' }, compactAge(updated, now)));
+		store.add(addDisposableListener(row, EventType.CLICK, () => this.sessionsService.openSession(session.resource)));
+		return row;
+	}
+
+	private renderEmpty(empty: HTMLElement, connected: boolean, host: string, state: ReturnType<IWispProjectsService['state']['get']>, store: DisposableStore): void {
+		if (!connected) {
+			append(empty, $('p', undefined, localize('wispThreads.noProjects', "No projects yet. A project runs on a host, so it shows here once wisp connects to one.")));
+			return;
+		}
+		switch (state.kind) {
+			case 'idle':
+			case 'loading':
+				empty.setAttribute('aria-busy', 'true');
+				append(empty, $('p', undefined, localize('wispThreads.loading', "Loading projects...")));
+				return;
+			case 'failed': {
+				empty.removeAttribute('aria-busy');
+				append(empty, $('p', undefined, state.message));
+				const retry = append(empty, $<HTMLButtonElement>('button.wisp-threads-link', { type: 'button' }, localize('wispThreads.retry', "Retry")));
+				store.add(addDisposableListener(retry, EventType.CLICK, () => this.projectsService.reload()));
+				return;
+			}
+			case 'ready': {
+				empty.removeAttribute('aria-busy');
+				append(empty, $('p', undefined, localize('wispThreads.noProjectsConnected', "No projects yet. A project is a repository on {0}, with a coordinator that plans the work.", host)));
+				const create = append(empty, $<HTMLButtonElement>('button.wisp-threads-link', { type: 'button' }, localize('wispThreads.newProjectLink', "New Project")));
+				store.add(addDisposableListener(create, EventType.CLICK, () => this.commandService.executeCommand(WISP_NEW_PROJECT_COMMAND)));
+				return;
+			}
+		}
+	}
+
+	private renderAction(parent: HTMLElement, icon: ThemeIcon, label: string, options: { run?: () => void; disabledReason?: string; keybinding?: string }): HTMLButtonElement {
 		const button = append(parent, $<HTMLButtonElement>('button.wisp-threads-action', { type: 'button' }));
 		append(button, $(`span.wisp-threads-action-icon${ThemeIcon.asCSSSelector(icon)}`, { 'aria-hidden': 'true' }));
 		append(button, $('span.wisp-threads-action-label', undefined, label));
-		if (options.disabledReason) {
-			this.setDisabled(button, options.disabledReason);
-		} else if (options.run) {
-			const run = options.run;
-			this._register(addDisposableListener(button, EventType.CLICK, () => run()));
+		const keybinding = options.keybinding ? this.keybindingService.lookupKeybinding(options.keybinding)?.getLabel() : undefined;
+		if (keybinding) {
+			append(button, $('span.wisp-threads-action-keybinding', { 'aria-hidden': 'true' }, keybinding));
+			button.setAttribute('aria-keyshortcuts', this.keybindingService.lookupKeybinding(options.keybinding!)?.getAriaLabel() ?? keybinding);
 		}
+		this.enableable(button, label, options.run)(options.disabledReason);
 		return button;
 	}
 
 	/**
-	 * Disabled with aria-disabled rather than the disabled attribute, so the control stays in the
-	 * tab order and a screen reader can read why it is disabled.
+	 * Wires a button's click and returns a setter for why it is disabled (or `undefined` to enable
+	 * it). A disabled button keeps focus and names its reason, through aria-disabled rather than
+	 * the disabled attribute.
 	 */
-	private setDisabled(button: HTMLButtonElement, reason: string): void {
-		button.classList.add('disabled');
-		button.setAttribute('aria-disabled', 'true');
-		button.setAttribute('aria-description', reason);
-		this._register(this.hoverService.setupDelayedHover(button, { content: reason }));
+	private enableable(button: HTMLButtonElement, label: string, run: (() => unknown) | undefined): (disabledReason: string | undefined) => void {
+		const hover = this._register(new MutableDisposable());
+		let reason: string | undefined;
+		if (run) {
+			this._register(addDisposableListener(button, EventType.CLICK, () => {
+				if (reason === undefined) {
+					run();
+				}
+			}));
+		}
+		let first = true;
+		return disabledReason => {
+			if (!first && disabledReason === reason) {
+				return;
+			}
+			first = false;
+			reason = disabledReason;
+			button.classList.toggle('disabled', reason !== undefined);
+			if (reason === undefined) {
+				button.removeAttribute('aria-disabled');
+				button.removeAttribute('aria-description');
+				hover.value = button.classList.contains('wisp-threads-icon-button') ? this.hoverService.setupDelayedHover(button, { content: label }) : undefined;
+			} else {
+				button.setAttribute('aria-disabled', 'true');
+				button.setAttribute('aria-description', reason);
+				hover.value = this.hoverService.setupDelayedHover(button, { content: reason });
+			}
+		};
 	}
 
 	private renderSection(parent: HTMLElement, id: string, title: string): { section: HTMLElement; header: HTMLElement } {
@@ -168,15 +302,6 @@ export class WispThreadsView extends ViewPane {
 			}
 			announced = status.ariaLabel;
 		}));
-	}
-
-	private async search(): Promise<void> {
-		await this.quickInputService.pick([{
-			label: localize('wispThreads.searchEmpty', "No projects or threads yet"),
-			disabled: true,
-		}], {
-			placeHolder: localize('wispThreads.searchPlaceholder', "Search projects and threads"),
-		});
 	}
 
 	protected override layoutBody(height: number, width: number): void {

@@ -3,7 +3,12 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Emitter, Event } from '../../../../../base/common/event.js';
-import { IWispdService, WispdDisconnectReason, WispdState, WispdSubscriptionMessage } from '../../../../../platform/wisp/common/wispd.js';
+import { IWispdService, IWispdSubscribeOptions, WispdDisconnectReason, WispdMethod, WispdState, WispdSubscriptionMessage } from '../../../../../platform/wisp/common/wispd.js';
+import type { Project, WispRequests } from '../../../../../platform/wisp/common/wispProtocol.js';
+
+export function project(id: string, name = id, options: Partial<Project> = {}): Project {
+	return { id, name, repoPath: `/Users/ryan/src/${name}`, branch: 'main', createdAt: '2026-09-24T12:00:00Z', updatedAt: '2026-09-24T12:00:00Z', ...options };
+}
 
 export const LOCAL_COMMAND = '/Applications/Wisp.app/Contents/Resources/app/bin/wispd attach';
 export const SSH_COMMAND = 'ssh -T -o BatchMode=yes -- mac-mini wispd attach';
@@ -44,12 +49,37 @@ export class TestWispdService implements IWispdService {
 		this.retries++;
 	}
 
-	request(): Promise<never> {
-		return Promise.reject(new Error('not connected'));
+	/** Answers requests; without one, every request fails as if there were no connection. */
+	handler: ((method: string, params: unknown) => Promise<unknown>) | undefined;
+	readonly requests: Array<[string, unknown]> = [];
+	/** Live subscriptions, newest last, with the options they were made with. */
+	readonly subscriptions: Array<{ readonly options: IWispdSubscribeOptions; readonly emitter: Emitter<WispdSubscriptionMessage>; active: boolean }> = [];
+
+	request<M extends WispdMethod>(method: M, params: WispRequests[M]['params']): Promise<WispRequests[M]['result']> {
+		this.requests.push([method, params]);
+		return this.handler ? this.handler(method, params) as Promise<WispRequests[M]['result']> : Promise.reject(new Error('not connected'));
 	}
 
-	subscribe(): Event<WispdSubscriptionMessage> {
-		return Event.None;
+	subscribe(options: IWispdSubscribeOptions): Event<WispdSubscriptionMessage> {
+		const entry = {
+			options,
+			active: false,
+			emitter: new Emitter<WispdSubscriptionMessage>({
+				onWillAddFirstListener: () => entry.active = true,
+				onDidRemoveLastListener: () => entry.active = false,
+			}),
+		};
+		this.subscriptions.push(entry);
+		return entry.emitter.event;
+	}
+
+	/** Sends a message to the newest active subscription. */
+	emit(message: WispdSubscriptionMessage): void {
+		const entry = [...this.subscriptions].reverse().find(candidate => candidate.active);
+		if (!entry) {
+			throw new Error('no active subscription');
+		}
+		entry.emitter.fire(message);
 	}
 
 	setState(state: WispdState): void {
@@ -59,5 +89,8 @@ export class TestWispdService implements IWispdService {
 
 	dispose(): void {
 		this.emitter.dispose();
+		for (const { emitter } of this.subscriptions) {
+			emitter.dispose();
+		}
 	}
 }

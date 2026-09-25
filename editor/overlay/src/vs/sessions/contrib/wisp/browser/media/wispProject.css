@@ -1,0 +1,110 @@
+/*---------------------------------------------------------------------------------------------
+ *  wisp: not part of Code - OSS. Edit editor/overlay in the wisp repo, not this copy.
+ *--------------------------------------------------------------------------------------------*/
+
+/* The Project tab and the composer footer: theme and size tokens only. The glyph's colors are in wispThreads.css. */
+
+.wisp-project {
+	box-sizing: border-box;
+	padding: var(--vscode-spacing-size120) var(--vscode-spacing-size160);
+	font-size: var(--vscode-fontSize-body1);
+}
+
+.wisp-project-header {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+}
+
+.wisp-project .wisp-project-glyph {
+	width: 24px;
+	height: 24px;
+	border-radius: var(--vscode-cornerRadius-medium);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.wisp-project-name {
+	min-width: 0;
+	margin: 0;
+	overflow: hidden;
+	font-size: var(--vscode-fontSize-heading3, 16px);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.wisp-project-subtitle,
+.wisp-project-empty {
+	margin: var(--vscode-spacing-size40) 0 0;
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.wisp-project-facts {
+	margin: var(--vscode-spacing-size160) 0 0;
+	padding: 0;
+	list-style: none;
+}
+
+.wisp-project-fact {
+	display: flex;
+	align-items: flex-start;
+	gap: var(--vscode-spacing-size100);
+	margin-bottom: var(--vscode-spacing-size120);
+}
+
+/* A check for a fact that is in place, a hollow circle for one that isn't yet; the text says which. */
+.wisp-project-fact-icon {
+	flex: none;
+	margin-top: 2px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.wisp-project-fact[data-done="true"] .wisp-project-fact-icon {
+	color: var(--vscode-charts-green);
+}
+
+.wisp-project-fact-text {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.wisp-project-fact-detail {
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+	overflow-wrap: anywhere;
+}
+
+.wisp-composer-footer-item {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size40);
+	max-width: 160px;
+	height: 22px;
+	padding: 0 var(--vscode-spacing-size40);
+	border-radius: var(--vscode-cornerRadius-small);
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+	white-space: nowrap;
+}
+
+.wisp-composer-footer-host {
+	cursor: pointer;
+}
+
+.wisp-composer-footer-host:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+	color: var(--vscode-foreground);
+}
+
+.wisp-composer-footer-host:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.wisp-composer-footer-text {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
