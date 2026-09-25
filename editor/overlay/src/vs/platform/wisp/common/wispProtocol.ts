@@ -412,9 +412,11 @@ export type Provider = "anthropic" | "openai" | "cursor";
 /**
  * An API key on the wire.
  *
- * It serializes and deserializes as a plain string, but its `Debug` never shows the value, so a
- * stray `{:?}` in a log line can't leak it (#117). Compare wispd's `backend::ApiKey`, which does
- * the same for the key once it reaches a backend.
+ * It serializes and deserializes as a plain string (serde's newtype-struct representation is
+ * already transparent in JSON, so `#[serde(transparent)]` would be redundant here, and ts-rs 12
+ * cannot parse it), but its `Debug` never shows the value, so a stray `{:?}` in a log line can't
+ * leak it (#117). Compare wispd's `backend::ApiKey`, which does the same for the key once it
+ * reaches a backend.
  */
 export type RawKey = string;
 
@@ -562,7 +564,7 @@ export type ErrorData = {
  * A newer wispd may send kinds that are not listed here. Treat those as unknown errors, so a
  * `switch` over this type must not end in an exhaustiveness assertion.
  */
-export type ErrorKind = "notInitialized" | "incompatibleProtocol" | "resyncRequired" | "projectNotFound" | "accountNotFound" | "idConflict";
+export type ErrorKind = "notInitialized" | "incompatibleProtocol" | "resyncRequired" | "projectNotFound" | "accountNotFound" | "keychainUnavailable" | "idConflict";
 
 /**
  * The `detail` of `incompatibleProtocol`. Its shape never changes, so every editor can read it

@@ -17,7 +17,7 @@ futures-util = { workspace = true, features = ["sink", "std"] }
 jiff = { workspace = true, features = ["serde"] }
 nix = { workspace = true, features = ["process", "signal"] }
 rustix = { workspace = true, features = ["fs", "process"] }
-security-framework = "3"
+security-framework.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
@@ -29,7 +29,7 @@ tracing-subscriber = { workspace = true, features = ["fmt", "std"] }
 uuid.workspace = true
 wisp-protocol = { path = "../crates/wisp-protocol" }
 wisp-store = { path = "../crates/wisp-store" }
-zeroize = "1"
+zeroize.workspace = true
 
 [dev-dependencies]
 rusqlite = { version = "0.32", features = ["bundled"] }

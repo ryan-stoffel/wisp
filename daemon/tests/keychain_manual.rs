@@ -51,7 +51,7 @@ fn add_list_and_remove_a_throwaway_key() {
         "security find-generic-password should see the item wispd just wrote"
     );
     assert_eq!(
-        store.get(account).unwrap().as_deref(),
+        store.get(account).unwrap().as_deref().map(String::as_str),
         Some(key),
         "wispd should read back exactly what it stored"
     );

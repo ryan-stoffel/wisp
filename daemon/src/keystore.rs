@@ -11,22 +11,46 @@ use std::sync::{Mutex, PoisonError};
 
 use security_framework::base::Error as SecurityError;
 use security_framework::passwords::{
-    PasswordOptions, delete_generic_password, generic_password, set_generic_password,
+    PasswordOptions, delete_generic_password, generic_password, set_generic_password_options,
 };
 use wisp_protocol::AccountId;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 /// The Keychain service name every real wisp key account is stored under: 0006's bundle id.
 pub const SERVICE: &str = "io.github.ryan-stoffel.wisp";
+
+/// The label shown for an item in Keychain Access, so a real one is recognizable among a user's
+/// other saved passwords.
+const ITEM_LABEL: &str = "wisp API key";
 
 /// `security_framework_sys::base::errSecItemNotFound`, kept as a local constant so this module
 /// does not need `security-framework-sys` as a direct dependency for one status code.
 const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
 
+/// `security_framework_sys::base::errSecInteractionNotAllowed`: the Keychain is locked and
+/// nothing can prompt to unlock it, such as a headless session (0004, 0007, #91).
+const ERR_SEC_INTERACTION_NOT_ALLOWED: i32 = -25308;
+
+/// `security_framework_sys::base::errSecUserCanceled`: the user dismissed a Keychain access
+/// prompt.
+const ERR_SEC_USER_CANCELED: i32 = -128;
+
 /// Where API keys are stored, keyed by account id.
 ///
 /// An implementation must never pass a key to `tracing`, or write one anywhere but the real
 /// Keychain (#117).
+///
+/// # Why not the data-protection keychain
+///
+/// `security-framework`'s `kSecUseDataProtectionKeychain` and `kSecAttrAccessible*` only affect
+/// the newer, per-app data-protection keychain, which requires a signed binary with a Keychain
+/// Sharing entitlement to use meaningfully. wisp is unsigned until it has an Apple Developer ID,
+/// so [`KeychainStore`] deliberately targets the older, file-based login keychain instead, which
+/// locks and unlocks as a whole and needs neither. Revisit this once wisp is signed.
+///
+/// [`kSecAttrSynchronizable`](https://developer.apple.com/documentation/security/ksecattrsynchronizable)
+/// is left unset on purpose: an API key must never sync to iCloud Keychain and reach another of
+/// the user's Macs behind their back.
 pub trait KeyStore: Send + Sync {
     /// Stores `key` for `account`, replacing any key already stored for it.
     ///
@@ -40,7 +64,7 @@ pub trait KeyStore: Send + Sync {
     /// # Errors
     ///
     /// If the store can't be read.
-    fn get(&self, account: AccountId) -> Result<Option<String>, KeyStoreError>;
+    fn get(&self, account: AccountId) -> Result<Option<Zeroizing<String>>, KeyStoreError>;
 
     /// Removes the key stored for `account`. Removing one that isn't there succeeds.
     ///
@@ -54,6 +78,19 @@ pub trait KeyStore: Send + Sync {
 #[derive(Debug, thiserror::Error)]
 #[error("the keychain failed: {0}")]
 pub struct KeyStoreError(#[from] SecurityError);
+
+impl KeyStoreError {
+    /// Whether this is the Keychain being locked or access to an item being denied, rather than
+    /// some other failure. wispd maps this to its own `keychainUnavailable`, distinct from a bare
+    /// internal error, so the editor can tell "locked" from "broken".
+    #[must_use]
+    pub fn is_unavailable(&self) -> bool {
+        matches!(
+            self.0.code(),
+            ERR_SEC_INTERACTION_NOT_ALLOWED | ERR_SEC_USER_CANCELED
+        )
+    }
+}
 
 /// The user's login Keychain: one generic password per account, under a service name.
 #[derive(Debug, Clone, Copy)]
@@ -84,18 +121,20 @@ impl Default for KeychainStore {
 impl KeyStore for KeychainStore {
     fn set(&self, account: AccountId, key: &str) -> Result<(), KeyStoreError> {
         let account = account.to_string();
+        let mut options = PasswordOptions::new_generic_password(self.service, &account);
+        options.set_label(ITEM_LABEL);
         let mut owned = key.to_owned();
-        let result = set_generic_password(self.service, &account, owned.as_bytes());
+        let result = set_generic_password_options(owned.as_bytes(), options);
         owned.zeroize();
         result.map_err(KeyStoreError)
     }
 
-    fn get(&self, account: AccountId) -> Result<Option<String>, KeyStoreError> {
+    fn get(&self, account: AccountId) -> Result<Option<Zeroizing<String>>, KeyStoreError> {
         let account = account.to_string();
         let options = PasswordOptions::new_generic_password(self.service, &account);
         match generic_password(options) {
             Ok(mut bytes) => {
-                let key = String::from_utf8_lossy(&bytes).into_owned();
+                let key = Zeroizing::new(String::from_utf8_lossy(&bytes).into_owned());
                 bytes.zeroize();
                 Ok(Some(key))
             }
@@ -137,13 +176,14 @@ impl KeyStore for MemoryKeyStore {
         Ok(())
     }
 
-    fn get(&self, account: AccountId) -> Result<Option<String>, KeyStoreError> {
+    fn get(&self, account: AccountId) -> Result<Option<Zeroizing<String>>, KeyStoreError> {
         Ok(self
             .keys
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(&account)
-            .cloned())
+            .cloned()
+            .map(Zeroizing::new))
     }
 
     fn delete(&self, account: AccountId) -> Result<(), KeyStoreError> {
@@ -161,27 +201,28 @@ mod tests {
 
     use super::{KeyStore, MemoryKeyStore};
 
+    fn get(store: &MemoryKeyStore, account: AccountId) -> Option<String> {
+        store.get(account).unwrap().map(|key| key.to_string())
+    }
+
     #[test]
     fn a_key_round_trips_through_the_mock_store() {
         let store = MemoryKeyStore::new();
         let account = AccountId::generate();
-        assert_eq!(store.get(account).unwrap(), None);
+        assert_eq!(get(&store, account), None);
 
         store.set(account, "sk-ant-secret").unwrap();
-        assert_eq!(
-            store.get(account).unwrap().as_deref(),
-            Some("sk-ant-secret")
-        );
+        assert_eq!(get(&store, account).as_deref(), Some("sk-ant-secret"));
 
         store.set(account, "sk-ant-replacement").unwrap();
         assert_eq!(
-            store.get(account).unwrap().as_deref(),
+            get(&store, account).as_deref(),
             Some("sk-ant-replacement"),
             "setting again replaces the stored key"
         );
 
         store.delete(account).unwrap();
-        assert_eq!(store.get(account).unwrap(), None);
+        assert_eq!(get(&store, account), None);
     }
 
     #[test]
@@ -197,7 +238,7 @@ mod tests {
         store.set(a, "key-a").unwrap();
         store.set(b, "key-b").unwrap();
         store.delete(a).unwrap();
-        assert_eq!(store.get(a).unwrap(), None);
-        assert_eq!(store.get(b).unwrap().as_deref(), Some("key-b"));
+        assert_eq!(get(&store, a), None);
+        assert_eq!(get(&store, b).as_deref(), Some("key-b"));
     }
 }

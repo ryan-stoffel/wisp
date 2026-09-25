@@ -19,7 +19,7 @@
         "provider": "anthropic",
         "label": "Personal",
         "createdAt": "2026-09-24T12:00:00Z",
-        "maskedKey": "sk-ant-...abcd"
+        "maskedKey": "sk-ant-api03-...abcd"
       }
     }
   },
@@ -43,7 +43,7 @@
         "provider": "anthropic",
         "label": "Personal",
         "createdAt": "2026-09-24T12:00:00Z",
-        "maskedKey": "sk-ant-...abcd"
+        "maskedKey": "sk-ant-api03-...abcd"
       }
     }
   },
@@ -63,7 +63,7 @@
           "provider": "anthropic",
           "label": "Personal",
           "createdAt": "2026-09-24T12:00:00Z",
-          "maskedKey": "sk-ant-...abcd"
+          "maskedKey": "sk-ant-api03-...abcd"
         }
       ]
     }
@@ -92,6 +92,26 @@
       "code": -32000,
       "message": "no key account has id 01a0d34e-01e0-7dc0-b326-598cbff22aa1",
       "data": { "kind": "accountNotFound" }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 21,
+    "method": "accounts/keys/add",
+    "params": {
+      "id": "01a0d34e-01e0-7dc0-b326-598cbff22aa2",
+      "provider": "openai",
+      "label": "Work",
+      "key": "sk-proj-anotherthrowawaytestkeywxyz1234"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 21,
+    "error": {
+      "code": -32000,
+      "message": "the keychain is locked or access was denied",
+      "data": { "kind": "keychainUnavailable" }
     }
   }
 ]
