@@ -41,7 +41,7 @@ npm run download-builtin-extensions     # 5 s
 ./scripts/code.sh                       # the development build
 ```
 
-The times are from an M3 Pro. `scripts/ci/build-app` with `WISP_APP=editor` runs the same steps. `WISP_APP=editor scripts/ci/app-launch` prints the Playwright launch options for the result (see [scripts/ci/README.md](../scripts/ci/README.md)).
+The times are from an M3 Pro. CI does not use the development build: its scripts build and launch the packaged app below.
 
 `npm ci` also downloads Playwright's Chromium (550 MB) for upstream's browser tests. Set `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` to skip it when you do not run those tests. `build-app` sets it.
 
@@ -53,7 +53,7 @@ The development build keeps upstream's `code-oss-dev` user data folder, which up
 scripts/editor/build-app          # this Mac's architecture, or: build-app arm64, build-app x64
 ```
 
-`build-app` runs `prepare`, then `npm ci` for the target architecture, unless `node_modules` already matches it. Then it downloads the built-in extensions, runs upstream's `gulp vscode-darwin-<arch>-min`, ad-hoc signs the bundle, and checks that every Mach-O file is built for that architecture. It prints the bundle's path, `editor/VSCode-darwin-<arch>/Wisp.app`. `scripts/ci/check-app <app or zip> <arch>` checks the bundle's branding, signature, and launcher, which CI's `app` job also runs.
+`build-app` runs `prepare`, then `npm ci` for the target architecture, unless `node_modules` already matches it. Then it downloads the built-in extensions, runs upstream's `gulp vscode-darwin-<arch>-min`, ad-hoc signs the bundle, and checks that every Mach-O file is built for that architecture. It prints the bundle's path, `editor/VSCode-darwin-<arch>/Wisp.app`. `scripts/ci/check-app <app or zip> <arch>` checks the bundle's branding, signature, and launcher, which CI's `app` job also runs. `scripts/ci/screenshots` captures the views that CI posts on each PR from that bundle ([scripts/ci/README.md](../scripts/ci/README.md#screenshots)).
 
 - **Launcher**: `Wisp.app/Contents/Resources/app/bin/wisp`. `wisp <folder>` opens the folder in the app. The command palette's **Shell Command: Install 'wisp' command in PATH** links `/usr/local/bin/wisp` to it. The Homebrew cask links it into Homebrew's `bin` instead.
 - **Version**: upstream's, 1.139.0, unless `--app-version <X.Y.Z>` names another. `scripts/ci/package-app` passes the release version, which then shows in the About dialog, in `wisp --version`, and in `Info.plist`. `build-app` sets it in `editor/vscode/package.json` only while gulp runs.

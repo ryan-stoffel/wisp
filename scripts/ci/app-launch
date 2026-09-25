@@ -2,39 +2,31 @@
 'use strict';
 
 const { execFileSync } = require('node:child_process');
-const { existsSync, readdirSync, readFileSync } = require('node:fs');
+const { existsSync, readdirSync } = require('node:fs');
 const path = require('node:path');
 
-const fixtureDir = path.resolve(__dirname, '..', '..', 'ci', 'fixtures', 'electron-smoke');
-const editorDir = path.resolve(__dirname, '..', '..', 'editor', 'vscode');
-const buildHint = 'run scripts/ci/build-app first';
-const editorBuildHint = 'run WISP_APP=editor scripts/ci/build-app first';
+const root = path.resolve(__dirname, '..', '..');
+const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+const buildDir = path.join(root, 'editor', `VSCode-darwin-${arch}`);
+const buildHint = 'run scripts/ci/build-app first, or set WISP_APP_BUNDLE to a Wisp.app';
 
 function fail(message) {
   process.stderr.write(`app-launch: ${message}\n`);
   process.exit(1);
 }
 
-function fromFixture() {
-  const electronDir = path.join(fixtureDir, 'node_modules', 'electron');
-  const pathFile = path.join(electronDir, 'path.txt');
-  if (!existsSync(pathFile)) {
-    fail(`the Electron binary is not installed in ${fixtureDir}; ${buildHint}`);
+function builtBundle() {
+  const apps = existsSync(buildDir) ? readdirSync(buildDir).filter((name) => name.endsWith('.app')) : [];
+  if (apps.length !== 1) {
+    fail(`found ${apps.length === 0 ? 'no app' : `${apps.length} apps`} in ${buildDir}; ${buildHint}`);
   }
-  const mainScript = path.join(fixtureDir, 'out', 'main.js');
-  if (!existsSync(mainScript)) {
-    fail(`${mainScript} does not exist; ${buildHint}`);
-  }
-  return {
-    executablePath: path.join(electronDir, 'dist', readFileSync(pathFile, 'utf8').trim()),
-    args: [mainScript],
-  };
+  return path.join(buildDir, apps[0]);
 }
 
 function fromBundle(bundle) {
   const infoPlist = path.join(bundle, 'Contents', 'Info.plist');
   if (!existsSync(infoPlist)) {
-    fail(`WISP_APP_BUNDLE=${bundle} is not an app bundle: ${infoPlist} does not exist`);
+    fail(`${bundle} is not an app bundle: ${infoPlist} does not exist`);
   }
   let executable;
   try {
@@ -49,47 +41,12 @@ function fromBundle(bundle) {
   if (!executable) {
     fail(`CFBundleExecutable is empty in ${infoPlist}`);
   }
-  return {
-    executablePath: path.join(bundle, 'Contents', 'MacOS', executable),
-    args: [],
-  };
-}
-
-function fromEditor() {
-  const mainScript = path.join(editorDir, 'out', 'main.js');
-  if (!existsSync(mainScript)) {
-    fail(`${mainScript} does not exist; ${editorBuildHint}`);
-  }
-  const electronDir = path.join(editorDir, '.build', 'electron');
-  const appName = existsSync(electronDir) && readdirSync(electronDir).find((name) => name.endsWith('.app'));
-  if (!appName || !existsSync(path.join(electronDir, appName, 'Contents', 'Info.plist'))) {
-    fail(`${electronDir} contains no Electron app; ${editorBuildHint}`);
-  }
-  const { executablePath } = fromBundle(path.join(electronDir, appName));
+  const executablePath = path.join(bundle, 'Contents', 'MacOS', executable);
   if (!existsSync(executablePath)) {
-    fail(`${executablePath} does not exist; ${editorBuildHint}`);
+    fail(`${executablePath} does not exist; rebuild the bundle`);
   }
-  return {
-    executablePath,
-    args: [editorDir, '--disable-extension=vscode.vscode-api-tests'],
-    env: {
-      NODE_ENV: 'development',
-      VSCODE_DEV: '1',
-      VSCODE_CLI: '1',
-      ELECTRON_ENABLE_STACK_DUMPING: '1',
-      ELECTRON_ENABLE_LOGGING: '1',
-    },
-  };
+  return { executablePath, args: [] };
 }
 
-const launchers = { fixture: fromFixture, editor: fromEditor };
-const bundle = process.env.WISP_APP_BUNDLE;
-const app = process.env.WISP_APP || 'fixture';
-if (!bundle && !Object.hasOwn(launchers, app)) {
-  fail(`WISP_APP=${app} is not supported; use fixture or editor`);
-}
-const options = bundle ? fromBundle(path.resolve(bundle)) : launchers[app]();
-if (!existsSync(options.executablePath)) {
-  fail(`${options.executablePath} does not exist; ${bundle ? 'rebuild the bundle' : buildHint}`);
-}
-process.stdout.write(`${JSON.stringify(options)}\n`);
+const bundle = process.env.WISP_APP_BUNDLE ? path.resolve(process.env.WISP_APP_BUNDLE) : builtBundle();
+process.stdout.write(`${JSON.stringify(fromBundle(bundle))}\n`);
