@@ -26,11 +26,12 @@ use ts_rs::TS;
 
 use crate::jsonrpc::CancelRequestParams;
 use crate::{
-    AccountsListParams, AccountsListResult, AccountsRefreshParams, AccountsRefreshResult,
-    EventsEventParams, EventsSubscribeParams, EventsSubscribeResult, EventsUnsubscribeParams,
-    EventsUnsubscribeResult, HostHealthParams, HostHealthResult, HostVersionParams,
-    HostVersionResult, InitializeParams, InitializeResult, ProjectCreateParams,
-    ProjectCreateResult, ProjectListParams, ProjectListResult,
+    AccountsKeysAddParams, AccountsKeysAddResult, AccountsKeysListParams, AccountsKeysListResult,
+    AccountsKeysRemoveParams, AccountsKeysRemoveResult, AccountsListParams, AccountsListResult,
+    AccountsRefreshParams, AccountsRefreshResult, EventsEventParams, EventsSubscribeParams,
+    EventsSubscribeResult, EventsUnsubscribeParams, EventsUnsubscribeResult, HostHealthParams,
+    HostHealthResult, HostVersionParams, HostVersionResult, InitializeParams, InitializeResult,
+    ProjectCreateParams, ProjectCreateResult, ProjectListParams, ProjectListResult,
 };
 
 /// A method that is called with a request and answered with a response.
@@ -121,6 +122,14 @@ method_table! {
         EventsSubscribe = "events/subscribe": EventsSubscribeParams => EventsSubscribeResult;
         /// `events/unsubscribe`: ends a subscription.
         EventsUnsubscribe = "events/unsubscribe": EventsUnsubscribeParams => EventsUnsubscribeResult;
+        /// `accounts/keys/add`: stores an API key in the Keychain, idempotent on its
+        /// client-generated id. The response returns only the key's masked form.
+        AccountsKeysAdd = "accounts/keys/add": AccountsKeysAddParams => AccountsKeysAddResult;
+        /// `accounts/keys/list`: every key account, with its key masked.
+        AccountsKeysList = "accounts/keys/list": AccountsKeysListParams => AccountsKeysListResult;
+        /// `accounts/keys/remove`: removes a key account's key from the Keychain, and its
+        /// record. Fails with `accountNotFound` if the id does not exist.
+        AccountsKeysRemove = "accounts/keys/remove": AccountsKeysRemoveParams => AccountsKeysRemoveResult;
         /// `accounts/list`: the vendor CLIs wispd detects (#114), installed, signed in, and their
         /// plan where exposed. May answer from a short-lived cache. Gated on the `agentClis`
         /// capability.
@@ -160,7 +169,7 @@ mod tests {
     }
 
     #[test]
-    fn the_table_has_every_m1_method_once() {
+    fn the_table_has_every_method_once() {
         let mut names = Names::default();
         visit(&mut names);
         assert_eq!(
@@ -173,6 +182,9 @@ mod tests {
                 "project/create",
                 "events/subscribe",
                 "events/unsubscribe",
+                "accounts/keys/add",
+                "accounts/keys/list",
+                "accounts/keys/remove",
                 "accounts/list",
                 "accounts/refresh",
                 "$/cancelRequest",

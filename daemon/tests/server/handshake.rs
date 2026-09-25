@@ -25,10 +25,10 @@ async fn the_handshake_agrees_on_a_version_and_reports_the_host() {
     assert_eq!(init.wispd, VERSION);
     assert_eq!(
         init.capabilities,
-        Capabilities(BTreeMap::from([(
-            "agentClis".to_owned(),
-            serde_json::Map::new()
-        )]))
+        Capabilities(BTreeMap::from([
+            ("accounts".to_owned(), serde_json::Map::new()),
+            ("agentClis".to_owned(), serde_json::Map::new()),
+        ]))
     );
     assert_eq!(init.max_frame_bytes, MAX_FRAME_BYTES as u64);
 

@@ -26,6 +26,7 @@ use crate::VERSION;
 use crate::backend::process::{Environment, Launcher};
 use crate::detect::CliDetector;
 use crate::event_log::EventLog;
+use crate::keystore::{KeyStore, KeychainStore};
 use crate::methods;
 use crate::paths::DataDir;
 use crate::store::StoreHandle;
@@ -160,6 +161,8 @@ pub(crate) struct Daemon {
     pub limits: Limits,
     /// Detects the vendor CLIs for `accounts/list` and `accounts/refresh` (#114).
     pub cli_detector: CliDetector,
+    /// Where key accounts' API keys live (#117): the real login Keychain, except in tests.
+    pub keys: Arc<dyn KeyStore>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -223,6 +226,7 @@ impl Server {
                 max_requests_in_flight: config.max_requests_in_flight.max(1),
                 outbound_queue: config.outbound_queue.max(1),
             },
+            keys: Arc::new(KeychainStore::new()),
         });
         info!(
             version = VERSION,
@@ -380,7 +384,8 @@ fn rebind(socket: &mut Socket, listener: &mut UnixListener) {
 
 #[cfg(test)]
 impl Daemon {
-    /// A daemon with its store in `dir`, and the default limits except the idle timeout.
+    /// A daemon with its store in `dir`, and the default limits except the idle timeout. Its
+    /// `KeyStore` is an in-memory mock, never the real Keychain.
     pub(crate) fn for_tests(
         dir: &Path,
         event_retention: usize,
@@ -403,6 +408,7 @@ impl Daemon {
                 max_requests_in_flight: 32,
                 outbound_queue: 32,
             },
+            keys: Arc::new(crate::keystore::MemoryKeyStore::new()),
         })
     }
 }

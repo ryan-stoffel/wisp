@@ -18,6 +18,7 @@
 //! - [`launch_agent`]: the launch agent that `attach` starts wispd through, when it is installed.
 //! - [`service`]: installs, removes, and reports on the per-user `LaunchAgent` that keeps
 //!   `serve` running (#61).
+//! - [`keystore`]: where API keys live, the macOS login Keychain (#117).
 
 #![warn(missing_docs)]
 
@@ -25,6 +26,7 @@ pub mod attach;
 pub mod backend;
 mod detect;
 mod event_log;
+pub mod keystore;
 pub mod launch_agent;
 pub mod logging;
 mod methods;

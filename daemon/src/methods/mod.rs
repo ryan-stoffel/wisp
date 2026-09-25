@@ -17,8 +17,9 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use wisp_protocol::jsonrpc::{ErrorObject, INVALID_REQUEST, Request, RequestId, Response};
 use wisp_protocol::methods::{
-    AccountsList, AccountsRefresh, EventsSubscribe, EventsUnsubscribe, HostHealth, HostVersion,
-    Initialize, ProjectCreate, ProjectList, RequestMethod,
+    AccountsKeysAdd, AccountsKeysList, AccountsKeysRemove, AccountsList, AccountsRefresh,
+    EventsSubscribe, EventsUnsubscribe, HostHealth, HostVersion, Initialize, ProjectCreate,
+    ProjectList, RequestMethod,
 };
 use wisp_protocol::{EventsSubscribeResult, EventsUnsubscribeResult, SubscriptionId};
 
@@ -74,6 +75,16 @@ pub(crate) async fn dispatch(context: Context, request: Request) -> Reply {
         }
         AccountsRefresh::NAME => {
             handle::<AccountsRefresh, _, _>(&request, |p| accounts::refresh(&context, p)).await
+        }
+        AccountsKeysAdd::NAME => {
+            handle::<AccountsKeysAdd, _, _>(&request, |p| accounts::keys::add(&context, p)).await
+        }
+        AccountsKeysList::NAME => {
+            handle::<AccountsKeysList, _, _>(&request, |p| accounts::keys::list(&context, p)).await
+        }
+        AccountsKeysRemove::NAME => {
+            handle::<AccountsKeysRemove, _, _>(&request, |p| accounts::keys::remove(&context, p))
+                .await
         }
         EventsSubscribe::NAME => {
             let subscribed = match request.params() {
