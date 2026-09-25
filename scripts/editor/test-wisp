@@ -1,0 +1,54 @@
+#!/bin/sh
+set -eu
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/editor/test-wisp [wispd]
+
+Runs the tests of wisp's own editor code, editor/overlay/src/vs/platform/wisp,
+in upstream's Node test runner: unit tests, and an integration test against
+the given wispd binary. The binary defaults to target/debug/wispd; build it
+with `cargo build -p wispd`. The integration test starts wispd in temporary
+data folders, never in the real one.
+
+Steps: scripts/editor/prepare, then npm ci --ignore-scripts in editor/vscode
+and editor/vscode/build unless node_modules exists, upstream's
+transpile-client, and mocha through test/unit/node/index.js. Needs macOS,
+because wispd does.
+EOF
+}
+
+fail() {
+  echo "${0##*/}: $*" >&2
+  exit 1
+}
+
+case "${1-}" in
+  -h | --help)
+    usage
+    exit 0
+    ;;
+esac
+
+root=$(cd "$(dirname "$0")/../.." && pwd)
+wispd=${1:-$root/target/debug/wispd}
+case "$wispd" in
+  /*) ;;
+  *) wispd=$PWD/$wispd ;;
+esac
+[ -x "$wispd" ] || fail "$wispd is not an executable; run cargo build -p wispd first"
+
+want=$(cut -d. -f1 "$root/.nvmrc")
+have=$(node -p 'process.versions.node.split(".")[0]')
+[ "$have" = "$want" ] || fail "Node $want is required (.nvmrc pins $(cat "$root/.nvmrc")), but node is $(node --version)"
+
+"$root/scripts/editor/prepare" >&2
+
+cd "$root/editor/vscode"
+# Keeps an existing development install, as check-fork does.
+[ -d node_modules ] || npm ci --ignore-scripts --no-audit --no-fund
+[ -d build/node_modules ] || (cd build && npm ci --ignore-scripts --no-audit --no-fund)
+node build/next/index.ts transpile
+
+WISP_TEST_WISPD=$wispd node_modules/.bin/mocha test/unit/node/index.js --delay --ui=tdd --timeout=10000 --exit \
+  --runGlob 'vs/platform/wisp/test/{common,node}/*.{test,integrationTest}.js'
