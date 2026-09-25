@@ -13,6 +13,7 @@ A decision that affects more than one issue gets a record here. Records supersed
 | [0007](0007-editor-wispd-protocol.md) | The editor speaks JSON-RPC 2.0 as newline-delimited JSON through `wispd attach`, locally or over the user's `ssh`; types come from the `wisp-protocol` crate |
 | [0008](0008-editor-overlay.md) | `editor/product.json` and `editor/overlay/` reach the editor tree as one commit under the patches, never as a patch |
 | [0009](0009-wispd-data-folder-and-project-host.md) | wispd's files, overrides, log, and exit codes in the data folder; projects have no host field |
+| [0011](0011-agents-window-baseline.md) | wisp builds on upstream's Agents window: a built-in `ISessionsProvider` in the overlay, one import patch, and Copilot's parts excluded |
 
 Numbers are assigned in order. Take the next free number when you start the record, add a row to this table in the same PR, and link the record from its issue.
 
