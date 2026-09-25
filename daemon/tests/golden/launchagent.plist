@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>io.github.ryan-stoffel.wisp.wispd</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/wispd</string>
+		<string>serve</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>WISPD_DATA_DIR</key>
+		<string>/Users/ryan/Library/Application Support/wisp</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>StandardOutPath</key>
+	<string>/Users/ryan/Library/Application Support/wisp/logs/wispd.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/ryan/Library/Application Support/wisp/logs/wispd.log</string>
+</dict>
+</plist>

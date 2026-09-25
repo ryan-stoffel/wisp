@@ -30,6 +30,9 @@ use crate::store::StoreHandle;
 
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
+/// `serve` exits with this when another `wispd serve` already runs for the data folder (0009).
+pub const EXIT_ALREADY_RUNNING: u8 = 3;
+
 /// How a server runs. [`Config::new`] has the defaults from 0007.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
