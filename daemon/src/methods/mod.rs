@@ -5,6 +5,7 @@
 //! `coordinator`), and `host.rs` advertises the capability in `initialize`.
 
 mod accounts;
+mod defaults;
 mod events;
 mod host;
 mod project;
@@ -18,8 +19,9 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use wisp_protocol::jsonrpc::{ErrorObject, INVALID_REQUEST, Request, RequestId, Response};
 use wisp_protocol::methods::{
-    AccountsKeysAdd, AccountsKeysList, AccountsKeysRemove, EventsSubscribe, EventsUnsubscribe,
-    HostHealth, HostVersion, Initialize, ProjectCreate, ProjectList, RequestMethod, UsageGet,
+    AccountsDefaultsGet, AccountsDefaultsSet, AccountsKeysAdd, AccountsKeysList,
+    AccountsKeysRemove, EventsSubscribe, EventsUnsubscribe, HostHealth, HostVersion, Initialize,
+    ProjectCreate, ProjectList, RequestMethod, UsageGet,
 };
 use wisp_protocol::{EventsSubscribeResult, EventsUnsubscribeResult, SubscriptionId};
 
@@ -80,6 +82,12 @@ pub(crate) async fn dispatch(context: Context, request: Request) -> Reply {
             handle::<AccountsKeysRemove, _, _>(&request, |p| accounts::remove(&context, p)).await
         }
         UsageGet::NAME => handle::<UsageGet, _, _>(&request, |p| usage::get(&context, p)).await,
+        AccountsDefaultsGet::NAME => {
+            handle::<AccountsDefaultsGet, _, _>(&request, |p| defaults::get(&context, p)).await
+        }
+        AccountsDefaultsSet::NAME => {
+            handle::<AccountsDefaultsSet, _, _>(&request, |p| defaults::set(&context, p)).await
+        }
         EventsSubscribe::NAME => {
             let subscribed = match request.params() {
                 Ok(params) => events::subscribe(&context, params).await,
