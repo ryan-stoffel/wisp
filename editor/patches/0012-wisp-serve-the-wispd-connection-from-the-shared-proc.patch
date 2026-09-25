@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ryan Stoffel <stoffel.thomas.ryan@gmail.com>
+Date: Thu, 24 Sep 2026 20:38:10 -0700
+Subject: [PATCH] wisp: serve the wispd connection from the shared process
+
+The editor reaches wispd by spawning `wispd attach` and speaking JSON-RPC
+over its stdio (wisp's decision record 0007). The renderer is sandboxed
+and cannot spawn processes, so the connection lives in the shared
+process, where upstream keeps its own long-lived child-process
+connections: the SSH, WSL, dev container, and tunnel agent hosts, and
+the remote tunnel CLI. One connection then serves every window.
+
+WispdService and WispdChannel come from the overlay, under
+src/vs/platform/wisp. This patch only registers them: the service is
+created on first use, and the channel keeps request cancellation, which
+ProxyChannel does not carry.
+
+diff --git a/src/vs/code/electron-utility/sharedProcess/sharedProcessMain.ts b/src/vs/code/electron-utility/sharedProcess/sharedProcessMain.ts
+index d32bf32badc887efdb4fa0233614d3f84deaf12f..466a4b295c89367c8b6241cec201361d268e56a9 100644
+--- a/src/vs/code/electron-utility/sharedProcess/sharedProcessMain.ts
++++ b/src/vs/code/electron-utility/sharedProcess/sharedProcessMain.ts
+@@ -147,6 +147,8 @@ import { PlaywrightChannel } from '../../../platform/browserView/node/playwright
+ import { AgentNetworkFilterService } from '../../../platform/networkFilter/common/networkFilterService.js';
+ import { ILocalGitService } from '../../../platform/git/common/localGitService.js';
+ import { LocalGitService } from '../../../platform/git/node/localGitService.js';
++import { IWispdService, WISPD_CHANNEL_NAME, WispdChannel } from '../../../platform/wisp/common/wispd.js';
++import { WispdService } from '../../../platform/wisp/node/wispdService.js';
+ 
+ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
+ 
+@@ -433,6 +435,9 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
+ 		// Tunnel Agent Host
+ 		services.set(ITunnelAgentHostMainService, new SyncDescriptor(TunnelAgentHostMainService, undefined, true));
+ 
++		// wisp: the connection to wispd
++		services.set(IWispdService, new SyncDescriptor(WispdService, undefined, true));
++
+ 		return new InstantiationService(services);
+ 	}
+ 
+@@ -525,6 +530,9 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
+ 		const tunnelAgentHostChannel = ProxyChannel.fromService(accessor.get(ITunnelAgentHostMainService), this._store);
+ 		this.server.registerChannel(TUNNEL_AGENT_HOST_CHANNEL, tunnelAgentHostChannel);
+ 
++		// wisp: the connection to wispd
++		this.server.registerChannel(WISPD_CHANNEL_NAME, new WispdChannel(accessor.get(IWispdService)));
++
+ 	}
+ 
+ 	private registerErrorHandler(logService: ILogService): void {

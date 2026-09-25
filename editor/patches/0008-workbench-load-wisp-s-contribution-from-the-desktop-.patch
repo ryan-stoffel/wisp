@@ -3,22 +3,25 @@ From: Ryan Stoffel <stoffel.thomas.ryan@gmail.com>
 Date: Thu, 24 Sep 2026 07:41:52 -0700
 Subject: [PATCH] workbench: load wisp's contribution from the desktop main
 
-src/vs/workbench/contrib/wisp/browser/wisp.contribution.ts comes from the
-overlay and is wisp's entry point in the workbench. It registers wisp's
+src/vs/workbench/contrib/wisp/electron-browser/wisp.contribution.ts
+comes from the overlay and is wisp's entry point in the desktop
+workbench. It imports the browser contribution, which registers wisp's
 default settings in code, so they apply from the first launch: a
 built-in extension's configurationDefaults reach startup only through a
-cache written on an earlier run.
+cache written on an earlier run. It also registers the wispd connection
+service, whose IPC client needs electron-browser.
 
-For now it turns on upstream's chat.disableAIFeatures, which hides the
-Chat and Copilot entry points that the registration filter leaves in
-place. wisp's own workbench code, such as the coordinator view, can be
-imported from the same file without another patch.
+For now the browser contribution turns on upstream's
+chat.disableAIFeatures, which hides the Chat and Copilot entry points
+that the registration filter leaves in place. wisp's own workbench code,
+such as the coordinator view, can be imported from the same file without
+another patch.
 
 The import goes last in the desktop main, after every upstream
 contribution it adjusts.
 
 diff --git a/src/vs/workbench/workbench.desktop.main.ts b/src/vs/workbench/workbench.desktop.main.ts
-index a02eb91a007b0c338b7b8916452fd029756c6e87..952de0de92e7eda95b628020c9e287283dce7758 100644
+index a02eb91a007b0c338b7b8916452fd029756c6e87..79950056ab349b194ea4a64971238ea2ec8c5449 100644
 --- a/src/vs/workbench/workbench.desktop.main.ts
 +++ b/src/vs/workbench/workbench.desktop.main.ts
 @@ -210,6 +210,9 @@ import './contrib/keybindingsExport/electron-browser/keybindingsExport.contribut
@@ -26,7 +29,7 @@ index a02eb91a007b0c338b7b8916452fd029756c6e87..952de0de92e7eda95b628020c9e28728
  import './contrib/keybindings/electron-browser/systemWideKeybindings.contribution.js';
  
 +// wisp
-+import './contrib/wisp/browser/wisp.contribution.js';
++import './contrib/wisp/electron-browser/wisp.contribution.js';
 +
  //#endregion
  
