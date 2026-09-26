@@ -12,7 +12,7 @@ use super::{
 use crate::backend::{
     AccountRef, Backend, CancelSwitch, Capabilities, Credential, EVENT_BUFFER, Event, EventSink,
     EventStream, Failure, FailureKind, ModelUsage, Outcome, RunHandle, RunId, RunRequest,
-    StartError, Started, ToolPolicy, Usage,
+    StartError, Started, ToolPolicy, Usage, WorkerSandbox, claude,
 };
 use crate::keystore::{KeyStore, MemoryKeyStore};
 
@@ -27,6 +27,13 @@ fn request(cwd: &Path) -> RunRequest {
         cwd: cwd.to_owned(),
         prompt: "hi".into(),
         policy: ToolPolicy::WorkspaceWrite,
+        sandbox: Some(WorkerSandbox::for_worktree(
+            Path::new("/Users/u"),
+            Path::new("/Users/u/wisp"),
+            cwd,
+            Path::new("/Users/u/src/app/.git"),
+            Path::new("/Users/u/wisp/context/p"),
+        )),
         account: AccountRef {
             id: "unset".into(),
             credential: Credential::Subscription { config_home: None },
@@ -409,7 +416,36 @@ async fn start_sends_no_write_to_the_backend_for_a_coordinator() {
     let mut started = start(keys, &FixedAccounts::default(), resolved, request(&root())).unwrap();
     rest(&mut started.events).await;
 
-    assert_eq!(backend.calls()[0].policy, ToolPolicy::NoWrite);
+    let sent = &backend.calls()[0];
+    assert_eq!(sent.policy, ToolPolicy::NoWrite);
+    assert_eq!(sent.sandbox, None, "a coordinator gets no worker sandbox");
+    let mut expected: Vec<&str> = claude::BASE_ARGS.to_vec();
+    expected.extend(claude::NO_WRITE_ARGS);
+    assert_eq!(
+        claude::arguments(sent).unwrap(),
+        expected,
+        "Claude runs a coordinator with exactly 0004's no-write flags, none of 0013's"
+    );
+}
+
+#[tokio::test]
+async fn start_passes_a_worker_its_sandbox() {
+    let backend = Arc::new(ScriptedBackend::new(vec![vec![finished(
+        Outcome::Completed { result: None },
+    )]]));
+    let resolved = resolved_for_role(backend.clone(), Role::Worker, ToolPolicy::WorkspaceWrite);
+    let keys: Arc<dyn KeyStore> = Arc::new(MemoryKeyStore::new());
+    let request = request(&root());
+    let sandbox = request.sandbox.clone();
+
+    let mut started = start(keys, &FixedAccounts::default(), resolved, request).unwrap();
+    rest(&mut started.events).await;
+
+    let sent = &backend.calls()[0];
+    assert_eq!(sent.policy, ToolPolicy::WorkspaceWrite);
+    assert_eq!(sent.sandbox, sandbox);
+    let argv = claude::arguments(sent).unwrap();
+    assert!(argv.iter().any(|arg| arg == "--restricted"), "{argv:?}");
 }
 
 #[tokio::test]
