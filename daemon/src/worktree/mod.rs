@@ -8,13 +8,10 @@
 //! remove`, and `worktree prune` only touch `.git/worktrees` metadata and refs, and `status`,
 //! `rev-parse`, and `diff` are read-only.
 //!
-//! This module is not wired to the protocol yet; #156 (`agent/start` end to end) is the first
-//! caller, and #157 is what a client sees. Storing a worktree's row and deciding when to persist
-//! it is left to that caller: `wisp-store`'s blocking SQLite calls already run on
-//! [`crate::store::StoreHandle`]'s own thread for everything else the async server touches, and
-//! #156 owns wiring the run lifecycle (and its own runs/events tables) into that. What this module
-//! gives #156 is the `worktrees` table and CRUD (`wisp_store::Store::{create,get,list,delete}_worktree`)
-//! and a [`WorktreeManager`] ready to be called with whatever path set the store produces.
+//! The runner (`crate::agents`, #156) is its caller: `agent/start` creates a run's worktree here
+//! and stores its row, including [`CreatedWorktree::git_dir`], in `wisp-store`'s `worktrees`
+//! table, and a finished run is committed with [`WorktreeManager::commit_all`] and measured with
+//! [`WorktreeManager::diff_stat`]. #157 is what a client sees of the diff.
 //!
 //! # Layout and naming
 //!
@@ -328,6 +325,17 @@ pub struct Diff {
     pub truncated: bool,
 }
 
+/// How much a worktree differs from its base, from [`WorktreeManager::diff_stat`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DiffStat {
+    /// Files changed.
+    pub files: u64,
+    /// Lines added.
+    pub insertions: u64,
+    /// Lines removed.
+    pub deletions: u64,
+}
+
 /// The commit [`WorktreeManager::commit_all`] made.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commit {
@@ -507,6 +515,48 @@ impl WorktreeManager {
             .run_worktree_git_ok(worktree_path, git_dir, &args)
             .await?;
         Ok(cap_diff(output, self.max_diff_bytes))
+    }
+
+    /// How many files and lines differ between `base` and the worktree's current state, committed
+    /// or not: `git diff --numstat`, pinned and hardened like [`WorktreeManager::diff`]. A binary
+    /// file counts as a changed file with no lines.
+    ///
+    /// # Errors
+    ///
+    /// [`WorktreeError::GitFailed`], [`WorktreeError::Timeout`], or [`WorktreeError::Spawn`].
+    pub async fn diff_stat(
+        &self,
+        worktree_path: &Path,
+        git_dir: &Path,
+        base: &str,
+    ) -> Result<DiffStat, WorktreeError> {
+        self.stage_all(worktree_path, git_dir).await?;
+        let mut args = vec!["diff", "--cached", "--no-color", "--find-renames"];
+        args.extend_from_slice(NO_DIFF_DRIVERS);
+        args.extend_from_slice(&["--numstat", base]);
+        let output = self
+            .run_worktree_git_ok(worktree_path, git_dir, &args)
+            .await?;
+        Ok(parse_numstat(&output))
+    }
+
+    /// The shared git folder of the repository at `repo_path` (`git rev-parse --git-common-dir`),
+    /// as an absolute path. It runs in the user's own checkout, never in a worker's worktree, so
+    /// no worker-written file decides the answer. The worker sandbox (0013) makes it read-only.
+    ///
+    /// # Errors
+    ///
+    /// [`WorktreeError::NotAGitRepo`], or [`WorktreeError::GitFailed`],
+    /// [`WorktreeError::Timeout`], or [`WorktreeError::Spawn`].
+    pub async fn git_common_dir(&self, repo_path: &Path) -> Result<PathBuf, WorktreeError> {
+        let repo_root = self.repo_root(repo_path).await?;
+        let output = self
+            .run_git_ok(
+                &repo_root,
+                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            )
+            .await?;
+        Ok(PathBuf::from(output.trim()))
     }
 
     /// Stages every change in the worktree and commits it with `message`, using the repository's
@@ -1050,6 +1100,25 @@ fn parse_name_status(output: &str) -> Vec<ChangedFile> {
             }
         })
         .collect()
+}
+
+/// Sums `git diff --numstat`'s output: `added\tdeleted\tpath` per file, with `-` for both counts
+/// of a binary file.
+fn parse_numstat(output: &str) -> DiffStat {
+    let mut stat = DiffStat::default();
+    for line in output.lines().filter(|line| !line.is_empty()) {
+        let mut fields = line.split('\t');
+        let mut count = || {
+            fields
+                .next()
+                .and_then(|field| field.parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        stat.insertions += count();
+        stat.deletions += count();
+        stat.files += 1;
+    }
+    stat
 }
 
 /// Cuts `text` to at most `max_bytes`, on a UTF-8 boundary, and notes when it did.

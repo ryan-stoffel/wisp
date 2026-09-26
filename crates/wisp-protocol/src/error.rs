@@ -36,6 +36,19 @@ pub enum ErrorKind {
     /// A new project's `repoPath` is not the top folder of a git working tree on this host. The
     /// message says what is wrong with it.
     NotARepository,
+    /// No agent run has the given id (#156).
+    RunNotFound,
+    /// `agent/send` can't resume the run: it ended before its CLI reported a session, or it is
+    /// still starting.
+    RunNotResumable,
+    /// wispd won't start a worker as asked: its backend doesn't implement the worker sandbox
+    /// (0013), the CLI is missing or older than the version the sandbox needs, or a path it would
+    /// sandbox holds `*`, `?`, `[`, or `]`. The message says which, and for an old CLI names both
+    /// versions.
+    WorkerUnavailable,
+    /// wispd could not create the run's worktree, for example because the project's repository
+    /// has uncommitted changes. The message says what to do.
+    WorktreeFailed,
     /// A kind this version does not know yet.
     #[serde(other)]
     #[ts(skip)]
@@ -131,6 +144,10 @@ mod tests {
             (ErrorKind::ContextNotFound, "contextNotFound"),
             (ErrorKind::ContextTooLarge, "contextTooLarge"),
             (ErrorKind::NotARepository, "notARepository"),
+            (ErrorKind::RunNotFound, "runNotFound"),
+            (ErrorKind::RunNotResumable, "runNotResumable"),
+            (ErrorKind::WorkerUnavailable, "workerUnavailable"),
+            (ErrorKind::WorktreeFailed, "worktreeFailed"),
         ] {
             assert_eq!(serde_json::to_value(kind).unwrap(), json!(name));
             assert_eq!(

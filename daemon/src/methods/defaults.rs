@@ -48,7 +48,7 @@ pub(crate) async fn set(
 }
 
 /// Both roles' defaults, as they stand in the store right now.
-fn read_defaults(db_store: &Store) -> Result<AccountsDefaultsGetResult, ErrorObject> {
+pub(crate) fn read_defaults(db_store: &Store) -> Result<AccountsDefaultsGetResult, ErrorObject> {
     let coordinator = read_one(db_store, Role::Coordinator)?;
     let worker = read_one(db_store, Role::Worker)?;
     Ok(AccountsDefaultsGetResult {

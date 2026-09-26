@@ -130,6 +130,42 @@ async fn create_makes_a_worktree_on_a_new_branch_from_head() {
 }
 
 #[tokio::test]
+async fn diff_stat_counts_files_and_lines_against_the_base_before_and_after_a_commit() {
+    let repo_dir = tempfile::tempdir().unwrap();
+    let repo = init_repo(repo_dir.path()).canonicalize().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let mgr = manager(data_dir.path());
+    let created = mgr.create(&repo, RunId::generate(), None).await.unwrap();
+    let (path, git_dir) = (&created.path, &created.git_dir);
+
+    std::fs::write(path.join("README.md"), "hello\nworld\nagain\n").unwrap();
+    std::fs::write(path.join("notes.txt"), "one\ntwo\n").unwrap();
+    std::fs::write(path.join("blob.bin"), [0_u8, 159, 146, 150]).unwrap();
+    let before = mgr.diff_stat(path, git_dir, &created.base).await.unwrap();
+    assert_eq!(
+        before,
+        super::DiffStat {
+            files: 3,
+            insertions: 4,
+            deletions: 0
+        }
+    );
+    mgr.commit_all(path, git_dir, &repo, "agent work")
+        .await
+        .unwrap()
+        .expect("a commit");
+    assert_eq!(
+        mgr.diff_stat(path, git_dir, &created.base).await.unwrap(),
+        before
+    );
+    assert_eq!(
+        mgr.git_common_dir(&repo).await.unwrap(),
+        repo.join(".git"),
+        "the user's checkout names the shared git folder"
+    );
+}
+
+#[tokio::test]
 async fn create_refuses_a_missing_repo() {
     let data_dir = tempfile::tempdir().unwrap();
     let mgr = manager(data_dir.path());

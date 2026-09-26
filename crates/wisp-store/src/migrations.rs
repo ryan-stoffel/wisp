@@ -112,6 +112,56 @@ const MIGRATIONS: &[Migration] = &[
             updated_at TEXT NOT NULL
         );",
     },
+    // Agent runs and the persisted event log (#156, decision 0014).
+    //
+    // - `worktrees.git_dir`: the linked worktree's private git directory, resolved once at
+    //   creation (#166), so a restart never has to trust the worktree's own `.git` file again.
+    // - `runs`: one row per `agent/start`, keyed by its client-generated run id. The params that
+    //   make a retry idempotent (`project_id`, `prompt`, `requested_account`, `policy`) never
+    //   change; the rest is the run's latest state. `requested_account` is the JSON of the
+    //   account the request named, or NULL for the worker role's default.
+    // - `log_meta` and `events`: 0007's event log, numbered by the daemon-wide `seq`, so the
+    //   editor can replay after a reconnect or a restart. `payload` is the event's JSON;
+    //   `run_id` is set for an agent run's events, for `agent/events`.
+    Migration {
+        version: 7,
+        sql: "ALTER TABLE worktrees ADD COLUMN git_dir TEXT NOT NULL DEFAULT '';
+
+        CREATE TABLE runs (
+            id TEXT NOT NULL PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            requested_account TEXT,
+            policy TEXT NOT NULL,
+            backend TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            session_id TEXT,
+            error TEXT,
+            commit_sha TEXT,
+            files_changed INTEGER,
+            insertions INTEGER,
+            deletions INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX runs_project ON runs (project_id, created_at);
+
+        CREATE TABLE log_meta (
+            id INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
+            log_id TEXT NOT NULL
+        );
+
+        CREATE TABLE events (
+            seq INTEGER NOT NULL PRIMARY KEY,
+            time TEXT NOT NULL,
+            project_id TEXT,
+            run_id TEXT,
+            kind TEXT NOT NULL,
+            payload TEXT NOT NULL
+        );
+        CREATE INDEX events_run ON events (run_id, seq);",
+    },
 ];
 
 /// Bootstraps the `schema_version` table and applies any migration whose

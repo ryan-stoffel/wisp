@@ -105,6 +105,14 @@ pub enum Step {
     /// Waits for a follow-up on stdin and prints [`Event::Text`] with it. Exits with code 0 if
     /// stdin ends first.
     AwaitFollowUp,
+    /// Writes `content` to the file at `path`, relative to the working directory or absolute,
+    /// replacing it, as an agent's edit would.
+    WriteFile {
+        /// Where to write.
+        path: String,
+        /// What to write, exactly.
+        content: String,
+    },
     /// Prints [`Event::TurnFinished`]; the backend fills in the turn id.
     EndTurn {
         /// The turn's result.
@@ -178,6 +186,7 @@ impl Backend for FakeBackend {
             coordinator: true,
             reports_cost: true,
             rate_limits: true,
+            worker_sandbox: true,
         }
     }
 
@@ -641,6 +650,10 @@ fn compile(script: &Script) -> Result<String, String> {
             Step::AwaitFollowUp => {
                 out.push_str("IFS= read -r line || exit 0\n");
                 print_text(&mut out, "\"$line\"", true);
+            }
+            Step::WriteFile { path, content } => {
+                writeln!(out, "printf '%s' {} > {}", quote(content), quote(path))
+                    .expect("infallible");
             }
             Step::EndTurn { result } => {
                 let event = Event::TurnFinished {

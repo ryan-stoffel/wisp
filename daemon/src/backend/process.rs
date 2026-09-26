@@ -4,8 +4,8 @@
 //!   holds its three pipes and nothing else of wispd's, such as client sockets or the listener
 //!   (#86). It leads a new session and process group, so a terminal that started wispd can't
 //!   signal it, and cancelling can reach everything it started.
-//! - **The environment is explicit**: a base ([`Environment::inherited`] today; #96 replaces it
-//!   with one that doesn't depend on what started wispd), minus [`ALWAYS_SCRUBBED`] and the
+//! - **The environment is explicit**: a base (wispd's own with the usual install folders on
+//!   `PATH`, decision 0014; #96 may capture the login shell's instead), minus [`ALWAYS_SCRUBBED`] and the
 //!   backend's scrub list, plus [`DATA_DIR_ENV`](crate::paths::DATA_DIR_ENV) from
 //!   [`DataDir::command`], plus the backend's injected variables, such as an API key.
 //! - **Output**: stdout as lines with a size cap, stderr into a ring buffer whose tail goes into
@@ -48,9 +48,10 @@ use super::event::ExitInfo;
 use crate::paths::DataDir;
 use crate::spawn::{self, Stdio};
 
-/// Variables no agent inherits from wispd: the SSH session that may have started it (#96).
-/// Whether agents get an `SSH_AUTH_SOCK`, and which, is #96's decision.
-pub const ALWAYS_SCRUBBED: &[&str] = &["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"];
+/// Variables no process wispd starts inherits: the SSH session that may have started it (#96).
+/// That includes its `SSH_AUTH_SOCK`, which stops working when the session ends and which no
+/// agent needs: workers can't push, and wispd makes every commit locally (decision 0014).
+pub const ALWAYS_SCRUBBED: &[&str] = &["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "SSH_AUTH_SOCK"];
 
 /// The longest stdout line a backend reads by default. Longer ones are skipped and reported. It
 /// matches 0007's frame limit, which a notification built from the line has to fit anyway.
