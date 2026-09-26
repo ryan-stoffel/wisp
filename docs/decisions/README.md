@@ -20,6 +20,7 @@ A decision that affects more than one issue gets a record here. Records supersed
 | [0014](0014-agent-runs.md) | The `agents` capability is `agent/start`, `send`, `cancel`, `list`, and `events`; a run outlives its CLI processes, wispd commits it after each one, and it resumes by session after a restart; the event log is stored in SQLite; agents get no SSH session variables and a filled-in `PATH` |
 | [0015](0015-subagent-chats.md) | Each agent run is a `wisp.agent` chat of its project's session; the subagents' chat agent is the default for agent-mode chat, which upstream needs to send anything; the Agents pill opens wisp's own panel through a presenter hook in `chatDropdownPill.ts`, and shows by default |
 | [0016](0016-event-log-retention.md) | The stored event log prunes host and project events by count; a run's events stay until its run row does, which nothing removes yet (#207); the in-memory replay window is also bounded by bytes |
+| [0018](0018-pr-visuals-on-request.md) | `screenshots.yml` runs only for PRs with the `screenshots` label and captures only the scenes the body's `wisp-media` block names (`after`, `before-after`, `video`), into a section of the PR body instead of a comment; supersedes the every-PR rule |
 
 Numbers are assigned in order. Take the next free number when you start the record, add a row to this table in the same PR, and link the record from its issue.
 

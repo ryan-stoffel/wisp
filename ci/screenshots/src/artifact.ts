@@ -1,16 +1,22 @@
 import { lstat, open } from 'node:fs/promises';
 import { join } from 'node:path';
-import { MANIFEST_FILE, parseManifest, type Manifest } from './manifest.ts';
+import { MANIFEST_FILE, parseManifest, type Manifest, type Result } from './manifest.ts';
 
 export interface Capture {
   manifest: Manifest;
   files: string[];
 }
 
-const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const maxManifestBytes = 1024 * 1024;
-const maxPngBytes = 10 * 1024 * 1024;
-const maxTotalBytes = 25 * 1024 * 1024;
+const megabyte = 1024 * 1024;
+/** What each kind of file must start with, and how large it may be. */
+export const MAX_BYTES = { png: 10 * megabyte, gif: 10 * megabyte, webm: 25 * megabyte } as const;
+const kinds = {
+  png: { signatures: [Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])], maxBytes: MAX_BYTES.png },
+  gif: { signatures: [Buffer.from('GIF87a'), Buffer.from('GIF89a')], maxBytes: MAX_BYTES.gif },
+  webm: { signatures: [Buffer.from([0x1a, 0x45, 0xdf, 0xa3])], maxBytes: MAX_BYTES.webm },
+} as const;
+const maxTotalBytes = 60 * megabyte;
 const logTailBytes = 64 * 1024;
 
 export async function readCapture(dir: string): Promise<Capture | undefined> {
@@ -42,28 +48,37 @@ export async function readCapture(dir: string): Promise<Capture | undefined> {
 
   const files: string[] = [];
   let totalBytes = 0;
-  for (const result of manifest.results) {
-    if (!('file' in result)) {
-      continue;
+  for (const file of manifest.results.flatMap(filesOf)) {
+    const extension = file.slice(file.lastIndexOf('.') + 1);
+    if (!(extension in kinds)) {
+      throw new Error(`${file} is not a png, gif, or webm file`);
     }
-    const path = join(dir, result.file);
+    const { signatures, maxBytes } = kinds[extension as keyof typeof kinds];
+    const path = join(dir, file);
     const size = await kind(path);
     if (typeof size !== 'number') {
-      throw new Error(`${result.file} is listed in ${MANIFEST_FILE} but is not a regular file`);
+      throw new Error(`${file} is listed in ${MANIFEST_FILE} but is not a regular file`);
     }
-    if (size > maxPngBytes) {
-      throw new Error(`${result.file} is larger than ${String(maxPngBytes)} bytes`);
+    if (size > maxBytes) {
+      throw new Error(`${file} is larger than ${String(maxBytes)} bytes`);
     }
     totalBytes += size;
     if (totalBytes > maxTotalBytes) {
       throw new Error(`the capture totals more than ${String(maxTotalBytes)} bytes`);
     }
-    if (!(await readBytes(path, 0, pngSignature.length)).equals(pngSignature)) {
-      throw new Error(`${result.file} is not a PNG`);
+    const head = await readBytes(path, 0, 8);
+    if (!signatures.some((signature) => head.subarray(0, signature.length).equals(signature))) {
+      throw new Error(`${file} is not a ${extension.toUpperCase()}`);
     }
-    files.push(result.file);
+    files.push(file);
   }
   return { manifest, files };
+}
+
+function filesOf(result: Result): string[] {
+  return [result, ...(result.base ? [result.base] : [])]
+    .flatMap((shot) => ('file' in shot ? [shot.file] : []))
+    .concat(result.video === undefined ? [] : [result.video]);
 }
 
 export function missingArtifactError(capture: Capture | undefined, captureOutcome: string | undefined): string | undefined {

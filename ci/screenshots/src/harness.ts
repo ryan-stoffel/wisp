@@ -82,10 +82,12 @@ export async function appears(locator: Locator, timeout: number): Promise<boolea
   }
 }
 
-export async function appLaunchOptions(): Promise<LaunchOptions> {
+/** Launch options for `bundle`, or for the app app-launch picks by default: WISP_APP_BUNDLE, then build-app's. */
+export async function appLaunchOptions(bundle?: string): Promise<LaunchOptions> {
   const script = join(repoRoot, 'scripts', 'ci', 'app-launch');
   try {
-    const { stdout } = await execFileAsync(script, { encoding: 'utf8' });
+    const env = bundle === undefined ? process.env : { ...process.env, WISP_APP_BUNDLE: bundle };
+    const { stdout } = await execFileAsync(script, { encoding: 'utf8', env });
     return JSON.parse(stdout) as LaunchOptions;
   } catch (error) {
     const stderr = (error as { stderr?: string }).stderr?.trim();

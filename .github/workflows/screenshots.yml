@@ -1,58 +1,202 @@
 name: screenshots
 
+# Captures only what a pull request asks for, and only with the screenshots label (0018): the
+# wisp-media block in its body names the scenes, and publish writes them into that body.
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [labeled, synchronize, reopened, edited]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Number of an open pull request that has the screenshots label
+        required: true
+        type: number
 
 permissions: {}
-
-concurrency:
-  group: screenshots-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
 
 defaults:
   run:
     shell: bash
 
 jobs:
+  # Decides whether to capture and what. Reads the pull request with a read-only token and runs the
+  # head's request parser, so its outputs are as untrusted as the capture artifact.
+  request:
+    name: request
+    # An unlabeled pull request stops here, before a runner starts.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (contains(github.event.pull_request.labels.*.name, 'screenshots') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'screenshots'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      number: ${{ steps.pull.outputs.number }}
+      head-sha: ${{ steps.pull.outputs.head-sha }}
+      run: ${{ steps.resolve.outputs.run }}
+      publish: ${{ steps.resolve.outputs.publish }}
+      problem: ${{ steps.resolve.outputs.problem }}
+      request: ${{ steps.resolve.outputs.request }}
+      base-sha: ${{ steps.resolve.outputs.base-sha }}
+      block-digest: ${{ steps.resolve.outputs.block-digest }}
+    steps:
+      # The gate that PR code cannot change: nothing from the pull request is checked out until the
+      # PR is from this repository, open, and labeled. On workflow_dispatch this step comes from the
+      # dispatched ref, and the token can write, so a fork's code must never get past it.
+      - name: Read the pull request
+        id: pull
+        timeout-minutes: 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+        run: |
+          if ! [[ $PR =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error title=Screenshots::pr must be a pull request number, got '$PR'"
+            exit 1
+          fi
+          pull=$RUNNER_TEMP/pull.json
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" > "$pull"
+          sha=$(jq -r .head.sha "$pull")
+          if ! [[ $sha =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error title=Screenshots::pull request $PR has no head commit"
+            exit 1
+          fi
+          echo "number=$PR" >> "$GITHUB_OUTPUT"
+          echo "head-sha=$sha" >> "$GITHUB_OUTPUT"
+
+          head_repo=$(jq -r '.head.repo.full_name // ""' "$pull")
+          if [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
+            echo "::notice title=Screenshots skipped::The head branch is in ${head_repo:-a deleted fork}, not $GITHUB_REPOSITORY. Pull requests from forks never get screenshots, because their code would run next to a token that can write."
+            exit 0
+          fi
+          if [ "$(jq -r '[.labels[].name] | index("screenshots") != null' "$pull")" != true ]; then
+            if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+              echo "::error title=Screenshots::pull request $PR does not have the screenshots label, and nothing is captured without it"
+              exit 1
+            fi
+            echo "::notice title=Screenshots skipped::The pull request no longer has the screenshots label."
+            exit 0
+          fi
+          if [ "$(jq -r .state "$pull")" != open ]; then
+            echo "::error title=Screenshots::pull request $PR is not open"
+            exit 1
+          fi
+          echo "gate=open" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the request parser and the scenes
+        if: steps.pull.outputs.gate == 'open'
+        timeout-minutes: 5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.pull.outputs.head-sha }}
+          persist-credentials: false
+          sparse-checkout: ci/screenshots
+
+      # No cache: its post step would save after PR code ran, and a dispatched run saves into develop's scope.
+      - name: Set up Node
+        if: steps.pull.outputs.gate == 'open'
+        timeout-minutes: 5
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+
+      - name: Decide what to capture
+        id: resolve
+        if: steps.pull.outputs.gate == 'open'
+        timeout-minutes: 3
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: ci/screenshots
+        run: |
+          npm ci --omit=dev --no-audit --no-fund
+          node src/resolve.ts "$RUNNER_TEMP/pull.json"
+
+      - name: Fail on a request that cannot run
+        if: steps.resolve.outputs.problem != ''
+        timeout-minutes: 1
+        env:
+          PROBLEM: ${{ steps.resolve.outputs.problem }}
+        run: |
+          echo "::error title=Screenshots request::$PROBLEM"
+          exit 1
+
   capture:
     name: capture
+    needs: request
+    if: needs.request.outputs.run == 'true'
     runs-on: macos-26
-    timeout-minutes: 120
+    timeout-minutes: 150
+    # Per job, not per workflow: a run the request job skips, such as an edit to the description's
+    # text, must not cancel a capture in progress.
+    concurrency:
+      group: screenshots-capture-${{ needs.request.outputs.number }}
+      cancel-in-progress: true
     permissions:
       contents: read
     env:
       ZIP: dist/editor/wisp-darwin-arm64.zip
+      HEAD_SHA: ${{ needs.request.outputs.head-sha }}
+      BASE_SHA: ${{ needs.request.outputs.base-sha }}
+      REQUEST: ${{ needs.request.outputs.request }}
     outputs:
-      same-repo: ${{ steps.source.outputs.same-repo }}
       build: ${{ steps.build.outcome }}
+      base-build: ${{ steps.base-build.outcome }}
       capture: ${{ steps.capture.outcome }}
     steps:
-      - name: Skip pull requests from forks
-        id: source
-        timeout-minutes: 1
-        env:
-          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
-        run: |
-          if [ "$HEAD_REPO" = "$GITHUB_REPOSITORY" ]; then
-            echo "same-repo=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice title=Screenshots skipped::The head branch is in ${HEAD_REPO:-a deleted fork}, not $GITHUB_REPOSITORY. Pull requests from forks get a read-only GITHUB_TOKEN, so this workflow cannot push to ci-screenshots or comment on the pull request."
-          fi
-
       - name: Check out the head commit
-        if: steps.source.outputs.same-repo == 'true'
         timeout-minutes: 5
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ env.HEAD_SHA }}
           persist-credentials: false
+
+      # before-after shows the scene on the commit this pull request branched from, too.
+      - name: Check out the base commit
+        if: env.BASE_SHA != ''
+        timeout-minutes: 5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BASE_SHA }}
+          path: .wisp-base
+          persist-credentials: false
+
+      # The base's own app-cache-key, so the key is the one ci.yml saved when it built that commit.
+      - name: Hash the inputs of the base commit's app build
+        id: base-inputs
+        if: env.BASE_SHA != ''
+        continue-on-error: true
+        timeout-minutes: 2
+        working-directory: .wisp-base
+        run: |
+          key=$(scripts/ci/app-cache-key arm64)
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      # The cache entry's path is part of its version, so the base zip restores to the same path as
+      # the head's, before the head's, and moves aside.
+      - name: Restore the base commit's app that ci.yml built
+        id: base-cached
+        if: env.BASE_SHA != '' && steps.base-inputs.outputs.key != ''
+        timeout-minutes: 10
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.ZIP }}
+          key: ${{ steps.base-inputs.outputs.key }}
+
+      - name: Set the base commit's app aside
+        if: steps.base-cached.outputs.cache-hit == 'true'
+        timeout-minutes: 2
+        run: |
+          mkdir -p "$RUNNER_TEMP/base"
+          mv "$ZIP" "$RUNNER_TEMP/base/app.zip"
 
       # The same key as ci.yml's app (arm64) job, so a push that changes no fork input reuses its build.
       # The cache only saves time, so without a key the job builds the app instead.
       - name: Hash the inputs of the app build
         id: inputs
-        if: steps.source.outputs.same-repo == 'true'
         continue-on-error: true
         timeout-minutes: 2
         run: |
@@ -62,7 +206,7 @@ jobs:
       # Restore only: ci.yml's app job is the one writer of this cache, and it saves only builds that pass check-app.
       - name: Restore the app that ci.yml built from the same inputs
         id: cached
-        if: steps.source.outputs.same-repo == 'true' && steps.inputs.outputs.key != ''
+        if: steps.inputs.outputs.key != ''
         timeout-minutes: 10
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -70,37 +214,33 @@ jobs:
           key: ${{ steps.inputs.outputs.key }}
 
       - name: Set up Node
-        if: steps.source.outputs.same-repo == 'true'
         timeout-minutes: 10
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
-          cache: ${{ steps.cached.outputs.cache-hit != 'true' && 'npm' || '' }}
+          # Only a pull_request run caches npm: its saves stay in the PR's own scope, while a dispatched
+          # run would save into develop's, after PR code ran.
+          cache: ${{ github.event_name == 'pull_request' && (steps.cached.outputs.cache-hit != 'true' || (env.BASE_SHA != '' && steps.base-cached.outputs.cache-hit != 'true')) && 'npm' || '' }}
+          package-manager-cache: false
           # Upstream's lockfiles exist only after scripts/editor/prepare runs, and the pin decides them.
           cache-dependency-path: editor/upstream.json
 
-      # build-app also builds wispd (#62), only needed on a miss. The key matches ci.yml's rust
-      # and app jobs, so all three can share one cached toolchain download.
-      - name: Cache Rust toolchain
-        if: steps.source.outputs.same-repo == 'true' && steps.cached.outputs.cache-hit != 'true'
+      # build-app also builds wispd (#62), only needed on a miss. The key matches ci.yml's rust and app
+      # jobs, which save it. Restore only: this job runs PR code before any post step could save.
+      - name: Restore the Rust toolchain
+        if: steps.cached.outputs.cache-hit != 'true' || (env.BASE_SHA != '' && steps.base-cached.outputs.cache-hit != 'true')
         timeout-minutes: 5
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.rustup/toolchains/*
             !~/.rustup/toolchains/stable-*
           key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
 
-      - name: Install Rust toolchain
-        if: steps.source.outputs.same-repo == 'true' && steps.cached.outputs.cache-hit != 'true'
-        timeout-minutes: 5
-        run: rustup toolchain install --no-self-update
-
       # On a miss, upstream's build calls GitHub's API, which rate-limits anonymous calls from shared runners.
       # The token is this job's contents: read token, and it expires when the job ends, before publish reads the log.
       - name: Build the app, or unpack the cached build
         id: build
-        if: steps.source.outputs.same-repo == 'true'
         timeout-minutes: 60
         env:
           CACHED: ${{ steps.cached.outputs.cache-hit }}
@@ -116,20 +256,59 @@ jobs:
             echo "- App: restored from ci.yml's cache, key \`$KEY\`" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "No cached build of these inputs (${KEY:-no key}); building the app" | tee "$log"
+            rustup toolchain install --no-self-update 2>&1 | tee -a "$log"
             scripts/ci/build-app arm64 2>&1 > "$RUNNER_TEMP/app-path" | tee -a "$log"
             bundle=$(cat "$RUNNER_TEMP/app-path")
             echo "- App: built here, because ci.yml's cache had no build for key \`${KEY:-none}\`" >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "WISP_APP_BUNDLE=$bundle" >> "$GITHUB_ENV"
 
-      - name: Capture the scenarios
+      # A failed base build fails only the before side of each before-after scene.
+      - name: Build the base commit's app, or unpack the cached build
+        id: base-build
+        if: env.BASE_SHA != ''
+        continue-on-error: true
+        timeout-minutes: 60
+        env:
+          CACHED: ${{ steps.base-cached.outputs.cache-hit }}
+          KEY: ${{ steps.base-inputs.outputs.key }}
+          GITHUB_TOKEN: ${{ steps.base-cached.outputs.cache-hit != 'true' && github.token || '' }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/capture/logs" "$RUNNER_TEMP/base-app"
+          log=$RUNNER_TEMP/capture/logs/base-build.log
+          if [ "$CACHED" = true ]; then
+            echo "Unpacking the base commit's app that ci.yml built ($KEY)" | tee "$log"
+            ditto -x -k "$RUNNER_TEMP/base/app.zip" "$RUNNER_TEMP/base-app" 2>&1 | tee -a "$log"
+            bundle=$RUNNER_TEMP/base-app/Wisp.app
+            echo "- Base app (\`$BASE_SHA\`): restored from ci.yml's cache, key \`$KEY\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No cached build of the base commit's inputs (${KEY:-no key}); building it" | tee "$log"
+            cd .wisp-base
+            rustup toolchain install --no-self-update 2>&1 | tee -a "$log"
+            scripts/ci/build-app arm64 2>&1 > "$RUNNER_TEMP/base-app-path" | tee -a "$log"
+            bundle=$(cat "$RUNNER_TEMP/base-app-path")
+            echo "- Base app (\`$BASE_SHA\`): built here, because ci.yml's cache had no build for key \`${KEY:-none}\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "WISP_BASE_APP_BUNDLE=$bundle" >> "$GITHUB_ENV"
+
+      # The runner image has no ffmpeg, and Playwright's own build only writes WebM, so the GIF previews need Homebrew's.
+      - name: Install ffmpeg for the video previews
+        if: contains(env.REQUEST, 'video:')
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+          HOMEBREW_NO_INSTALL_CLEANUP: '1'
+          HOMEBREW_NO_ANALYTICS: '1'
+        run: brew install ffmpeg
+
+      - name: Capture the requested scenes
         id: capture
-        if: steps.source.outputs.same-repo == 'true'
-        timeout-minutes: 20
-        run: scripts/ci/screenshots "$RUNNER_TEMP/capture/screenshots" 2>&1 | tee "$RUNNER_TEMP/capture/logs/capture.log"
+        timeout-minutes: 30
+        run: scripts/ci/screenshots "$RUNNER_TEMP/capture/screenshots" --request "$REQUEST" 2>&1 | tee "$RUNNER_TEMP/capture/logs/capture.log"
 
       - name: Upload the captures
-        if: ${{ !cancelled() && steps.source.outputs.same-repo == 'true' }}
+        if: ${{ !cancelled() }}
         timeout-minutes: 5
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -140,13 +319,15 @@ jobs:
           overwrite: true
 
   # The only job with a write token. Keep npm install, builds, and PR code that is not publish-screenshots
-  # out of it, and treat the artifact as untrusted input (scripts/ci/README.md, Screenshots).
+  # out of it, and treat the artifact and the request job's outputs as untrusted input (scripts/ci/README.md, Screenshots).
   publish:
     name: publish
-    needs: capture
-    if: ${{ !cancelled() && needs.capture.outputs.same-repo == 'true' }}
+    needs: [request, capture]
+    if: ${{ !cancelled() && needs.request.outputs.publish == 'true' && needs.capture.result != 'cancelled' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    concurrency:
+      group: screenshots-publish-${{ needs.request.outputs.number }}
     permissions:
       contents: write
       pull-requests: write
@@ -155,7 +336,7 @@ jobs:
         timeout-minutes: 5
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ needs.request.outputs.head-sha }}
           persist-credentials: false
           sparse-checkout: |
             scripts/ci
@@ -169,6 +350,7 @@ jobs:
           package-manager-cache: false
 
       - name: Download the captures
+        if: needs.capture.result != 'skipped'
         continue-on-error: true
         timeout-minutes: 5
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -176,12 +358,16 @@ jobs:
           name: screenshots
           path: ${{ runner.temp }}/capture
 
-      - name: Publish the screenshots
+      - name: Write the Screenshots section of the pull request body
         timeout-minutes: 10
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ needs.request.outputs.number }}
+          HEAD_SHA: ${{ needs.request.outputs.head-sha }}
+          BASE_SHA: ${{ needs.request.outputs.base-sha }}
+          BLOCK_DIGEST: ${{ needs.request.outputs.block-digest }}
+          REQUEST_PROBLEM: ${{ needs.request.outputs.problem }}
           BUILD_OUTCOME: ${{ needs.capture.outputs.build }}
+          BASE_BUILD_OUTCOME: ${{ needs.capture.outputs.base-build }}
           CAPTURE_OUTCOME: ${{ needs.capture.outputs.capture }}
         run: scripts/ci/publish-screenshots "$RUNNER_TEMP/capture/screenshots" --logs "$RUNNER_TEMP/capture/logs"

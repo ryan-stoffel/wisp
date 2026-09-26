@@ -1,18 +1,20 @@
 import { rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-interface Base {
-  name: string;
-  title: string;
-}
+export const MODES = ['after', 'before-after', 'video'] as const;
+export type Mode = (typeof MODES)[number];
 
-export type Result = Base &
-  (
-    | { status: 'pending' }
-    | { status: 'captured'; file: string }
-    | { status: 'not-available'; reason: string }
-    | { status: 'failed'; error: string; file?: string }
-  );
+export type Shot =
+  | { status: 'pending' }
+  | { status: 'captured'; file: string }
+  | { status: 'not-available'; reason: string }
+  | { status: 'failed'; error: string; file?: string };
+
+/**
+ * One requested scene. The shot fields describe the head commit's app. `before-after` adds `base`, the
+ * same scene against the base commit's app, and a captured `video` names its WebM next to the GIF in `file`.
+ */
+export type Result = { name: string; title: string; mode: Mode; base?: Shot; video?: string } & Shot;
 
 export interface Manifest {
   error?: string;
@@ -25,12 +27,24 @@ export const LIMITS = { results: 50, name: 64, title: 100, reason: 300, error: 2
 const namePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const textPattern = /^[A-Za-z0-9 ,.:;'"()/+&=_-]+$/;
 
-export function capturedFile(name: string): string {
-  return `${name}.png`;
+export function capturedFile(name: string, mode: Mode = 'after'): string {
+  return mode === 'video' ? `${name}.gif` : `${name}.png`;
 }
 
 export function failedFile(name: string): string {
   return `${name}.failed.png`;
+}
+
+export function baseCapturedFile(name: string): string {
+  return `${name}.base.png`;
+}
+
+export function baseFailedFile(name: string): string {
+  return `${name}.base.failed.png`;
+}
+
+export function videoFile(name: string): string {
+  return `${name}.webm`;
 }
 
 export function nameProblem(name: string): string | undefined {
@@ -73,7 +87,7 @@ function parseResult(entry: unknown, where: string, names: Set<string>): Result 
   if (!isRecord(entry)) {
     throw new Error(`${where} is not an object`);
   }
-  const { name, title, status } = entry;
+  const { name, title, mode } = entry;
   if (typeof name !== 'string') {
     throw new Error(`${where}.name is not a string`);
   }
@@ -89,22 +103,49 @@ function parseResult(entry: unknown, where: string, names: Set<string>): Result 
   if (badTitle || typeof title !== 'string') {
     throw new Error(`${where}.title ${badTitle ?? ''}`);
   }
+  if (!MODES.includes(mode as Mode)) {
+    throw new Error(`${where}.mode is not ${MODES.join(', ')}`);
+  }
+  const resultMode = mode as Mode;
 
+  const shot = parseShot(entry, where, { captured: capturedFile(name, resultMode), failed: failedFile(name) });
+  const result: Result = { name, title, mode: resultMode, ...shot };
+  if (resultMode === 'before-after') {
+    result.base = parseShot(entry.base, `${where}.base`, { captured: baseCapturedFile(name), failed: baseFailedFile(name) });
+  } else if (entry.base !== undefined) {
+    throw new Error(`${where}.base is only for before-after`);
+  }
+  if (resultMode === 'video' && shot.status === 'captured') {
+    if (entry.video !== videoFile(name)) {
+      throw new Error(`${where}.video must be ${videoFile(name)}`);
+    }
+    result.video = videoFile(name);
+  } else if (entry.video !== undefined) {
+    throw new Error(`${where}.video is only for a captured video`);
+  }
+  return result;
+}
+
+function parseShot(entry: unknown, where: string, files: { captured: string; failed: string }): Shot {
+  if (!isRecord(entry)) {
+    throw new Error(`${where} is not an object`);
+  }
+  const { status } = entry;
   switch (status) {
     case 'pending':
-      return { name, title, status };
+      return { status };
     case 'captured':
-      if (entry.file !== capturedFile(name)) {
-        throw new Error(`${where}.file must be ${capturedFile(name)}`);
+      if (entry.file !== files.captured) {
+        throw new Error(`${where}.file must be ${files.captured}`);
       }
-      return { name, title, status, file: capturedFile(name) };
+      return { status, file: files.captured };
     case 'not-available': {
       const { reason } = entry;
       const badReason = typeof reason === 'string' ? textProblem(reason, LIMITS.reason) : 'is not a string';
       if (badReason || typeof reason !== 'string') {
         throw new Error(`${where}.reason ${badReason ?? ''}`);
       }
-      return { name, title, status, reason };
+      return { status, reason };
     }
     case 'failed': {
       const { error, file } = entry;
@@ -112,12 +153,12 @@ function parseResult(entry: unknown, where: string, names: Set<string>): Result 
         throw new Error(`${where}.error is not a string of at most ${String(LIMITS.error)} characters`);
       }
       if (file === undefined) {
-        return { name, title, status, error };
+        return { status, error };
       }
-      if (file !== failedFile(name)) {
-        throw new Error(`${where}.file must be ${failedFile(name)}`);
+      if (file !== files.failed) {
+        throw new Error(`${where}.file must be ${files.failed}`);
       }
-      return { name, title, status, error, file };
+      return { status, error, file };
     }
     default:
       throw new Error(`${where}.status is not pending, captured, not-available, or failed`);

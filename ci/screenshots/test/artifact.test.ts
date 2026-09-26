@@ -32,15 +32,15 @@ function bigPng(size: number): Buffer {
   return Buffer.concat([png.subarray(0, 8), Buffer.alloc(size - 8)]);
 }
 
-const captured = { results: [{ name: 'startup', title: 'Startup', status: 'captured', file: 'startup.png' }] };
+const captured = { results: [{ name: 'startup', title: 'Startup', mode: 'after', status: 'captured', file: 'startup.png' }] };
 
 test('returns the manifest and the PNGs it lists', async () => {
   const dir = await captureDir(
     {
       results: [
         ...captured.results,
-        { name: 'chat', title: 'Chat', status: 'failed', error: 'boom', file: 'chat.failed.png' },
-        { name: 'editor', title: 'Editor', status: 'not-available', reason: 'later' },
+        { name: 'chat', title: 'Chat', mode: 'after', status: 'failed', error: 'boom', file: 'chat.failed.png' },
+        { name: 'editor', title: 'Editor', mode: 'after', status: 'not-available', reason: 'later' },
       ],
     },
     { 'startup.png': png, 'chat.failed.png': png, 'stray.png': png },
@@ -70,28 +70,47 @@ test('rejects files that are missing, not PNGs, or symlinks', async () => {
   await assert.rejects(readCapture(linked), /not a regular file/);
 });
 
-test('rejects a capture whose files total more than 25 MB, even if each is under the per-file limit', async () => {
+test('rejects a capture whose files total more than 60 MB, even if each is under the per-file limit', async () => {
   const size = 9 * 1024 * 1024;
-  const manifest = {
-    results: [
-      { name: 'one', title: 'One', status: 'captured', file: 'one.png' },
-      { name: 'two', title: 'Two', status: 'captured', file: 'two.png' },
-      { name: 'three', title: 'Three', status: 'captured', file: 'three.png' },
-    ],
-  };
-  const dir = await captureDir(manifest, {
-    'one.png': bigPng(size),
-    'two.png': bigPng(size),
-    'three.png': bigPng(size),
-  });
+  const names = ['one', 'two', 'three', 'four', 'five', 'six', 'seven'];
+  const manifest = { results: names.map((name) => ({ name, title: 'T', mode: 'after', status: 'captured', file: `${name}.png` })) };
+  const dir = await captureDir(manifest, Object.fromEntries(names.map((name) => [`${name}.png`, bigPng(size)])));
 
-  await assert.rejects(readCapture(dir), /totals more than 26214400 bytes/);
+  await assert.rejects(readCapture(dir), /totals more than 62914560 bytes/);
+});
+
+const gif = Buffer.from('GIF89a and the rest');
+const webm = Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.from('rest of the video')]);
+
+test('returns the base shots of a before-after and the GIF and WebM of a video', async () => {
+  const dir = await captureDir(
+    {
+      results: [
+        { name: 'p', title: 'P', mode: 'before-after', status: 'captured', file: 'p.png', base: { status: 'failed', error: 'x', file: 'p.base.failed.png' } },
+        { name: 'v', title: 'V', mode: 'video', status: 'captured', file: 'v.gif', video: 'v.webm' },
+      ],
+    },
+    { 'p.png': png, 'p.base.failed.png': png, 'v.gif': gif, 'v.webm': webm },
+  );
+
+  assert.deepEqual((await readCapture(dir))?.files, ['p.png', 'p.base.failed.png', 'v.gif', 'v.webm']);
+});
+
+test('checks each file against the signature of its kind', async () => {
+  const video = { results: [{ name: 'v', title: 'V', mode: 'video', status: 'captured', file: 'v.gif', video: 'v.webm' }] };
+
+  await assert.rejects(readCapture(await captureDir(video, { 'v.gif': png, 'v.webm': webm })), /v\.gif is not a GIF/);
+  await assert.rejects(readCapture(await captureDir(video, { 'v.gif': gif, 'v.webm': gif })), /v\.webm is not a WEBM/);
+  await assert.rejects(
+    readCapture(await captureDir(video, { 'v.gif': gif, 'v.webm': Buffer.concat([webm, Buffer.alloc(25 * 1024 * 1024)]) })),
+    /v\.webm is larger than 26214400 bytes/,
+  );
 });
 
 test('rejects a manifest that is not JSON, not a file, or not valid', async () => {
   await assert.rejects(readCapture(await captureDir('{not json')), /not valid JSON/);
   await assert.rejects(
-    readCapture(await captureDir({ results: [{ name: '../x', title: 'X', status: 'pending' }] })),
+    readCapture(await captureDir({ results: [{ name: '../x', title: 'X', mode: 'after', status: 'pending' }] })),
     /name/,
   );
 

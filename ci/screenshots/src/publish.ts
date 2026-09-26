@@ -3,20 +3,24 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { missingArtifactError, readCapture, readLogTail, type Capture } from './artifact.ts';
 import { commitFiles } from './branch.ts';
-import { MARKER, renderComment, type FailedStep, type Images } from './comment.ts';
+import { textProblem } from './manifest.ts';
+import { staleReason } from './request.ts';
+import { renderSection, replaceSection, SectionError, type FailedStep, type Images } from './section.ts';
 
 const branch = 'ci-screenshots';
 const bot = { login: 'github-actions[bot]', email: '41898282+github-actions[bot]@users.noreply.github.com' };
 const steps = [
   { id: 'build', env: 'BUILD_OUTCOME' },
+  { id: 'base-build', env: 'BASE_BUILD_OUTCOME' },
   { id: 'capture', env: 'CAPTURE_OUTCOME' },
 ] as const;
+const maxProblemLength = 2_000;
 
-interface Comment {
-  id: number;
-  body?: string;
+interface Pull {
+  body: string | null;
+  labels: { name: string }[];
   html_url: string;
-  user: { login: string } | null;
+  head: { sha: string };
 }
 
 const { values, positionals } = parseArgs({
@@ -34,30 +38,46 @@ const apiUrl = process.env.GITHUB_API_URL ?? 'https://api.github.com';
 const repository = dryRun ? (process.env.GITHUB_REPOSITORY ?? 'owner/repo') : required('GITHUB_REPOSITORY');
 const prNumber = Number(dryRun ? (process.env.PR_NUMBER ?? '0') : required('PR_NUMBER'));
 const headSha = dryRun ? (process.env.HEAD_SHA ?? '0'.repeat(40)) : required('HEAD_SHA');
+const baseSha = process.env.BASE_SHA ?? '';
+const blockDigest = process.env.BLOCK_DIGEST ?? '';
 const token = dryRun ? '' : required('GH_TOKEN');
-if (!/^[0-9a-f]{40}$/.test(headSha) || !Number.isSafeInteger(prNumber) || prNumber < 0) {
-  throw new Error('HEAD_SHA must be a full commit SHA and PR_NUMBER a pull request number');
+if (!/^[0-9a-f]{40}$/.test(headSha) || !/^([0-9a-f]{40})?$/.test(baseSha) || !/^([0-9a-f]{64})?$/.test(blockDigest) || !Number.isSafeInteger(prNumber) || prNumber < 0) {
+  throw new Error('HEAD_SHA and BASE_SHA must be full commit SHAs, BLOCK_DIGEST a SHA-256, and PR_NUMBER a pull request number');
 }
+// The request job ran the pull request's code, so the problem it reports is as untrusted as the artifact.
+const rawProblem = process.env.REQUEST_PROBLEM ?? '';
+const requestProblem =
+  rawProblem === ''
+    ? undefined
+    : textProblem(rawProblem, maxProblemLength)
+      ? 'the request job reported a problem that is not plain text; see its log.'
+      : rawProblem;
 const runUrl = `${serverUrl}/${repository}/actions/runs/${process.env.GITHUB_RUN_ID ?? '0'}`;
 const prefix = `pr-${String(prNumber)}/${headSha.slice(0, 7)}`;
 
 let capture: Capture | undefined;
 let artifactError: string | undefined;
-try {
-  capture = await readCapture(dir);
-} catch (error) {
-  artifactError = error instanceof Error ? error.message : String(error);
-  console.error(`rejected the capture results in ${dir}: ${artifactError}`);
-}
-artifactError ??= missingArtifactError(capture, process.env.CAPTURE_OUTCOME);
-const failedSteps = await readFailedSteps(values.logs);
-
 let images: Images | undefined;
 let pushError: string | undefined;
+const failedSteps = requestProblem === undefined ? await readFailedSteps(values.logs) : [];
+if (requestProblem === undefined) {
+  try {
+    capture = await readCapture(dir);
+  } catch (error) {
+    artifactError = error instanceof Error ? error.message : String(error);
+    console.error(`rejected the capture results in ${dir}: ${artifactError}`);
+  }
+  artifactError ??= missingArtifactError(capture, process.env.CAPTURE_OUTCOME);
+}
+
 if (capture && capture.files.length > 0) {
   const files = capture.files.map((file) => ({ path: `${prefix}/${file}`, source: join(dir, file) }));
   if (dryRun) {
-    images = { base: `https://raw.githubusercontent.com/${repository}/<sha>/${prefix}`, tree: '<tree>' };
+    images = {
+      raw: `https://raw.githubusercontent.com/${repository}/<sha>/${prefix}`,
+      blob: `${serverUrl}/${repository}/blob/<sha>/${prefix}`,
+      tree: '<tree>',
+    };
   } else {
     try {
       const sha = await commitFiles({
@@ -68,7 +88,8 @@ if (capture && capture.files.length > 0) {
         env: gitEnv(),
       });
       images = {
-        base: `https://raw.githubusercontent.com/${repository}/${sha}/${prefix}`,
+        raw: `https://raw.githubusercontent.com/${repository}/${sha}/${prefix}`,
+        blob: `${serverUrl}/${repository}/blob/${sha}/${prefix}`,
         tree: `${serverUrl}/${repository}/tree/${sha}/${prefix}`,
       };
     } catch (error) {
@@ -78,25 +99,27 @@ if (capture && capture.files.length > 0) {
   }
 }
 
-const body = renderComment({
+const section = renderSection({
   serverUrl,
   repository,
   prNumber,
   headSha,
+  ...(baseSha === '' ? {} : { baseSha }),
   runUrl,
   manifest: capture?.manifest,
   images,
   failedSteps,
+  ...(requestProblem === undefined ? {} : { requestProblem }),
   ...(pushError === undefined ? {} : { pushError }),
   ...(artifactError === undefined ? {} : { artifactError }),
 });
 
 if (dryRun) {
-  process.stdout.write(body);
+  process.stdout.write(`${section}\n`);
 } else {
-  await upsertComment(body);
+  await writeSection(section);
 }
-if (pushError !== undefined || artifactError !== undefined) {
+if (requestProblem !== undefined || pushError !== undefined || artifactError !== undefined) {
   process.exitCode = 1;
 }
 
@@ -112,31 +135,40 @@ async function readFailedSteps(logs: string | undefined): Promise<FailedStep[]> 
   return failed;
 }
 
-async function upsertComment(body: string): Promise<void> {
-  const pull = await github<{ head: { sha: string } }>('GET', `/repos/${repository}/pulls/${String(prNumber)}`);
+/**
+ * Replaces the section in the pull request's body. The body is read again just before the write, so
+ * an edit made while the scenes were captured is kept, and nothing is ever posted as a comment.
+ */
+async function writeSection(content: string): Promise<void> {
+  const pull = await github<Pull>('GET', `/repos/${repository}/pulls/${String(prNumber)}`);
   if (pull.head.sha !== headSha) {
-    console.log(`PR head is now ${pull.head.sha}, not ${headSha}; leaving the comment to that commit's run`);
+    console.log(`PR head is now ${pull.head.sha}, not ${headSha}; leaving the section to that commit's run`);
     return;
   }
-
-  let existing: Comment | undefined;
-  for (let page = 1; !existing; page += 1) {
-    const comments = await github<Comment[]>(
-      'GET',
-      `/repos/${repository}/issues/${String(prNumber)}/comments?per_page=100&page=${String(page)}`,
-    );
-    existing = comments.find((comment) => comment.user?.login === bot.login && comment.body?.includes(MARKER));
-    if (comments.length < 100) {
-      break;
-    }
+  const stale = blockDigest === '' ? undefined : staleReason(pull.labels.map((label) => label.name), pull.body, blockDigest);
+  if (stale !== undefined) {
+    console.log(`leaving the section as it is: ${stale}`);
+    return;
   }
-
-  const comment = existing
-    ? await github<Comment>('PATCH', `/repos/${repository}/issues/comments/${String(existing.id)}`, { body })
-    : await github<Comment>('POST', `/repos/${repository}/issues/${String(prNumber)}/comments`, { body });
-  console.log(`${existing ? 'updated' : 'created'} ${comment.html_url}`);
+  let body: string;
+  try {
+    body = replaceSection(pull.body, content);
+  } catch (error) {
+    if (!(error instanceof SectionError)) {
+      throw error;
+    }
+    console.log(`::error title=Screenshots section not written::${error.message}`);
+    process.exitCode = 1;
+    return;
+  }
+  if (body === pull.body) {
+    console.log('the section is already up to date');
+    return;
+  }
+  await github<Pull>('PATCH', `/repos/${repository}/pulls/${String(prNumber)}`, { body });
+  console.log(`wrote the Screenshots section of ${pull.html_url}`);
   if (process.env.GITHUB_STEP_SUMMARY) {
-    await appendFile(process.env.GITHUB_STEP_SUMMARY, `Screenshots comment: ${comment.html_url}\n`);
+    await appendFile(process.env.GITHUB_STEP_SUMMARY, `Screenshots section: ${pull.html_url}\n`);
   }
 }
 
