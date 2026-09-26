@@ -1,5 +1,5 @@
 import { MODES, nameProblem, type Mode } from './manifest.ts';
-import { withoutSection } from './section.ts';
+import { linesOutsideFences, withoutSection } from './section.ts';
 
 /** The label that turns screenshots.yml on for a pull request (0018). */
 export const LABEL = 'screenshots';
@@ -20,12 +20,22 @@ export interface Request {
  */
 export class RequestError extends Error {}
 
-const blockPattern = /<!--[ \t]*wisp-media[ \t]*\r?\n([\s\S]*?)-->/;
+const openPattern = /^[ \t]*<!--[ \t]*wisp-media[ \t]*$/;
 const linePattern = /^([a-z-]+)[ \t]*:[ \t]*(.*)$/;
 
-/** The text of the first `<!-- wisp-media` block outside the section the workflow writes, if any. */
+/**
+ * The text of the first `<!-- wisp-media` block, if any. The opening must be a line of its own, outside
+ * fenced code and outside the section the workflow writes, so quoting a block does not request it.
+ */
 export function requestBlock(body: string | null | undefined): string | undefined {
-  return blockPattern.exec(withoutSection(body ?? ''))?.[1];
+  const text = withoutSection(body ?? '');
+  const open = linesOutsideFences(text).find((line) => openPattern.test(line.text));
+  if (!open) {
+    return undefined;
+  }
+  const rest = text.slice(open.end).replace(/^\r?\n/, '');
+  const close = rest.indexOf('-->');
+  return close === -1 ? undefined : rest.slice(0, close);
 }
 
 export function parseBody(body: string | null | undefined): Request {

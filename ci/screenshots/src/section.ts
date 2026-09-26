@@ -86,24 +86,65 @@ export function renderSection(input: SectionInput): string {
  */
 export function replaceSection(body: string | null | undefined, section: string): string {
   const text = body ?? '';
-  const start = text.indexOf(START);
-  if (start === -1) {
+  const span = sectionSpan(text);
+  if (!span) {
     const kept = text.trimEnd();
     return kept === '' ? `${section}\n` : `${kept}\n\n${section}\n`;
   }
-  const end = text.indexOf(END, start);
-  const after = end === -1 ? '' : text.slice(end + END.length);
-  return `${text.slice(0, start)}${section}${after === '' ? '\n' : after}`;
+  const after = text.slice(span.end);
+  return `${text.slice(0, span.start)}${section}${after === '' ? '\n' : after}`;
 }
 
 /** The body with the section the workflow writes taken out, so nothing inside it counts as a request. */
 export function withoutSection(body: string): string {
-  const start = body.indexOf(START);
-  if (start === -1) {
-    return body;
+  const span = sectionSpan(body);
+  return span ? `${body.slice(0, span.start)}${body.slice(span.end)}` : body;
+}
+
+export interface Line {
+  /** Offset of the line's first character. */
+  start: number;
+  /** Offset just past the line's text, before its line ending. */
+  end: number;
+  text: string;
+}
+
+/**
+ * The body's lines that are outside fenced code blocks. A marker or a request block counts only as a
+ * line of its own there, so a description can quote either in inline code or in a fence.
+ */
+export function linesOutsideFences(body: string): Line[] {
+  const lines: Line[] = [];
+  let fence: { char: string; length: number } | undefined;
+  let start = 0;
+  while (start <= body.length) {
+    const newline = body.indexOf('\n', start);
+    const next = newline === -1 ? body.length + 1 : newline + 1;
+    const end = newline === -1 ? body.length : newline > start && body[newline - 1] === '\r' ? newline - 1 : newline;
+    const text = body.slice(start, end);
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(text)?.[1];
+    if (fence) {
+      if (marker?.startsWith(fence.char) && marker.length >= fence.length && text.trim() === marker) {
+        fence = undefined;
+      }
+    } else if (marker) {
+      fence = { char: marker.charAt(0), length: marker.length };
+    } else {
+      lines.push({ start, end, text });
+    }
+    start = next;
   }
-  const end = body.indexOf(END, start);
-  return end === -1 ? body.slice(0, start) : `${body.slice(0, start)}${body.slice(end + END.length)}`;
+  return lines;
+}
+
+function sectionSpan(body: string): { start: number; end: number } | undefined {
+  const lines = linesOutsideFences(body);
+  const startLine = lines.find((line) => line.text.trim() === START);
+  if (!startLine) {
+    return undefined;
+  }
+  const endLine = lines.find((line) => line.start > startLine.start && line.text.trim() === END);
+  return { start: startLine.start, end: endLine ? endLine.end : body.length };
 }
 
 function commitLink(input: SectionInput, sha: string): string {

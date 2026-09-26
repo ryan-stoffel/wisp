@@ -151,3 +151,12 @@ test('reports a bad request in the section, but a closed pull request only in th
   const closed = decide(synchronize, { ...pull, state: 'closed' }, repository, known);
   assert.equal(closed.kind === 'problem' && closed.publish, false);
 });
+
+test('a block quoted in inline code or a fence is not a request', () => {
+  const quoted = 'Write `<!-- wisp-media ... -->` like this:\n\n```\n<!-- wisp-media\nafter: startup\n-->\n```\n';
+
+  assert.equal(requestBlock(quoted), undefined);
+  assert.equal(requestBlock(`${quoted}\n<!-- wisp-media\r\nvideo: agents-window\r\n-->`), 'video: agents-window\r\n');
+  assert.equal(requestBlock('  <!-- wisp-media  \nafter: startup -->'), 'after: startup ');
+  assert.equal(requestBlock('<!-- wisp-media\nafter: startup'), undefined);
+});

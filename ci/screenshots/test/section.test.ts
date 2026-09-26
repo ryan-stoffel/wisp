@@ -210,8 +210,9 @@ test('replaceSection treats a start marker with no end as a section cut short', 
 });
 
 test('withoutSection drops the section so nothing in it reads as part of the body', () => {
-  assert.equal(withoutSection(`a${START}\nx\n${END}b`), 'ab');
-  assert.equal(withoutSection(`a${START}\nx`), 'a');
+  assert.equal(withoutSection(`a\n${START}\nx\n${END}\nb`), 'a\n\nb');
+  assert.equal(withoutSection(`a\n${START}\nx`), 'a\n');
+  assert.equal(withoutSection(`a${START}\nx\n${END}b`), `a${START}\nx\n${END}b`);
   assert.equal(withoutSection('plain'), 'plain');
 });
 
@@ -219,4 +220,22 @@ test('code spans and fences survive backticks in the text', () => {
   assert.equal(code('a `b` c'), '``a `b` c``');
   assert.equal(code('`x`'), '`` `x` ``');
   assert.equal(fence('```\nx\n```'), '````text\n```\nx\n```\n````');
+});
+
+test('markers count only as lines of their own outside code, so a description can mention them', () => {
+  const section = `${START}\nnew\n${END}`;
+  const prose = `It replaces the text between \`${START}\` and \`${END}\`.\n\n\`\`\`md\n${START}\nexample\n${END}\n\`\`\`\n`;
+
+  assert.equal(replaceSection(prose, section), `${prose.trimEnd()}\n\n${section}\n`);
+  const written = replaceSection(prose, section);
+  assert.equal(replaceSection(written, `${START}\nnewer\n${END}`), written.replace('\nnew\n', '\nnewer\n'));
+  assert.equal(withoutSection(prose), prose);
+});
+
+test('the fences inside a written section do not hide its end marker', () => {
+  const section = render({ manifest: { error: 'first line\nsecond line', results: [] } });
+  const body = replaceSection('Intro', section);
+
+  assert.ok(section.includes('```text'));
+  assert.equal(replaceSection(body, `${START}\nnew\n${END}`), `Intro\n\n${START}\nnew\n${END}\n`);
 });
