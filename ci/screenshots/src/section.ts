@@ -80,16 +80,27 @@ export function renderSection(input: SectionInput): string {
   return `${START}\n${body}\n${END}`;
 }
 
+/** A body the section cannot be written into without losing or duplicating the author's text. */
+export class SectionError extends Error {}
+
 /**
  * Replaces the text from START through END with `section`, or appends it when the body has no START.
- * A START with no END is a section someone cut short, so everything after it is replaced.
+ * Refuses a START with no END, which would take the author's text after it, and a body that ends in an
+ * open code fence, where an appended section would never be found again.
  */
 export function replaceSection(body: string | null | undefined, section: string): string {
   const text = body ?? '';
-  const span = sectionSpan(text);
+  const { lines, unclosed } = scan(text);
+  const span = sectionSpan(lines);
   if (!span) {
+    if (unclosed) {
+      throw new SectionError('the description ends inside a code fence that is never closed; close it so the Screenshots section can go after it');
+    }
     const kept = text.trimEnd();
     return kept === '' ? `${section}\n` : `${kept}\n\n${section}\n`;
+  }
+  if (span.end === undefined) {
+    throw new SectionError(`the description has ${START} but no ${END} after it; put the end marker back, or delete the start marker to get a new section`);
   }
   const after = text.slice(span.end);
   return `${text.slice(0, span.start)}${section}${after === '' ? '\n' : after}`;
@@ -97,8 +108,8 @@ export function replaceSection(body: string | null | undefined, section: string)
 
 /** The body with the section the workflow writes taken out, so nothing inside it counts as a request. */
 export function withoutSection(body: string): string {
-  const span = sectionSpan(body);
-  return span ? `${body.slice(0, span.start)}${body.slice(span.end)}` : body;
+  const span = sectionSpan(scan(body).lines);
+  return span ? `${body.slice(0, span.start)}${body.slice(span.end ?? body.length)}` : body;
 }
 
 export interface Line {
@@ -114,6 +125,10 @@ export interface Line {
  * line of its own there, so a description can quote either in inline code or in a fence.
  */
 export function linesOutsideFences(body: string): Line[] {
+  return scan(body).lines;
+}
+
+function scan(body: string): { lines: Line[]; unclosed: boolean } {
   const lines: Line[] = [];
   let fence: { char: string; length: number } | undefined;
   let start = 0;
@@ -134,17 +149,16 @@ export function linesOutsideFences(body: string): Line[] {
     }
     start = next;
   }
-  return lines;
+  return { lines, unclosed: fence !== undefined };
 }
 
-function sectionSpan(body: string): { start: number; end: number } | undefined {
-  const lines = linesOutsideFences(body);
+function sectionSpan(lines: readonly Line[]): { start: number; end: number | undefined } | undefined {
   const startLine = lines.find((line) => line.text.trim() === START);
   if (!startLine) {
     return undefined;
   }
   const endLine = lines.find((line) => line.start > startLine.start && line.text.trim() === END);
-  return { start: startLine.start, end: endLine ? endLine.end : body.length };
+  return { start: startLine.start, end: endLine?.end };
 }
 
 function commitLink(input: SectionInput, sha: string): string {

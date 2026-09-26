@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { textProblem } from '../src/manifest.ts';
 import {
+  blockDigest,
   checkScenes,
   decide,
   formatRequest,
@@ -9,6 +10,7 @@ import {
   parseRequest,
   requestBlock,
   RequestError,
+  staleReason,
   type Pull,
   type PullEvent,
 } from '../src/request.ts';
@@ -159,4 +161,17 @@ test('a block quoted in inline code or a fence is not a request', () => {
   assert.equal(requestBlock(`${quoted}\n<!-- wisp-media\r\nvideo: agents-window\r\n-->`), 'video: agents-window\r\n');
   assert.equal(requestBlock('  <!-- wisp-media  \nafter: startup -->'), 'after: startup ');
   assert.equal(requestBlock('<!-- wisp-media\nafter: startup'), undefined);
+});
+
+test('a run writes its section only while the label is on and the block is the one it read', () => {
+  const body = `Intro\n\n${block}`;
+  const digest = blockDigest(body);
+
+  assert.match(digest, /^[0-9a-f]{64}$/);
+  assert.equal(staleReason(['screenshots'], body, digest), undefined);
+  assert.equal(staleReason(['screenshots'], `New intro, same block\n\n${block}\n\n${START}\nold\n${END}`, digest), undefined);
+  assert.match(staleReason(['type:feature'], body, digest) ?? '', /no longer has the screenshots label/);
+  assert.match(staleReason(['screenshots'], body.replace('after: agents-window', 'after: startup'), digest) ?? '', /block changed/);
+  assert.match(staleReason(['screenshots'], 'Intro', digest) ?? '', /block changed/);
+  assert.equal(staleReason(['screenshots'], 'no block', blockDigest(null)), undefined);
 });

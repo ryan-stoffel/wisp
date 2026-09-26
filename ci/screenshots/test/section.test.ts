@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Manifest } from '../src/manifest.ts';
-import { code, END, fence, renderSection, replaceSection, START, withoutSection, type SectionInput } from '../src/section.ts';
+import { code, END, fence, renderSection, replaceSection, SectionError, START, withoutSection, type SectionInput } from '../src/section.ts';
 
 const headSha = 'abcdef1234567890abcdef1234567890abcdef12';
 const baseSha = '1234567890abcdef1234567890abcdef12345678';
@@ -203,11 +203,19 @@ test('replaceSection replaces only the section, wherever it is', () => {
   assert.equal(replaceSection(replaceSection(body, section), section), replaceSection(body, section));
 });
 
-test('replaceSection treats a start marker with no end as a section cut short', () => {
+test('replaceSection refuses a start marker with no end, rather than take the text after it', () => {
   const section = `${START}\nnew\n${END}`;
 
-  assert.equal(replaceSection(`Intro\n\n${START}\nold and cut`, section), `Intro\n\n${section}\n`);
+  assert.throws(() => replaceSection(`Intro\n\n${START}\nold\n\n## Notes the author wrote`, section), SectionError);
+  assert.throws(() => replaceSection(`Intro\n\n${START}\nold`, section), /no <!-- wisp-media:end --> after it/);
   assert.equal(replaceSection(`${END}\nIntro`, section), `${END}\nIntro\n\n${section}\n`);
+});
+
+test('replaceSection refuses to append after a code fence that is never closed', () => {
+  const section = `${START}\nnew\n${END}`;
+
+  assert.throws(() => replaceSection('Intro\n\n```ts\nconst x = 1;\n', section), /never closed/);
+  assert.equal(replaceSection('Intro\n\n```ts\nconst x = 1;\n```\n', section), `Intro\n\n\`\`\`ts\nconst x = 1;\n\`\`\`\n\n${section}\n`);
 });
 
 test('withoutSection drops the section so nothing in it reads as part of the body', () => {

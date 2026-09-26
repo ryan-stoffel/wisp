@@ -10,10 +10,11 @@ export interface Capture {
 const maxManifestBytes = 1024 * 1024;
 const megabyte = 1024 * 1024;
 /** What each kind of file must start with, and how large it may be. */
+export const MAX_BYTES = { png: 10 * megabyte, gif: 10 * megabyte, webm: 25 * megabyte } as const;
 const kinds = {
-  png: { signatures: [Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])], maxBytes: 10 * megabyte },
-  gif: { signatures: [Buffer.from('GIF87a'), Buffer.from('GIF89a')], maxBytes: 10 * megabyte },
-  webm: { signatures: [Buffer.from([0x1a, 0x45, 0xdf, 0xa3])], maxBytes: 25 * megabyte },
+  png: { signatures: [Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])], maxBytes: MAX_BYTES.png },
+  gif: { signatures: [Buffer.from('GIF87a'), Buffer.from('GIF89a')], maxBytes: MAX_BYTES.gif },
+  webm: { signatures: [Buffer.from([0x1a, 0x45, 0xdf, 0xa3])], maxBytes: MAX_BYTES.webm },
 } as const;
 const maxTotalBytes = 60 * megabyte;
 const logTailBytes = 64 * 1024;

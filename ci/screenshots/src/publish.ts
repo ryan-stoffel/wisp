@@ -4,7 +4,8 @@ import { parseArgs } from 'node:util';
 import { missingArtifactError, readCapture, readLogTail, type Capture } from './artifact.ts';
 import { commitFiles } from './branch.ts';
 import { textProblem } from './manifest.ts';
-import { renderSection, replaceSection, type FailedStep, type Images } from './section.ts';
+import { staleReason } from './request.ts';
+import { renderSection, replaceSection, SectionError, type FailedStep, type Images } from './section.ts';
 
 const branch = 'ci-screenshots';
 const bot = { login: 'github-actions[bot]', email: '41898282+github-actions[bot]@users.noreply.github.com' };
@@ -17,6 +18,7 @@ const maxProblemLength = 2_000;
 
 interface Pull {
   body: string | null;
+  labels: { name: string }[];
   html_url: string;
   head: { sha: string };
 }
@@ -37,9 +39,10 @@ const repository = dryRun ? (process.env.GITHUB_REPOSITORY ?? 'owner/repo') : re
 const prNumber = Number(dryRun ? (process.env.PR_NUMBER ?? '0') : required('PR_NUMBER'));
 const headSha = dryRun ? (process.env.HEAD_SHA ?? '0'.repeat(40)) : required('HEAD_SHA');
 const baseSha = process.env.BASE_SHA ?? '';
+const blockDigest = process.env.BLOCK_DIGEST ?? '';
 const token = dryRun ? '' : required('GH_TOKEN');
-if (!/^[0-9a-f]{40}$/.test(headSha) || !/^([0-9a-f]{40})?$/.test(baseSha) || !Number.isSafeInteger(prNumber) || prNumber < 0) {
-  throw new Error('HEAD_SHA and BASE_SHA must be full commit SHAs and PR_NUMBER a pull request number');
+if (!/^[0-9a-f]{40}$/.test(headSha) || !/^([0-9a-f]{40})?$/.test(baseSha) || !/^([0-9a-f]{64})?$/.test(blockDigest) || !Number.isSafeInteger(prNumber) || prNumber < 0) {
+  throw new Error('HEAD_SHA and BASE_SHA must be full commit SHAs, BLOCK_DIGEST a SHA-256, and PR_NUMBER a pull request number');
 }
 // The request job ran the pull request's code, so the problem it reports is as untrusted as the artifact.
 const rawProblem = process.env.REQUEST_PROBLEM ?? '';
@@ -142,7 +145,22 @@ async function writeSection(content: string): Promise<void> {
     console.log(`PR head is now ${pull.head.sha}, not ${headSha}; leaving the section to that commit's run`);
     return;
   }
-  const body = replaceSection(pull.body, content);
+  const stale = blockDigest === '' ? undefined : staleReason(pull.labels.map((label) => label.name), pull.body, blockDigest);
+  if (stale !== undefined) {
+    console.log(`leaving the section as it is: ${stale}`);
+    return;
+  }
+  let body: string;
+  try {
+    body = replaceSection(pull.body, content);
+  } catch (error) {
+    if (!(error instanceof SectionError)) {
+      throw error;
+    }
+    console.log(`::error title=Screenshots section not written::${error.message}`);
+    process.exitCode = 1;
+    return;
+  }
   if (body === pull.body) {
     console.log('the section is already up to date');
     return;

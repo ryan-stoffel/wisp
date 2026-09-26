@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { MODES, nameProblem, type Mode } from './manifest.ts';
 import { linesOutsideFences, withoutSection } from './section.ts';
 
@@ -36,6 +37,28 @@ export function requestBlock(body: string | null | undefined): string | undefine
   const rest = text.slice(open.end).replace(/^\r?\n/, '');
   const close = rest.indexOf('-->');
   return close === -1 ? undefined : rest.slice(0, close);
+}
+
+/** A fingerprint of the body's request block, so publish can tell whether the block changed since the request job read it. */
+export function blockDigest(body: string | null | undefined): string {
+  return createHash('sha256')
+    .update(requestBlock(body) ?? '')
+    .digest('hex');
+}
+
+/**
+ * Why a run must not write its section after all: the label is gone, or the block changed while the
+ * run was capturing. Capture is not cancelled then, so without this an older run could overwrite the
+ * newer run's section, a problem report included.
+ */
+export function staleReason(labels: readonly string[], body: string | null | undefined, digest: string): string | undefined {
+  if (!labels.includes(LABEL)) {
+    return `the pull request no longer has the ${LABEL} label`;
+  }
+  if (blockDigest(body) !== digest) {
+    return 'the wisp-media block changed since this run read it, so the run for the new block writes the section';
+  }
+  return undefined;
 }
 
 export function parseBody(body: string | null | undefined): Request {

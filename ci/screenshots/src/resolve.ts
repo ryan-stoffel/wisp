@@ -1,5 +1,5 @@
 import { appendFile, readFile } from 'node:fs/promises';
-import { decide, formatRequest, wants, type Pull, type PullEvent } from './request.ts';
+import { blockDigest, decide, formatRequest, wants, type Pull, type PullEvent } from './request.ts';
 import { scenarios } from './scenarios.ts';
 
 // screenshots.yml's request job: decides from a pull request (the REST API's JSON, read in the step
@@ -40,7 +40,7 @@ const decision = decide(
   scenarios.map((scenario) => scenario.name),
 );
 
-const outputs = { run: 'false', publish: 'false', problem: '', request: '', 'base-sha': '' };
+const outputs = { run: 'false', publish: 'false', problem: '', request: '', 'base-sha': '', 'block-digest': blockDigest(api.body) };
 switch (decision.kind) {
   case 'skip':
     console.log(`::notice title=Screenshots skipped::${decision.reason}`);

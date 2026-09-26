@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { parseArgs, promisify } from 'node:util';
 import type { Video } from 'playwright-core';
+import { MAX_BYTES } from './artifact.ts';
 import {
   appLaunchOptions,
   isNotAvailable,
@@ -40,7 +41,7 @@ const failureShotTimeoutMs = 10_000;
 const videoSaveTimeoutMs = 60_000;
 /** How long a video keeps showing the scene's last state before the app quits. */
 const videoHoldMs = 2_000;
-const maxGifBytes = 10 * 1024 * 1024;
+const maxGifBytes = MAX_BYTES.gif;
 /** GIF settings to try in order until the preview fits under maxGifBytes. */
 const gifAttempts = [
   { fps: 10, width: 800 },
@@ -229,9 +230,16 @@ async function record(scenario: Scenario, options: LaunchOptions): Promise<Shot 
       }
       const webm = join(outDir, videoFile(name));
       await withTimeout(video.saveAs(webm), videoSaveTimeoutMs);
+      // publish rejects the whole artifact over one oversized file, so an oversized video fails only its scene.
+      const { size } = await stat(webm);
+      if (size > MAX_BYTES.webm) {
+        await rm(webm, { force: true });
+        throw new Error(`the video is ${String(size)} bytes, more than ${String(MAX_BYTES.webm)}; shorten the scene`);
+      }
       await gif(webm, join(outDir, capturedFile(name, 'video')));
       return { status: 'captured', file: capturedFile(name, 'video'), video: videoFile(name) };
     } catch (error) {
+      await rm(join(outDir, videoFile(name)), { force: true });
       await writeFile(join(outDir, failedFile(name)), outcome.png);
       return { status: 'failed', error: `the scene ran, but its video could not be saved: ${messageOf(error)}`, file: failedFile(name) };
     }
