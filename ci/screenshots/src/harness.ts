@@ -37,6 +37,8 @@ export type LaunchOptions = NonNullable<Parameters<typeof _electron.launch>[0]>;
 
 export interface Session extends ScenarioContext {
   close(): Promise<void>;
+  /** wispd's data folder for this run (`WISPD_DATA_DIR`, daemon/src/paths.rs), so a caller can find its `wispd.lock` pid or drive it directly. */
+  readonly wispdDataDir: string;
 }
 
 export const TIMEOUT_MS = 60_000;
@@ -134,6 +136,7 @@ export async function launch(options: LaunchOptions, scenario: Pick<Scenario, 'a
       app: started,
       window,
       dir: files,
+      wispdDataDir,
       close,
       relaunch: async () => {
         await quit();
@@ -237,18 +240,24 @@ async function fitWindow(app: ElectronApplication, window: Page): Promise<void> 
   }
 }
 
+/** The pid in a data folder's `wispd.lock` (daemon/src/paths.rs), or `undefined` if there is none to read. */
+export async function readWispdPid(dataDir: string): Promise<number | undefined> {
+  let pid: number;
+  try {
+    pid = Number.parseInt((await readFile(join(dataDir, 'wispd.lock'), 'utf8')).trim(), 10);
+  } catch {
+    return undefined;
+  }
+  return Number.isSafeInteger(pid) && pid > 1 ? pid : undefined;
+}
+
 /**
  * Stops the `wispd serve` that `wispd attach` started for this run. It outlives the app by design
  * (0007: a disconnect never stops agents), and its lock file holds its pid.
  */
 async function stopWispd(dataDir: string): Promise<void> {
-  let pid: number;
-  try {
-    pid = Number.parseInt((await readFile(join(dataDir, 'wispd.lock'), 'utf8')).trim(), 10);
-  } catch {
-    return;
-  }
-  if (!Number.isSafeInteger(pid) || pid <= 1) {
+  const pid = await readWispdPid(dataDir);
+  if (pid === undefined) {
     return;
   }
   try {

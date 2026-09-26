@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use rusqlite::Connection;
 use uuid::Uuid;
-use wisp_store::{AccountFields, ProjectFields, Store, StoreError, UsageDelta, WorktreeFields};
+use wisp_store::{
+    AccountFields, ProjectFields, Store, StoreError, StoredEvent, UsageDelta, WorktreeFields,
+};
 
 fn temp_db_path() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().expect("create temp dir");
@@ -439,9 +441,9 @@ fn a_version_1_database_migrates_and_keeps_its_projects() {
         })
         .expect("read schema version");
     assert_eq!(
-        version, 7,
+        version, 8,
         "migrations 3 (accounts, #117), 4 (usage, #120), 5 (worktrees, #154), 6 (role \
-         defaults, #119), and 7 (runs and events, #156) also apply"
+         defaults, #119), 7 (runs and events, #156), and 8 (accepted runs, #157) also apply"
     );
     let account_columns: Vec<String> = conn
         .prepare("SELECT name FROM pragma_table_info('accounts')")
@@ -530,9 +532,9 @@ fn a_version_3_database_from_develop_migrates_to_usage_tables_and_keeps_its_acco
         })
         .expect("read schema version");
     assert_eq!(
-        version, 7,
-        "migrations 5 (worktrees, #154), 6 (role defaults, #119), and 7 (runs and events, \
-         #156) also apply"
+        version, 8,
+        "migrations 5 (worktrees, #154), 6 (role defaults, #119), 7 (runs and events, #156), \
+         and 8 (accepted runs, #157) also apply"
     );
 }
 
@@ -737,4 +739,46 @@ fn worktrees_list_oldest_first_and_delete_removes_them_idempotently() {
     );
     assert_eq!(store.get_worktree(first_id).expect("get"), None);
     assert_eq!(store.list_worktrees().expect("list").len(), 1);
+}
+
+fn stored_event(seq: u64, run_id: Option<Uuid>) -> StoredEvent {
+    StoredEvent {
+        seq,
+        time: "2026-09-25T12:00:00Z".parse().unwrap(),
+        project_id: None,
+        run_id,
+        kind: if run_id.is_some() {
+            "agent.output".to_string()
+        } else {
+            "context.changed".to_string()
+        },
+        payload: "{}".to_string(),
+    }
+}
+
+#[test]
+fn pruning_host_events_keeps_the_newest_and_leaves_run_events_alone() {
+    let (_dir, path) = temp_db_path();
+    let store = Store::open(&path).expect("open");
+    let run = Uuid::now_v7();
+    // Interleave host events (no run_id) with run events, so pruning has to pick them out by
+    // `run_id IS NULL` rather than by a contiguous range of `seq`.
+    for seq in 1..=6 {
+        let run_id = if seq % 2 == 0 { Some(run) } else { None };
+        store.append_event(&stored_event(seq, run_id)).unwrap();
+    }
+
+    let deleted = store.prune_host_events(1).expect("prune");
+    assert_eq!(deleted, 2, "keeps only the newest of the 3 host events");
+
+    let remaining = store.latest_events(usize::MAX, usize::MAX).expect("latest");
+    let seqs: Vec<u64> = remaining.iter().map(|event| event.seq).collect();
+    assert_eq!(
+        seqs,
+        [2, 4, 5, 6],
+        "the run's events (2, 4, 6) all survive; only the newest host event (5) does"
+    );
+
+    let again = store.prune_host_events(1).expect("prune again");
+    assert_eq!(again, 0, "already within the retention");
 }

@@ -92,6 +92,8 @@ export function agentState(run: Pick<AgentRun, 'status' | 'diff'>, step?: string
 			return { status: SessionStatus.Completed, mark: 'square', label: localize('wispAgent.stopped', "Stopped"), running: false };
 		case 'interrupted':
 			return { status: SessionStatus.Completed, mark: 'square', label: localize('wispAgent.interrupted', "Interrupted"), running: false };
+		case 'accepted':
+			return { status: SessionStatus.Completed, mark: 'done', label: localize('wispAgent.accepted', "Done"), running: false };
 		default:
 			return { status: SessionStatus.Completed, mark: 'square', label: String(run.status), running: false };
 	}

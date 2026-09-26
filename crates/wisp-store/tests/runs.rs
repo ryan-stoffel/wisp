@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 use uuid::Uuid;
-use wisp_store::{RunFields, RunState, Store, StoreError, StoredEvent, WorktreeFields};
+use wisp_store::{RunAccept, RunFields, RunState, Store, StoreError, StoredEvent, WorktreeFields};
 
 fn open() -> (tempfile::TempDir, Store) {
     let dir = tempfile::tempdir().expect("create temp dir");
@@ -61,6 +61,7 @@ fn a_run_is_created_once_read_back_and_updated() {
         files_changed: Some(2),
         insertions: Some(10),
         deletions: Some(1),
+        accept: None,
     };
     let updated = store.update_run(id, &finished).unwrap();
     assert_eq!(updated.state, finished);
@@ -74,6 +75,43 @@ fn a_run_is_created_once_read_back_and_updated() {
         Err(StoreError::NotFound { id }) if id == missing
     ));
     assert_eq!(store.get_run(missing).unwrap(), None);
+}
+
+#[test]
+fn accepting_a_run_records_the_merge_and_drops_its_worktree_together() {
+    let (_dir, mut store) = open();
+    let (project, id) = (Uuid::now_v7(), Uuid::now_v7());
+    let worktree = WorktreeFields {
+        repo_path: "/src/app".to_owned(),
+        path: "/data/worktrees/app/run".to_owned(),
+        branch: "wisp/abcd1234".to_owned(),
+        base: "abc".to_owned(),
+        git_dir: "/src/app/.git/worktrees/run".to_owned(),
+    };
+    store
+        .create_run_with_worktree(id, &fields(project), &starting(), &worktree)
+        .unwrap();
+    let accepted = RunState {
+        status: "accepted".to_owned(),
+        commit_sha: Some("def456".to_owned()),
+        accept: Some(RunAccept {
+            id: Uuid::now_v7(),
+            commit: "def456".to_owned(),
+            into: "main".to_owned(),
+            how: "fastForward".to_owned(),
+        }),
+        ..starting()
+    };
+    let run = store.accept_run(id, &accepted).unwrap();
+    assert_eq!(run.state, accepted);
+    assert_eq!(store.get_run(id).unwrap().unwrap().state, accepted);
+    assert_eq!(store.get_worktree(id).unwrap(), None);
+
+    let missing = Uuid::now_v7();
+    assert!(matches!(
+        store.accept_run(missing, &accepted),
+        Err(StoreError::NotFound { id }) if id == missing
+    ));
 }
 
 #[test]
@@ -117,7 +155,7 @@ fn events_append_and_read_back_by_head_tail_and_run() {
     let (_dir, store) = open();
     store.relax_sync().unwrap();
     assert_eq!(store.event_head().unwrap(), 0);
-    assert!(store.latest_events(10).unwrap().is_empty());
+    assert!(store.latest_events(10, usize::MAX).unwrap().is_empty());
 
     let run = Uuid::now_v7();
     let events: Vec<StoredEvent> = (1..=5)
@@ -131,8 +169,24 @@ fn events_append_and_read_back_by_head_tail_and_run() {
         "a seq is used once"
     );
     assert_eq!(store.event_head().unwrap(), 5);
-    assert_eq!(store.latest_events(2).unwrap(), events[3..]);
-    assert_eq!(store.latest_events(100).unwrap(), events);
+    assert_eq!(store.latest_events(2, usize::MAX).unwrap(), events[3..]);
+    assert_eq!(store.latest_events(100, usize::MAX).unwrap(), events);
+
+    // The byte bound applies the same way: always at least one, and it stops before a row that
+    // would put it over budget rather than after.
+    let one = events[4].payload.len();
+    assert_eq!(
+        store.latest_events(100, one).unwrap(),
+        events[4..],
+        "the byte bound alone keeps just the newest event"
+    );
+    assert_eq!(
+        store
+            .latest_events(100, one + events[3].payload.len())
+            .unwrap(),
+        events[3..],
+        "raising it by exactly the next event's size admits that one too"
+    );
 
     let page = |after, limit, bytes| {
         let (events, more) = store.run_events(run, after, limit, bytes).unwrap();
@@ -269,7 +323,7 @@ fn a_version_6_database_gains_runs_events_and_worktree_git_dirs() {
         conn.execute_batch(
             "DROP TABLE runs; DROP TABLE log_meta; DROP TABLE events;
              ALTER TABLE worktrees DROP COLUMN git_dir;
-             DELETE FROM schema_version WHERE version = 7;",
+             DELETE FROM schema_version WHERE version >= 7;",
         )
         .unwrap();
     }
