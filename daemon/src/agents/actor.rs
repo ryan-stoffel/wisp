@@ -895,7 +895,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let daemon = Daemon::for_tests(dir.path(), 10_000, Duration::from_secs(90));
         let (row, worktree) = fake_row_and_worktree();
-        let mut actor = Actor::new(Arc::clone(&daemon), row, worktree, HashMap::new());
+        let mut actor = Actor::new(Arc::clone(&daemon), row, Some(worktree), HashMap::new());
 
         let (mut sink, events) = EventSink::channel(64, Vec::new());
         actor.live = Some(Live {
