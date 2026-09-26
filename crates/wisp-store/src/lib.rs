@@ -30,7 +30,7 @@ pub use defaults::RoleDefault;
 pub use error::StoreError;
 pub use events::StoredEvent;
 pub use project::{Project, ProjectFields};
-pub use runs::{Run, RunFields, RunState};
+pub use runs::{Run, RunAccept, RunFields, RunState};
 pub use usage::{LimitSnapshot, SessionModelUsage, UsageDelta, UsageSummary};
 pub use worktree::{Worktree, WorktreeFields};
 

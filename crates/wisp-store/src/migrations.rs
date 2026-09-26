@@ -162,6 +162,16 @@ const MIGRATIONS: &[Migration] = &[
         );
         CREATE INDEX events_run ON events (run_id, seq);",
     },
+    // Accepting a run (#157): `agent/accept`'s client-generated id, for its idempotency, and what
+    // the merge did to the project's repository (`merge_how` is `fastForward`, `merge`, or
+    // `upToDate`). All NULL until the run is accepted.
+    Migration {
+        version: 8,
+        sql: "ALTER TABLE runs ADD COLUMN accept_id TEXT;
+        ALTER TABLE runs ADD COLUMN merge_commit TEXT;
+        ALTER TABLE runs ADD COLUMN merge_into TEXT;
+        ALTER TABLE runs ADD COLUMN merge_how TEXT;",
+    },
 ];
 
 /// Bootstraps the `schema_version` table and applies any migration whose
