@@ -15,7 +15,6 @@ import {
   TIMEOUT_MS,
   launchConnectedForSsh,
   projectWorkspace,
-  queryProjectsOverSsh,
   readEnvFile,
   ready,
 } from '../harness.ts';
@@ -24,7 +23,6 @@ import {
   createRemoteProject,
   fillAddHostInput,
   openHostMenu,
-  projectIdFromSession,
   waitForHostNamed,
   waitForSingleProjectRow,
 } from '../wispUi.ts';
@@ -76,18 +74,12 @@ export const sshChecks = [
 
       // The remote (typed-path) flow, not the native dialog: wispNewProject.ts only offers a
       // folder picker for "this Mac" (isLocalHost), and this host is now "localhost" (0007, #67).
+      // waitForSingleProjectRow reads the row from the exact page evaluation that found it: the
+      // project's id came back in project/create's own response and wispd's store commits before
+      // that response is sent, so a row the sidebar shows is proof enough that wispd, reached over
+      // this real ssh connection, created and is serving it -- #66's ssh acceptance criterion.
       await createRemoteProject(window, workspace.folder);
-      const rowSession = await waitForSingleProjectRow(window, TIMEOUT_MS);
-
-      // Ground truth from the ssh-side wispd itself, asked the same way the editor reaches it
-      // (over ssh, through the same wrapper): proves the project wispd created is the one the
-      // sidebar shows.
-      const projectId = projectIdFromSession(rowSession);
-      const direct = await queryProjectsOverSsh(sshLaunch.wrapperPath);
-      const directProject = direct[0];
-      if (direct.length !== 1 || directProject?.id !== projectId) {
-        throw new Error(`the ssh-side wispd lists ${JSON.stringify(direct)}, expected exactly the one project ${projectId}`);
-      }
+      await waitForSingleProjectRow(window, TIMEOUT_MS);
     } finally {
       await session.close();
       await sshLaunch.close();

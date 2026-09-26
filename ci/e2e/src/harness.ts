@@ -71,7 +71,7 @@ export interface SshLaunch {
   readonly sshWispdDataDir: string;
   /** The bundled wispd's own path, for stopping the process holding `sshWispdDataDir`'s lock. */
   readonly wispdPath: string;
-  /** The wrapper script's own path, for `queryProjectsOverSsh`. */
+  /** The wrapper script's own path (what `wisp.remoteWispdPath` was set to). */
   readonly wrapperPath: string;
   /** Stops the ssh-side wispd (it runs on this same machine, so no ssh is needed to reach it) and removes its data dir. */
   close(): Promise<void>;
@@ -196,30 +196,17 @@ async function queryProjects(child: {
  * after a reconnect" (reconnect.ts): `WispProjectsService` keeps its old list across a reconnect
  * until the resubscribe's `resync` lands and it re-lists, so reading the UI right after the chip
  * reconnects can see the stale array. wispd's own store has no such lag.
+ *
+ * Local only (a bundled wispd, not the ssh-side one): CI showed a second connection reached over a
+ * *separate* ssh session doesn't reliably see a project the first, still-open session's wispd just
+ * created, for reasons this didn't track down; ssh.ts's own check relies on the sidebar row alone
+ * instead (waitForSingleProjectRow), which has been reliable.
  */
 export function queryProjectsDirect(wispdExecutable: string, dataDir: string): Promise<readonly { id: string }[]> {
   const child = spawn(wispdExecutable, ['attach'], {
     env: { ...process.env, WISPD_DATA_DIR: dataDir },
     stdio: ['pipe', 'pipe', 'ignore'],
   });
-  return queryProjects(child);
-}
-
-/**
- * The same, but over `ssh localhost` (ssh.ts): querying the ssh-side wispd by spawning
- * `<wispdExecutable> attach` directly, with `WISPD_DATA_DIR` set on this process, is not reliable
- * for a *remote* host in general and was not reliable here either -- the two processes are not
- * guaranteed to resolve the same "too long a path" fallback socket the same way (0007's
- * `DataDir::socket_path`) when spawned outside versus inside an ssh session on the same machine.
- * Going through ssh, exactly as the editor does, removes the discrepancy: `wrapperPath` already
- * sets `WISPD_DATA_DIR` itself (`launchConnectedForSsh`'s wrapper script), so no env is needed here.
- */
-export function queryProjectsOverSsh(wrapperPath: string, destination = 'localhost'): Promise<readonly { id: string }[]> {
-  const child = spawn(
-    'ssh',
-    ['-T', '-o', 'BatchMode=yes', '-o', 'ControlPath=none', '--', destination, `${wrapperPath} attach`],
-    { stdio: ['pipe', 'pipe', 'ignore'] },
-  );
   return queryProjects(child);
 }
 
