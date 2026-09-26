@@ -153,12 +153,7 @@ impl Store {
              ORDER BY created_at ASC, id ASC",
         )?;
         let rows = stmt.query_map([], RawAccount::from_row)?;
-
-        let mut accounts = Vec::new();
-        for row in rows {
-            accounts.push(row?.into_account()?);
-        }
-        Ok(accounts)
+        rows.map(|row| row?.into_account()).collect()
     }
 
     /// Deletes a key account by id, if it exists.

@@ -17,10 +17,6 @@ fn model_key(model: Option<&str>) -> &str {
     model.unwrap_or("")
 }
 
-fn model_value(text: String) -> Option<String> {
-    if text.is_empty() { None } else { Some(text) }
-}
-
 /// One run's token and cost delta for one model, ready to append.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsageDelta {
@@ -234,11 +230,7 @@ impl Store {
                 captured_at: row.get(4)?,
             })
         })?;
-        let mut snapshots = Vec::new();
-        for row in rows {
-            snapshots.push(row?.into_snapshot()?);
-        }
-        Ok(snapshots)
+        rows.map(|row| row?.into_snapshot()).collect()
     }
 
     /// Replaces `session_id`'s running usage totals wholesale with `totals`, so they match the
@@ -299,7 +291,7 @@ impl Store {
         let rows = stmt.query_map(params![session_id], |row| {
             let model: String = row.get(0)?;
             Ok(SessionModelUsage {
-                model: model_value(model),
+                model: Some(model).filter(|model| !model.is_empty()),
                 input_tokens: row.get(1)?,
                 output_tokens: row.get(2)?,
                 cache_read_tokens: row.get(3)?,

@@ -38,12 +38,11 @@ impl Store {
             .conn
             .prepare("SELECT turn_id, text FROM turns WHERE run_id = ?1")?;
         let rows = stmt.query_map(params![run_id.to_string()], row_to_turn)?;
-        let mut turns = Vec::new();
-        for row in rows {
+        rows.map(|row| {
             let (turn_id, text) = row?;
-            turns.push((Uuid::parse_str(&turn_id)?, text));
-        }
-        Ok(turns)
+            Ok::<_, StoreError>((Uuid::parse_str(&turn_id)?, text))
+        })
+        .collect()
     }
 }
 

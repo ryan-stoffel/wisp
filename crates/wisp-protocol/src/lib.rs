@@ -110,298 +110,49 @@ pub const PROTOCOL_VERSION: u32 = 1;
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-    use std::fmt::Debug;
-
-    use serde::Serialize;
     use serde::de::DeserializeOwned;
-    use serde_json::{Map, json};
+    use serde_json::{Value, json};
 
     use super::*;
-    use crate::jsonrpc::{CancelRequestParams, RequestId};
 
-    fn round_trip<T: Serialize + DeserializeOwned + PartialEq + Debug>(value: &T) {
-        let json = serde_json::to_string(value).unwrap();
-        assert_eq!(&serde_json::from_str::<T>(&json).unwrap(), value, "{json}");
+    fn decode<T: DeserializeOwned>(value: Value) -> T {
+        serde_json::from_value(value).unwrap()
     }
 
-    fn project() -> Project {
-        Project {
-            id: ProjectId::generate(),
-            name: "wisp".to_owned(),
-            repo_path: "/Users/me/src/wisp".to_owned(),
-            branch: Some("main".to_owned()),
-            created_at: "2026-09-24T12:00:00Z".parse().unwrap(),
-            updated_at: "2026-09-24T12:05:00.125Z".parse().unwrap(),
-        }
-    }
-
-    fn key_account() -> KeyAccount {
-        KeyAccount {
-            id: AccountId::generate(),
-            provider: Provider::Anthropic,
-            label: "Personal".to_owned(),
-            created_at: "2026-09-24T12:00:00Z".parse().unwrap(),
-            masked_key: "sk-ant-...abcd".to_owned(),
-        }
-    }
-
+    // The committed samples cover every known value; these are the values a newer peer adds.
     #[test]
-    fn every_message_type_round_trips() {
-        let mut options = Map::new();
-        options.insert("level".to_owned(), json!(2));
-        let capabilities = Capabilities(BTreeMap::from([
-            ("agents".to_owned(), Map::new()),
-            ("future".to_owned(), options),
-        ]));
-        for machine_id in [None, Some("m1".to_owned())] {
-            round_trip(&InitializeParams {
-                protocol: ProtocolRange { min: 1, max: 2 },
-                client: ClientInfo {
-                    name: "wisp".to_owned(),
-                    version: "0.1.0".to_owned(),
-                    machine_id,
-                },
-                capabilities: capabilities.clone(),
-            });
-        }
-        round_trip(&InitializeResult {
-            protocol: 1,
-            wispd: "0.1.0".to_owned(),
-            log_id: LogId::generate(),
-            capabilities: Capabilities::default(),
-            max_frame_bytes: 8_388_608,
-        });
-        round_trip(&HostHealthParams {});
-        for store in [StoreState::Ok, StoreState::Unavailable] {
-            round_trip(&HostHealthResult {
-                uptime_seconds: 1,
-                store,
-                running_agents: 0,
-            });
-        }
-        round_trip(&HostVersionParams {});
-        round_trip(&HostVersionResult {
-            wispd: "0.1.0".to_owned(),
-            protocol: ProtocolRange::SUPPORTED,
-            os: "macOS 27.0".to_owned(),
-            arch: "aarch64".to_owned(),
-        });
-        round_trip(&ProjectListParams {});
-        round_trip(&ProjectListResult {
-            projects: vec![project(), project()],
-            seq: (1 << 53) - 1,
-        });
-        round_trip(&ProjectCreateParams {
-            id: ProjectId::generate(),
-            name: "wisp".to_owned(),
-            repo_path: "/".to_owned(),
-        });
-        round_trip(&ProjectCreateResult { project: project() });
-        for project in [None, Some(ProjectId::generate())] {
-            round_trip(&EventsSubscribeParams { after: 7, project });
-            round_trip(&EventsEventParams {
-                subscription: SubscriptionId::generate(),
-                seq: 8,
-                time: "2026-09-24T12:00:00Z".parse().unwrap(),
-                project,
-                event: WispEvent::ProjectCreated {
-                    project: self::project(),
-                },
-            });
-        }
-        round_trip(&EventsSubscribeResult {
-            subscription: SubscriptionId::generate(),
-        });
-        round_trip(&EventsUnsubscribeParams {
-            subscription: SubscriptionId::generate(),
-        });
-        round_trip(&EventsUnsubscribeResult {});
-        for id in [RequestId::Number(-3), RequestId::from("a")] {
-            round_trip(&CancelRequestParams { id });
-        }
-        round_trip(&ErrorData {
-            kind: ErrorKind::IdConflict,
-            detail: Some(json!({"why": "name differs"})),
-        });
-        round_trip(&IncompatibleProtocolDetail {
-            requested: ProtocolRange { min: 2, max: 2 },
-            supported: ProtocolRange::SUPPORTED,
-            wispd: "0.1.0".to_owned(),
-        });
-        round_trip(&AccountsKeysAddParams {
-            id: AccountId::generate(),
-            provider: Provider::Anthropic,
-            label: "Personal".to_owned(),
-            key: serde_json::from_value(json!("sk-ant-secret")).unwrap(),
-        });
-        round_trip(&AccountsKeysAddResult {
-            account: key_account(),
-        });
-        round_trip(&AccountsKeysListParams {});
-        round_trip(&AccountsKeysListResult {
-            accounts: vec![key_account(), key_account()],
-        });
-        round_trip(&AccountsKeysRemoveParams {
-            id: AccountId::generate(),
-        });
-        round_trip(&AccountsKeysRemoveResult {});
-    }
-
-    #[test]
-    fn account_default_types_round_trip() {
-        round_trip(&AccountsDefaultsGetParams {});
-        for account in [
-            None,
-            Some(AccountChoice::Subscription {
-                backend: "claude".to_owned(),
-            }),
-            Some(AccountChoice::Key {
-                id: AccountId::generate(),
-            }),
-        ] {
-            round_trip(&AccountsDefaultsSetParams {
-                role: Role::Coordinator,
-                account: account.clone(),
-            });
-        }
-        round_trip(&AccountsDefaultsGetResult {
-            coordinator: Some(AccountChoice::Subscription {
-                backend: "claude".to_owned(),
-            }),
-            worker: Some(AccountChoice::Key {
-                id: AccountId::generate(),
-            }),
-        });
-        round_trip(&AccountsDefaultsGetResult::default());
-    }
-
-    #[test]
-    fn context_types_round_trip() {
-        for last_writer in [None, Some("editor".to_owned())] {
-            round_trip(&context_file(last_writer));
-        }
-        round_trip(&ContextListParams {
-            project: ProjectId::generate(),
-        });
-        round_trip(&ContextListResult {
-            files: vec![context_file(None), context_file(Some("editor".to_owned()))],
-        });
-        round_trip(&ContextReadParams {
-            project: ProjectId::generate(),
-            path: "notes.md".to_owned(),
-        });
-        round_trip(&ContextReadResult {
-            file: context_file(None),
-            content: "# Notes".to_owned(),
-        });
-        for writer in [None, Some("editor".to_owned())] {
-            round_trip(&ContextWriteParams {
-                id: ContextWriteId::generate(),
-                project: ProjectId::generate(),
-                path: "notes.md".to_owned(),
-                content: "# Notes".to_owned(),
-                writer,
-            });
-        }
-        round_trip(&ContextWriteResult {
-            file: context_file(Some("editor".to_owned())),
-        });
-        round_trip(&EventsEventParams {
-            subscription: SubscriptionId::generate(),
-            seq: 9,
-            time: "2026-09-24T12:00:00Z".parse().unwrap(),
-            project: Some(ProjectId::generate()),
-            event: WispEvent::ContextChanged {
-                file: context_file(Some("editor".to_owned())),
-            },
-        });
-    }
-
-    fn context_file(last_writer: Option<String>) -> ContextFile {
-        ContextFile {
-            path: "notes.md".to_owned(),
-            size: 7,
-            modified_at: "2026-09-24T12:00:00Z".parse().unwrap(),
-            last_writer,
-        }
-    }
-
-    #[test]
-    fn accounts_messages_round_trip() {
-        round_trip(&AccountsListParams {});
-        round_trip(&AccountsRefreshParams {});
-        let clis = vec![
-            DetectedCli {
-                cli: CliKind::Claude,
-                installed: true,
-                path: Some("/usr/local/bin/claude".to_owned()),
-                version: Some("2.1.281".to_owned()),
-                signed_in: Some(true),
-                auth_kind: Some(AuthKind::Subscription),
-                plan: Some("max".to_owned()),
-                note: None,
-            },
-            DetectedCli {
-                cli: CliKind::Codex,
-                installed: false,
-                path: None,
-                version: None,
-                signed_in: None,
-                auth_kind: None,
-                plan: None,
-                note: None,
-            },
-        ];
-        round_trip(&AccountsListResult {
-            clis: clis.clone(),
-            checked_at: "2026-09-25T12:00:00Z".parse().unwrap(),
-        });
-        round_trip(&AccountsRefreshResult {
-            clis,
-            checked_at: "2026-09-25T12:00:00Z".parse().unwrap(),
-        });
-    }
-
-    #[test]
-    fn usage_types_round_trip_and_omit_what_is_not_reported() {
-        round_trip(&UsageGetParams {});
-        for cost in [None, Some(45_000)] {
-            round_trip(&UsagePeriod {
-                input_tokens: 100,
-                output_tokens: 10,
-                cache_read_tokens: 0,
-                cache_write_tokens: 0,
-                cost_usd_micros: cost,
-            });
-        }
-        for (used_percent, resets_at) in [(None, None), (Some(42.5), Some(project().created_at))] {
-            round_trip(&UsageLimitWindow {
-                window: "five_hour".to_owned(),
-                used_percent,
-                resets_at,
-                captured_at: project().created_at,
-            });
-        }
-        round_trip(&UsageGetResult {
-            accounts: vec![AccountUsage {
-                account_id: "claude-max".to_owned(),
-                today: UsagePeriod {
-                    input_tokens: 1,
-                    output_tokens: 1,
-                    cache_read_tokens: 0,
-                    cache_write_tokens: 0,
-                    cost_usd_micros: None,
-                },
-                week: UsagePeriod {
-                    input_tokens: 1,
-                    output_tokens: 1,
-                    cache_read_tokens: 0,
-                    cache_write_tokens: 0,
-                    cost_usd_micros: Some(1),
-                },
-                limits: Vec::new(),
-            }],
-        });
+    fn unknown_values_decode_as_unknown() {
+        assert_eq!(decode::<Provider>(json!("gemini")), Provider::Unknown);
+        assert_eq!(decode::<CliKind>(json!("gemini-cli")), CliKind::Unknown);
+        assert_eq!(decode::<AuthKind>(json!("sso")), AuthKind::Unknown);
+        assert_eq!(decode::<AgentStatus>(json!("paused")), AgentStatus::Unknown);
+        assert_eq!(
+            decode::<AgentOutputItem>(json!({"kind": "image", "url": "x"})),
+            AgentOutputItem::Unknown
+        );
+        assert_eq!(
+            decode::<AgentOutcome>(json!({"status": "merged"})),
+            AgentOutcome::Unknown
+        );
+        assert_eq!(
+            decode::<AgentFileSide>(json!("merged")),
+            AgentFileSide::Unknown
+        );
+        assert_eq!(
+            decode::<AgentFileStatus>(json!("unmerged")),
+            AgentFileStatus::Unknown
+        );
+        assert_eq!(
+            decode::<AgentMergeKind>(json!("rebase")),
+            AgentMergeKind::Unknown
+        );
+        assert_eq!(
+            decode::<AccountChoice>(json!({"kind": "quantum", "qubit": 1})),
+            AccountChoice::Unknown
+        );
+        assert_eq!(
+            decode::<WispEvent>(json!({"kind": "trigger.fired", "triggerId": "x"})),
+            WispEvent::Unknown
+        );
     }
 }

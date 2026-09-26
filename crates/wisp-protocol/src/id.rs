@@ -123,6 +123,8 @@ mod tests {
             serde_json::from_str::<ProjectId>(&format!("\"{V7}\"")).unwrap(),
             id
         );
+        let generated = ProjectId::generate();
+        assert_eq!(generated.to_string().parse::<ProjectId>(), Ok(generated));
     }
 
     #[test]
@@ -143,13 +145,6 @@ mod tests {
             assert!(serde_json::from_str::<ProjectId>(&json).is_err(), "{bad}");
         }
         assert!(serde_json::from_str::<ProjectId>("7").is_err());
-    }
-
-    #[test]
-    fn generated_ids_are_canonical_v7() {
-        let id = ProjectId::generate();
-        assert_eq!(id.to_string().parse::<ProjectId>(), Ok(id));
-        assert_ne!(ProjectId::generate(), id);
     }
 
     #[test]

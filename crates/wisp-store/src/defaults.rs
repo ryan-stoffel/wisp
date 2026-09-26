@@ -109,61 +109,28 @@ mod tests {
     }
 
     #[test]
-    fn a_role_with_no_default_reads_as_none() {
-        let (_dir, store) = open();
-        assert_eq!(store.get_role_default("coordinator").unwrap(), None);
-    }
-
-    #[test]
-    fn setting_and_reading_round_trips_both_kinds() {
+    fn defaults_are_set_replaced_and_cleared_per_role() {
         let (_dir, mut store) = open();
+        assert_eq!(store.get_role_default("coordinator").unwrap(), None);
         let subscription = RoleDefault::Subscription {
             backend: "claude".to_owned(),
+        };
+        let key = RoleDefault::Key {
+            account_id: Uuid::now_v7(),
         };
         store
             .set_role_default("coordinator", Some(&subscription))
             .unwrap();
+        store
+            .set_role_default("worker", Some(&subscription))
+            .unwrap();
+        store.set_role_default("worker", Some(&key)).unwrap();
         assert_eq!(
             store.get_role_default("coordinator").unwrap(),
             Some(subscription)
         );
-
-        let key = RoleDefault::Key {
-            account_id: Uuid::now_v7(),
-        };
-        store.set_role_default("worker", Some(&key)).unwrap();
         assert_eq!(store.get_role_default("worker").unwrap(), Some(key));
-    }
 
-    #[test]
-    fn setting_again_replaces_the_previous_default() {
-        let (_dir, mut store) = open();
-        store
-            .set_role_default(
-                "worker",
-                Some(&RoleDefault::Subscription {
-                    backend: "claude".to_owned(),
-                }),
-            )
-            .unwrap();
-        let key = RoleDefault::Key {
-            account_id: Uuid::now_v7(),
-        };
-        store.set_role_default("worker", Some(&key)).unwrap();
-        assert_eq!(store.get_role_default("worker").unwrap(), Some(key));
-    }
-
-    #[test]
-    fn setting_none_clears_it() {
-        let (_dir, mut store) = open();
-        store
-            .set_role_default(
-                "coordinator",
-                Some(&RoleDefault::Subscription {
-                    backend: "claude".to_owned(),
-                }),
-            )
-            .unwrap();
         store.set_role_default("coordinator", None).unwrap();
         assert_eq!(store.get_role_default("coordinator").unwrap(), None);
     }

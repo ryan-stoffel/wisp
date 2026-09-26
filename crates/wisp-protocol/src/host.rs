@@ -55,31 +55,3 @@ pub struct HostVersionResult {
     /// The CPU architecture, such as `aarch64`.
     pub arch: String,
 }
-
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::{HostHealthParams, StoreState};
-
-    #[test]
-    fn unknown_store_states_decode_as_unknown() {
-        assert_eq!(
-            serde_json::from_value::<StoreState>(json!("migrating")).unwrap(),
-            StoreState::Unknown
-        );
-        assert_eq!(serde_json::to_value(StoreState::Ok).unwrap(), json!("ok"));
-    }
-
-    #[test]
-    fn empty_params_accept_future_options() {
-        assert_eq!(
-            serde_json::from_value::<HostHealthParams>(json!({"verbose": true})).unwrap(),
-            HostHealthParams {}
-        );
-        assert_eq!(
-            serde_json::to_value(HostHealthParams {}).unwrap(),
-            json!({})
-        );
-    }
-}

@@ -233,11 +233,12 @@ impl Message {
                 "a message must be a JSON object; batches are not supported",
             ));
         };
+        // `None` when absent, `Some(None)` when null.
         let id = match message.remove("id") {
-            None => IdMember::Absent,
-            Some(Value::Null) => IdMember::Null,
+            None => None,
+            Some(Value::Null) => Some(None),
             Some(id) => match RequestId::deserialize(id) {
-                Ok(id) => IdMember::Id(id),
+                Ok(id) => Some(Some(id)),
                 Err(_) => {
                     return Err(MalformedMessage::invalid(
                         None,
@@ -248,10 +249,10 @@ impl Message {
         };
         // Ids belong to the side that sent the request, so an error reply may echo the id only
         // of a request. Echoing a malformed response's id would answer the peer's own request.
-        let known_id = match &id {
-            IdMember::Id(id) if message.contains_key("method") => Some(id.clone()),
-            IdMember::Id(_) | IdMember::Absent | IdMember::Null => None,
-        };
+        let known_id = id
+            .clone()
+            .flatten()
+            .filter(|_| message.contains_key("method"));
         if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
             return Err(MalformedMessage::invalid(
                 known_id,
@@ -277,9 +278,9 @@ impl Message {
                 }
             };
             return match id {
-                IdMember::Id(id) => Ok(Self::Request(Request { id, method, params })),
-                IdMember::Absent => Ok(Self::Notification(Notification { method, params })),
-                IdMember::Null => Err(MalformedMessage::invalid(
+                Some(Some(id)) => Ok(Self::Request(Request { id, method, params })),
+                None => Ok(Self::Notification(Notification { method, params })),
+                Some(None) => Err(MalformedMessage::invalid(
                     None,
                     "a request's id must not be null",
                 )),
@@ -287,11 +288,11 @@ impl Message {
         }
 
         match (message.remove("result"), message.remove("error"), id) {
-            (Some(result), None, IdMember::Id(id)) => {
+            (Some(result), None, Some(Some(id))) => {
                 Ok(Self::Response(Response::success(id, result)))
             }
             (None, Some(error), id) => match ErrorObject::deserialize(error) {
-                Ok(error) => Ok(Self::Response(Response::error(known_id_of(id), error))),
+                Ok(error) => Ok(Self::Response(Response::error(id.flatten(), error))),
                 Err(_) => Err(MalformedMessage::invalid(
                     known_id,
                     "error must be an object with an integer code and a string message",
@@ -305,28 +306,14 @@ impl Message {
     }
 }
 
-enum IdMember {
-    Absent,
-    Null,
-    Id(RequestId),
-}
-
-fn known_id_of(id: IdMember) -> Option<RequestId> {
-    match id {
-        IdMember::Id(id) => Some(id),
-        IdMember::Absent | IdMember::Null => None,
-    }
-}
-
 impl<P: Serialize> Serialize for Request<P> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut request = serializer.serialize_struct("Request", 4)?;
         request.serialize_field("jsonrpc", "2.0")?;
         request.serialize_field("id", &self.id)?;
         request.serialize_field("method", &self.method)?;
-        match &self.params {
-            Some(params) => request.serialize_field("params", params)?,
-            None => request.skip_field("params")?,
+        if let Some(params) = &self.params {
+            request.serialize_field("params", params)?;
         }
         request.end()
     }
@@ -337,9 +324,8 @@ impl<P: Serialize> Serialize for Notification<P> {
         let mut notification = serializer.serialize_struct("Notification", 3)?;
         notification.serialize_field("jsonrpc", "2.0")?;
         notification.serialize_field("method", &self.method)?;
-        match &self.params {
-            Some(params) => notification.serialize_field("params", params)?,
-            None => notification.skip_field("params")?,
+        if let Some(params) = &self.params {
+            notification.serialize_field("params", params)?;
         }
         notification.end()
     }
@@ -435,11 +421,7 @@ impl Error for ErrorObject {}
 // input and cannot exceed the frame limit.
 fn truncate(mut message: String) -> String {
     if message.len() > MAX_QUOTED_BYTES {
-        let mut end = MAX_QUOTED_BYTES;
-        while !message.is_char_boundary(end) {
-            end -= 1;
-        }
-        message.truncate(end);
+        message.truncate(message.floor_char_boundary(MAX_QUOTED_BYTES));
         message.push_str("...");
     }
     message
@@ -493,28 +475,28 @@ mod tests {
         CancelRequestParams, ErrorObject, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST,
         MAX_QUOTED_BYTES, Message, Notification, PARSE_ERROR, Request, RequestId, Response,
     };
-    use crate::methods::{CancelRequest, HostHealth, ProjectCreate};
+    use crate::methods::{CancelRequest, HostHealth};
     use crate::{HostHealthParams, ProjectCreateParams};
 
     fn parse(json: &str) -> Result<Message, super::MalformedMessage> {
         Message::from_frame(json.as_bytes())
     }
 
-    fn invalid(json: &str) -> (Option<RequestId>, i64) {
-        let malformed = parse(json).expect_err(json);
-        (malformed.id, malformed.error.code)
-    }
-
     #[test]
     fn requests_notifications_and_responses_are_told_apart() {
         let Message::Request(request) =
-            parse(r#"{"jsonrpc":"2.0","id":7,"method":"host/health","params":{}}"#).unwrap()
+            parse(r#"{"jsonrpc":"2.0","id":7,"method":"host/health","params":null,"trace":"x"}"#)
+                .unwrap()
         else {
             panic!("expected a request");
         };
         assert_eq!(request.id, RequestId::Number(7));
         assert_eq!(request.method, "host/health");
-        assert_eq!(request.params, Some(json!({})));
+        assert_eq!(request.params, None);
+        assert_eq!(
+            request.params::<HostHealthParams>(),
+            Ok(HostHealthParams {})
+        );
 
         let Message::Notification(notification) =
             parse(r#"{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":"a"}}"#).unwrap()
@@ -530,14 +512,16 @@ mod tests {
             parse(r#"{"jsonrpc":"2.0","id":"x","result":null}"#).unwrap(),
             Message::Response(Response::success(RequestId::from("x"), Value::Null))
         );
-        assert_eq!(
-            parse(r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}"#)
-                .unwrap(),
-            Message::Response(Response::error(
-                None,
-                ErrorObject::new(PARSE_ERROR, "Parse error")
-            ))
-        );
+        let parse_error = Message::Response(Response::error(
+            None,
+            ErrorObject::new(PARSE_ERROR, "Parse error"),
+        ));
+        for json in [
+            r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}"#,
+            r#"{"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"}}"#,
+        ] {
+            assert_eq!(parse(json).unwrap(), parse_error);
+        }
     }
 
     #[test]
@@ -558,97 +542,39 @@ mod tests {
         }
     }
 
+    // A malformed response's id is never echoed: it would answer the peer's own request.
     #[test]
     fn wrong_shapes_are_invalid_requests_with_a_request_id_when_readable() {
-        assert_eq!(invalid("[]"), (None, INVALID_REQUEST));
-        assert_eq!(
-            invalid(r#"[{"jsonrpc":"2.0","method":"a"}]"#),
-            (None, INVALID_REQUEST)
-        );
-        assert_eq!(invalid("42"), (None, INVALID_REQUEST));
-        assert_eq!(
-            invalid(r#"{"id":1,"method":"a"}"#),
-            (Some(1.into()), INVALID_REQUEST)
-        );
-        assert_eq!(
-            invalid(r#"{"jsonrpc":"1.0","id":1,"method":"a"}"#),
-            (Some(1.into()), INVALID_REQUEST)
-        );
-        assert_eq!(
-            invalid(r#"{"jsonrpc":"2.0","id":2,"method":7}"#),
-            (Some(2.into()), INVALID_REQUEST)
-        );
-        assert_eq!(
-            invalid(r#"{"jsonrpc":"2.0","id":3,"method":"a","params":5}"#),
-            (Some(3.into()), INVALID_REQUEST)
-        );
-        assert_eq!(
-            invalid(r#"{"jsonrpc":"2.0","id":1.5,"method":"a"}"#),
-            (None, INVALID_REQUEST)
-        );
-        assert_eq!(
-            invalid(r#"{"jsonrpc":"2.0","id":{},"method":"a"}"#),
-            (None, INVALID_REQUEST)
-        );
-        assert_eq!(
-            invalid(r#"{"jsonrpc":"2.0","id":null,"method":"a"}"#),
-            (None, INVALID_REQUEST)
-        );
-        assert_eq!(
-            invalid(r#"{"jsonrpc":"2.0","id":4}"#),
-            (None, INVALID_REQUEST)
-        );
-        assert_eq!(
-            invalid(r#"{"jsonrpc":"2.0","id":5,"result":1,"error":{"code":1,"message":""}}"#),
-            (None, INVALID_REQUEST)
-        );
-        assert_eq!(
-            invalid(r#"{"jsonrpc":"2.0","result":1}"#),
-            (None, INVALID_REQUEST)
-        );
-        assert_eq!(
-            invalid(r#"{"jsonrpc":"2.0","id":6,"error":{"code":"x","message":""}}"#),
-            (None, INVALID_REQUEST)
-        );
-        assert_eq!(
-            invalid(r#"{"jsonrpc":"1.0","id":7,"result":1}"#),
-            (None, INVALID_REQUEST)
-        );
-    }
-
-    #[test]
-    fn a_malformed_response_is_not_answered_with_the_peers_own_id() {
-        let malformed =
-            parse(r#"{"jsonrpc":"2.0","id":6,"error":{"code":"x","message":""}}"#).unwrap_err();
-        let reply = serde_json::to_value(malformed.into_response()).unwrap();
-        assert_eq!(reply["id"], Value::Null);
-        assert_eq!(reply["error"]["code"], INVALID_REQUEST);
-    }
-
-    #[test]
-    fn unknown_envelope_keys_and_null_params_are_ignored() {
-        let Message::Request(request) =
-            parse(r#"{"jsonrpc":"2.0","id":1,"method":"host/health","params":null,"trace":"x"}"#)
-                .unwrap()
-        else {
-            panic!("expected a request");
-        };
-        assert_eq!(request.params, None);
-        assert_eq!(
-            request.params::<HostHealthParams>(),
-            Ok(HostHealthParams {})
-        );
-    }
-
-    #[test]
-    fn an_error_response_without_an_id_is_accepted() {
-        assert_eq!(
-            parse(r#"{"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"}}"#).unwrap(),
-            Message::Response(Response::error(
+        for (json, id) in [
+            ("[]", None),
+            (r#"[{"jsonrpc":"2.0","method":"a"}]"#, None),
+            ("42", None),
+            (r#"{"id":1,"method":"a"}"#, Some(1)),
+            (r#"{"jsonrpc":"1.0","id":1,"method":"a"}"#, Some(1)),
+            (r#"{"jsonrpc":"2.0","id":2,"method":7}"#, Some(2)),
+            (
+                r#"{"jsonrpc":"2.0","id":3,"method":"a","params":5}"#,
+                Some(3),
+            ),
+            (r#"{"jsonrpc":"2.0","id":1.5,"method":"a"}"#, None),
+            (r#"{"jsonrpc":"2.0","id":{},"method":"a"}"#, None),
+            (r#"{"jsonrpc":"2.0","id":null,"method":"a"}"#, None),
+            (r#"{"jsonrpc":"2.0","id":4}"#, None),
+            (
+                r#"{"jsonrpc":"2.0","id":5,"result":1,"error":{"code":1,"message":""}}"#,
                 None,
-                ErrorObject::new(PARSE_ERROR, "Parse error")
-            ))
-        );
+            ),
+            (r#"{"jsonrpc":"2.0","result":1}"#, None),
+            (
+                r#"{"jsonrpc":"2.0","id":6,"error":{"code":"x","message":""}}"#,
+                None,
+            ),
+            (r#"{"jsonrpc":"1.0","id":7,"result":1}"#, None),
+        ] {
+            let malformed = parse(json).expect_err(json);
+            assert_eq!(malformed.id, id.map(RequestId::Number), "{json}");
+            assert_eq!(malformed.error.code, INVALID_REQUEST, "{json}");
+        }
     }
 
     #[test]
@@ -720,21 +646,6 @@ mod tests {
             serde_json::to_value(&bare).unwrap(),
             json!({"jsonrpc": "2.0", "method": "a"})
         );
-    }
-
-    #[test]
-    fn typed_messages_round_trip_through_a_frame() {
-        let params = ProjectCreateParams {
-            id: "01997c3a-5b2c-7d4e-9f10-2a3b4c5d6e7f".parse().unwrap(),
-            name: "wisp".to_owned(),
-            repo_path: "/Users/ryan/wisp".to_owned(),
-        };
-        let frame =
-            serde_json::to_vec(&Request::new::<ProjectCreate>("r1", params.clone())).unwrap();
-        let Message::Request(request) = Message::from_frame(&frame).unwrap() else {
-            panic!("expected a request");
-        };
-        assert_eq!(request.params::<ProjectCreateParams>(), Ok(params));
     }
 
     #[test]

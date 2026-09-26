@@ -154,52 +154,6 @@ impl Store {
              ORDER BY created_at ASC, id ASC",
         )?;
         let rows = stmt.query_map([], RawProject::from_row)?;
-
-        let mut projects = Vec::new();
-        for row in rows {
-            projects.push(row?.into_project()?);
-        }
-        Ok(projects)
-    }
-
-    /// Replaces the mutable fields of an existing project and bumps
-    /// `updated_at`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError::NotFound`] if no project has `id`, or a
-    /// database error.
-    pub fn update_project(&self, id: Uuid, fields: &ProjectFields) -> Result<Project, StoreError> {
-        let id_text = id.to_string();
-        let now = timestamp::now();
-
-        let changed = self.conn.execute(
-            "UPDATE projects
-             SET name = ?2, repo_path = ?3, updated_at = ?4
-             WHERE id = ?1",
-            params![id_text, fields.name, fields.repo_path, now],
-        )?;
-        if changed == 0 {
-            return Err(StoreError::NotFound { id });
-        }
-
-        fetch_raw(&self.conn, &id_text)?
-            .ok_or(StoreError::NotFound { id })?
-            .into_project()
-    }
-
-    /// Deletes a project by id, if it exists.
-    ///
-    /// Returns whether a row was deleted.
-    ///
-    /// # Errors
-    ///
-    /// Returns a database error.
-    pub fn delete_project(&self, id: Uuid) -> Result<bool, StoreError> {
-        let changed = self.conn.execute(
-            "DELETE FROM projects WHERE id = ?1",
-            params![id.to_string()],
-        )?;
-        Ok(changed > 0)
+        rows.map(|row| row?.into_project()).collect()
     }
 }

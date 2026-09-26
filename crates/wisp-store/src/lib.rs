@@ -64,41 +64,29 @@ impl Store {
         }
 
         let mut conn = Connection::open(path)?;
-        configure(&conn)?;
+        // A busy timeout so lock contention waits instead of failing immediately, WAL journaling
+        // so readers never block on a writer, and foreign key enforcement.
+        conn.busy_timeout(BUSY_TIMEOUT)?;
+        set_wal_mode(&conn)?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
         migrations::run(&mut conn)?;
 
         Ok(Self { conn })
     }
 }
 
-/// Sets the pragmas every connection needs: a busy timeout so lock
-/// contention waits instead of failing immediately, WAL journaling so
-/// readers never block on a writer, and foreign key enforcement.
-fn configure(conn: &Connection) -> Result<(), StoreError> {
-    conn.busy_timeout(BUSY_TIMEOUT)?;
-    set_wal_mode(conn)?;
-    conn.pragma_update(None, "foreign_keys", "ON")?;
-
-    Ok(())
-}
-
-/// Sets `journal_mode=WAL`, retrying on `SQLITE_BUSY` for up to
-/// `BUSY_TIMEOUT`.
+/// Sets `journal_mode=WAL`, retrying on `SQLITE_BUSY` for up to `BUSY_TIMEOUT`.
 ///
-/// This pragma needs its own retry loop: unlike ordinary reads and writes,
-/// changing the journal mode does not go through SQLite's busy-handler
-/// callback, so `Connection::busy_timeout` alone does not make it wait out
-/// lock contention. Confirmed empirically — two connections racing to open
-/// the same brand-new database made this pragma fail instantly with
-/// `SQLITE_BUSY` well under a millisecond in, never waiting anywhere near
-/// `BUSY_TIMEOUT` on its own.
+/// Changing the journal mode does not go through SQLite's busy handler, so
+/// `Connection::busy_timeout` alone does not make it wait: two connections racing to open the
+/// same brand-new database made this pragma fail with `SQLITE_BUSY` instantly.
 fn set_wal_mode(conn: &Connection) -> Result<(), StoreError> {
     let deadline = Instant::now() + BUSY_TIMEOUT;
     loop {
-        let attempt = conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0));
+        let attempt = conn
+            .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0));
         match attempt {
             Ok(mode) => {
-                let mode: String = mode;
                 return if mode.eq_ignore_ascii_case("wal") {
                     Ok(())
                 } else {

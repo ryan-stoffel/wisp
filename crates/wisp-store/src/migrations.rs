@@ -5,17 +5,11 @@ use rusqlite::{Connection, TransactionBehavior, params};
 use crate::error::StoreError;
 use crate::timestamp;
 
-struct Migration {
-    version: i64,
-    sql: &'static str,
-}
-
-/// Versioned migrations, applied in order. Add new tables here by appending
-/// a migration; never edit one that has already shipped.
-const MIGRATIONS: &[Migration] = &[
-    Migration {
-        version: 1,
-        sql: "CREATE TABLE projects (
+/// Versioned migrations, applied in order: version N is the Nth entry. Add new tables here by
+/// appending a migration; never edit one that has already shipped. The SQL keeps its original
+/// whitespace, since SQLite stores `CREATE` statements verbatim in `sqlite_master`.
+const MIGRATIONS: &[&str] = &[
+    "CREATE TABLE projects (
             id TEXT NOT NULL PRIMARY KEY,
             name TEXT NOT NULL,
             repo_path TEXT NOT NULL,
@@ -23,33 +17,24 @@ const MIGRATIONS: &[Migration] = &[
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );",
-    },
     // A wispd's store only holds projects on its own host, so the column
     // had nothing to say (decision record 0009).
-    Migration {
-        version: 2,
-        sql: "ALTER TABLE projects DROP COLUMN host;",
-    },
+    "ALTER TABLE projects DROP COLUMN host;",
     // A key account's record: metadata only. The API key itself lives in the Keychain and never
     // reaches this database (#117); `masked_key` is the display form, such as `sk-ant-...abcd`.
-    Migration {
-        version: 3,
-        sql: "CREATE TABLE accounts (
+    "CREATE TABLE accounts (
             id TEXT NOT NULL PRIMARY KEY,
             provider TEXT NOT NULL,
             label TEXT NOT NULL,
             masked_key TEXT NOT NULL,
             created_at TEXT NOT NULL
         );",
-    },
     // Per-account usage (#120): append-only token/cost deltas, one replaced snapshot per account
     // limit window, and one replaced running total per session and model, so a resumed session
     // can pass its baseline (#113's `Resume::usage_totals`). `model` uses `''`, not `NULL`, as the
     // "no model reported" sentinel: SQLite treats two `NULL`s as distinct, which would stop
     // `session_usage_totals` from replacing an existing row for the unnamed model.
-    Migration {
-        version: 4,
-        sql: "CREATE TABLE usage_deltas (
+    "CREATE TABLE usage_deltas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             run_id TEXT NOT NULL,
             account_id TEXT NOT NULL,
@@ -82,14 +67,11 @@ const MIGRATIONS: &[Migration] = &[
             cost_usd_micros INTEGER,
             PRIMARY KEY (session_id, model)
         );",
-    },
     // A run's worktree (#154): one row per run, keyed by the run id, so startup garbage
     // collection can tell a worktree the store still knows about from an orphan left behind by
     // a crash. `base` is the concrete commit the worktree was created from, resolved once at
     // creation time so a later diff or commit is never against a base that moved.
-    Migration {
-        version: 5,
-        sql: "CREATE TABLE worktrees (
+    "CREATE TABLE worktrees (
             id TEXT NOT NULL PRIMARY KEY,
             repo_path TEXT NOT NULL,
             path TEXT NOT NULL,
@@ -98,22 +80,18 @@ const MIGRATIONS: &[Migration] = &[
             created_at TEXT NOT NULL
         );
         CREATE INDEX worktrees_repo_path ON worktrees (repo_path);",
-    },
     // Per-host role defaults for account routing (#119): the account a task's role falls back to
     // when it doesn't name one outright. `account_kind` is 'subscription' or 'key'; exactly one of
     // `backend` (a backend's name, such as 'claude') and `key_account_id` (a row in `accounts`,
     // though not enforced by a foreign key, since a key account can be removed after being set as
     // a default) is set, matching `account_kind`.
-    Migration {
-        version: 6,
-        sql: "CREATE TABLE role_defaults (
+    "CREATE TABLE role_defaults (
             role TEXT NOT NULL PRIMARY KEY,
             account_kind TEXT NOT NULL,
             backend TEXT,
             key_account_id TEXT,
             updated_at TEXT NOT NULL
         );",
-    },
     // Agent runs and the persisted event log (#156, decision 0014).
     //
     // - `worktrees.git_dir`: the linked worktree's private git directory, resolved once at
@@ -125,9 +103,7 @@ const MIGRATIONS: &[Migration] = &[
     // - `log_meta` and `events`: 0007's event log, numbered by the daemon-wide `seq`, so the
     //   editor can replay after a reconnect or a restart. `payload` is the event's JSON;
     //   `run_id` is set for an agent run's events, for `agent/events`.
-    Migration {
-        version: 7,
-        sql: "ALTER TABLE worktrees ADD COLUMN git_dir TEXT NOT NULL DEFAULT '';
+    "ALTER TABLE worktrees ADD COLUMN git_dir TEXT NOT NULL DEFAULT '';
 
         CREATE TABLE runs (
             id TEXT NOT NULL PRIMARY KEY,
@@ -163,26 +139,20 @@ const MIGRATIONS: &[Migration] = &[
             payload TEXT NOT NULL
         );
         CREATE INDEX events_run ON events (run_id, seq);",
-    },
     // Accepting a run (#157): `agent/accept`'s client-generated id, for its idempotency, and what
     // the merge did to the project's repository (`merge_how` is `fastForward`, `merge`, or
     // `upToDate`). All NULL until the run is accepted.
-    Migration {
-        version: 8,
-        sql: "ALTER TABLE runs ADD COLUMN accept_id TEXT;
+    "ALTER TABLE runs ADD COLUMN accept_id TEXT;
         ALTER TABLE runs ADD COLUMN merge_commit TEXT;
         ALTER TABLE runs ADD COLUMN merge_into TEXT;
         ALTER TABLE runs ADD COLUMN merge_how TEXT;",
-    },
     // Normal threads (#110, decision 0017).
     //
     // - `repos`: lightweight repo entries that normal threads run in, one per canonical path.
     //   `scratch` marks wispd's own entry for threads with no repo.
     // - `threads`: one row per normal thread, keyed by its run's id. The run's `project_id`
     //   holds the same `repo_id`, so its events and `agent/list` use the repo entry's id.
-    Migration {
-        version: 9,
-        sql: "CREATE TABLE repos (
+    "CREATE TABLE repos (
             id TEXT NOT NULL PRIMARY KEY,
             name TEXT NOT NULL,
             path TEXT NOT NULL UNIQUE,
@@ -197,32 +167,22 @@ const MIGRATIONS: &[Migration] = &[
             created_at TEXT NOT NULL
         );
         CREATE INDEX threads_repo ON threads (repo_id, created_at);",
-    },
-    // Turn idempotency across a restart (#190): `Actor::turns` kept sent turns only in memory, so
-    // a wispd restart lost `agent/send`'s idempotency (0014) for a run's `turnId`s, and a retried
-    // `agent/send` could resume a session twice with the same message. No foreign key to `runs`,
-    // matching this database's existing style (`role_defaults`, `events`), and no retention of its
-    // own yet: a row is small (an id and the sent text) and nothing prunes a finished run's rows
-    // at all today (0016, #207), so this waits on the same removal feature `events` does rather
-    // than growing its own ad hoc rule (#190 review non-blocking note). `Store::delete_thread`
-    // (#110) also deletes a deleted thread's `turns` rows, since this table has no cascade.
-    Migration {
-        version: 10,
-        sql: "CREATE TABLE turns (
+    // Sent turns (#190), so `agent/send` stays idempotent on `turnId` across a wispd restart.
+    // No foreign key to `runs`, like `role_defaults` and `events`, so `Store::delete_thread`
+    // deletes a thread's rows itself. Nothing prunes a finished run's rows yet (0016).
+    "CREATE TABLE turns (
             run_id TEXT NOT NULL,
             turn_id TEXT NOT NULL,
             text TEXT NOT NULL,
             created_at TEXT NOT NULL,
             PRIMARY KEY (run_id, turn_id)
         );",
-    },
 ];
 
 /// Bootstraps the `schema_version` table and applies every migration whose
 /// version isn't recorded, in order. A missing version below the newest
 /// recorded one still applies, for a developer database that ran a branch's
-/// migration before an earlier-numbered one landed. Versions must be exactly
-/// `1..=N` (a test checks it), so two branches can't both ship the same one.
+/// migration before an earlier-numbered one landed.
 pub(crate) fn run(conn: &mut Connection) -> Result<(), StoreError> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_version (
@@ -237,7 +197,7 @@ pub(crate) fn run(conn: &mut Connection) -> Result<(), StoreError> {
         .collect::<Result<_, _>>()?;
     let current = applied.last().copied().unwrap_or(0);
 
-    let supported = MIGRATIONS.last().map_or(0, |m| m.version);
+    let supported = i64::try_from(MIGRATIONS.len()).unwrap_or(i64::MAX);
     if current > supported {
         return Err(StoreError::UnsupportedSchemaVersion {
             found: current,
@@ -245,7 +205,7 @@ pub(crate) fn run(conn: &mut Connection) -> Result<(), StoreError> {
         });
     }
 
-    for migration in MIGRATIONS.iter().filter(|m| !applied.contains(&m.version)) {
+    for (version, sql) in (1..).zip(MIGRATIONS).filter(|(v, _)| !applied.contains(v)) {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
         // `applied` was read before this transaction acquired the write
@@ -256,15 +216,15 @@ pub(crate) fn run(conn: &mut Connection) -> Result<(), StoreError> {
         // pre-lock snapshot, and skip re-applying it if so.
         let already_applied: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM schema_version WHERE version = ?1)",
-            params![migration.version],
+            params![version],
             |row| row.get(0),
         )?;
 
         if !already_applied {
-            tx.execute_batch(migration.sql)?;
+            tx.execute_batch(sql)?;
             tx.execute(
                 "INSERT INTO schema_version (version, applied_at) VALUES (?1, ?2)",
-                params![migration.version, timestamp::now()],
+                params![version, timestamp::now()],
             )?;
         }
 
@@ -272,19 +232,4 @@ pub(crate) fn run(conn: &mut Connection) -> Result<(), StoreError> {
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::MIGRATIONS;
-
-    /// Versions are exactly `1..=N`: a duplicate would be skipped silently as already applied,
-    /// and a gap would let a later release apply a migration beneath a newer schema. Two branches
-    /// that each add one must take distinct numbers, and this fails whichever merges second.
-    #[test]
-    fn versions_are_exactly_one_to_n() {
-        let versions: Vec<i64> = MIGRATIONS.iter().map(|m| m.version).collect();
-        let expected: Vec<i64> = (1..=i64::try_from(MIGRATIONS.len()).unwrap()).collect();
-        assert_eq!(versions, expected);
-    }
 }

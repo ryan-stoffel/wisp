@@ -148,45 +148,6 @@ mod tests {
     use crate::jsonrpc::{ErrorObject, INTERNAL_ERROR, WISP_ERROR};
 
     #[test]
-    fn kinds_are_camel_case_strings() {
-        for (kind, name) in [
-            (ErrorKind::NotInitialized, "notInitialized"),
-            (ErrorKind::IncompatibleProtocol, "incompatibleProtocol"),
-            (ErrorKind::ResyncRequired, "resyncRequired"),
-            (ErrorKind::ProjectNotFound, "projectNotFound"),
-            (ErrorKind::AccountNotFound, "accountNotFound"),
-            (ErrorKind::KeychainUnavailable, "keychainUnavailable"),
-            (ErrorKind::IdConflict, "idConflict"),
-            (ErrorKind::ContextNotFound, "contextNotFound"),
-            (ErrorKind::ContextTooLarge, "contextTooLarge"),
-            (ErrorKind::NotARepository, "notARepository"),
-            (ErrorKind::RunNotFound, "runNotFound"),
-            (ErrorKind::RunNotResumable, "runNotResumable"),
-            (ErrorKind::WorkerUnavailable, "workerUnavailable"),
-            (ErrorKind::WorktreeFailed, "worktreeFailed"),
-            (ErrorKind::RunAccepted, "runAccepted"),
-            (ErrorKind::MergeRefused, "mergeRefused"),
-            (ErrorKind::MergeConflict, "mergeConflict"),
-            (ErrorKind::RepoNotFound, "repoNotFound"),
-            (ErrorKind::ThreadNotFound, "threadNotFound"),
-        ] {
-            assert_eq!(serde_json::to_value(kind).unwrap(), json!(name));
-            assert_eq!(
-                serde_json::from_value::<ErrorKind>(json!(name)).unwrap(),
-                kind
-            );
-        }
-    }
-
-    #[test]
-    fn unknown_kinds_decode_as_unknown() {
-        let data: ErrorData =
-            serde_json::from_value(json!({"kind": "planReplaced", "detail": {"planId": "p"}}))
-                .unwrap();
-        assert_eq!(data.kind, ErrorKind::Unknown);
-    }
-
-    #[test]
     fn wisp_errors_carry_their_kind_in_data() {
         let error = ErrorObject::wisp(ErrorKind::NotInitialized, "initialize first");
         assert_eq!(

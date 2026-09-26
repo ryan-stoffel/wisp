@@ -228,11 +228,7 @@ impl Store {
              ORDER BY created_at ASC, id ASC"
         ))?;
         let rows = stmt.query_map(params![project.map(|id| id.to_string())], RawRun::from_row)?;
-        let mut runs = Vec::new();
-        for row in rows {
-            runs.push(row?.into_run()?);
-        }
-        Ok(runs)
+        rows.map(|row| row?.into_run()).collect()
     }
 
     /// Replaces run `id`'s state and returns the updated row.

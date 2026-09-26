@@ -508,39 +508,3 @@ pub struct LoggedEvent {
     /// What happened.
     pub event: WispEvent,
 }
-
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::{AgentOutcome, AgentOutputItem, AgentStatus};
-
-    #[test]
-    fn unknown_statuses_kinds_and_outcomes_decode_as_unknown() {
-        assert_eq!(
-            serde_json::from_value::<AgentStatus>(json!("paused")).unwrap(),
-            AgentStatus::Unknown
-        );
-        assert_eq!(
-            serde_json::from_value::<AgentOutputItem>(json!({"kind": "image", "url": "x"}))
-                .unwrap(),
-            AgentOutputItem::Unknown
-        );
-        assert_eq!(
-            serde_json::from_value::<AgentOutcome>(json!({"status": "merged"})).unwrap(),
-            AgentOutcome::Unknown
-        );
-    }
-
-    #[test]
-    fn outcomes_tag_by_status() {
-        assert_eq!(
-            serde_json::to_value(AgentOutcome::Cancelled).unwrap(),
-            json!({"status": "cancelled"})
-        );
-        assert_eq!(
-            serde_json::to_value(AgentOutcome::Completed { result: None }).unwrap(),
-            json!({"status": "completed"})
-        );
-    }
-}

@@ -244,26 +244,3 @@ pub struct AgentRequestChangesParams {
     /// What to change.
     pub text: String,
 }
-
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::{AgentFileSide, AgentFileStatus, AgentMergeKind};
-
-    #[test]
-    fn unknown_values_decode_as_unknown() {
-        assert_eq!(
-            serde_json::from_value::<AgentFileSide>(json!("merged")).unwrap(),
-            AgentFileSide::Unknown
-        );
-        assert_eq!(
-            serde_json::from_value::<AgentFileStatus>(json!("unmerged")).unwrap(),
-            AgentFileStatus::Unknown
-        );
-        assert_eq!(
-            serde_json::from_value::<AgentMergeKind>(json!("rebase")).unwrap(),
-            AgentMergeKind::Unknown
-        );
-    }
-}

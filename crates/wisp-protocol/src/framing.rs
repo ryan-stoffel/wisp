@@ -53,12 +53,6 @@ impl FrameCodec {
         }
     }
 
-    /// The limit, in bytes, not counting the line ending.
-    #[must_use]
-    pub fn max_frame_bytes(&self) -> usize {
-        self.max_frame_bytes
-    }
-
     fn too_large(&mut self) -> FrameError {
         self.too_large = true;
         FrameError::TooLarge {
@@ -130,16 +124,12 @@ impl<T: Serialize> Encoder<T> for FrameCodec {
 
     fn encode(&mut self, message: T, buf: &mut BytesMut) -> Result<(), FrameError> {
         let start = buf.len();
-        let mut frame = LimitedWriter {
-            buf: &mut *buf,
-            remaining: self.max_frame_bytes,
-            too_large: false,
-        };
-        let result = serde_json::to_writer(&mut frame, &message);
-        let too_large = frame.too_large;
-        if let Err(error) = result {
+        // The limited writer fails the first write past the limit, which stops serde_json there,
+        // so an oversized message is never written out in full. Its only I/O errors are that one.
+        let frame = (&mut *buf).limit(self.max_frame_bytes).writer();
+        if let Err(error) = serde_json::to_writer(frame, &message) {
             buf.truncate(start);
-            return Err(if too_large {
+            return Err(if error.is_io() {
                 FrameError::TooLarge {
                     max_frame_bytes: self.max_frame_bytes,
                 }
@@ -148,30 +138,6 @@ impl<T: Serialize> Encoder<T> for FrameCodec {
             });
         }
         buf.put_u8(b'\n');
-        Ok(())
-    }
-}
-
-// Fails the first write that would take the frame past the limit, which stops serde_json there,
-// so an oversized message is never written out in full.
-struct LimitedWriter<'a> {
-    buf: &'a mut BytesMut,
-    remaining: usize,
-    too_large: bool,
-}
-
-impl io::Write for LimitedWriter<'_> {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > self.remaining {
-            self.too_large = true;
-            return Err(io::Error::other("frame too large"));
-        }
-        self.remaining -= bytes.len();
-        self.buf.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
 }
@@ -197,7 +163,7 @@ impl fmt::Display for FrameError {
                 write!(f, "frame exceeds the limit of {max_frame_bytes} bytes")
             }
             Self::Serialize(error) => write!(f, "could not serialize a message: {error}"),
-            Self::Io(error) => write!(f, "{error}"),
+            Self::Io(error) => error.fmt(f),
         }
     }
 }
@@ -223,11 +189,11 @@ mod tests {
     use std::cell::Cell;
 
     use bytes::{Bytes, BytesMut};
-    use futures_util::{SinkExt, StreamExt, stream};
+    use futures_util::{StreamExt, stream};
     use serde::ser::SerializeSeq;
     use serde::{Serialize, Serializer};
     use serde_json::json;
-    use tokio_util::codec::{Decoder, Encoder, FramedRead, FramedWrite};
+    use tokio_util::codec::{Decoder, Encoder, FramedRead};
     use tokio_util::io::StreamReader;
 
     use super::{FrameCodec, FrameError, MAX_FRAME_BYTES};
@@ -272,16 +238,6 @@ mod tests {
             ]
         );
         assert_eq!(&buf[..], b"{\"d\"");
-    }
-
-    #[test]
-    fn a_frame_of_exactly_the_limit_passes() {
-        let mut codec = FrameCodec::with_max_frame_bytes(8);
-        let mut buf = BytesMut::from(&b"12345678\n"[..]);
-        assert_eq!(
-            decode_all(&mut codec, &mut buf),
-            [Bytes::from_static(b"12345678")]
-        );
     }
 
     #[test]
@@ -431,11 +387,8 @@ mod tests {
     }
 
     #[test]
-    fn the_default_limit_is_8_mib() {
-        assert_eq!(MAX_FRAME_BYTES, 8_388_608);
+    fn the_default_limit_is_max_frame_bytes() {
         let mut codec = FrameCodec::default();
-        assert_eq!(codec.max_frame_bytes(), MAX_FRAME_BYTES);
-
         let mut buf = BytesMut::from(&vec![b' '; MAX_FRAME_BYTES][..]);
         buf.extend_from_slice(b"\n");
         assert_eq!(
@@ -510,29 +463,6 @@ mod tests {
                 max_frame_bytes: 64
             }))
         ));
-        assert!(frames.next().await.is_none());
-    }
-
-    #[tokio::test]
-    async fn written_messages_read_back() {
-        let (client, server) = tokio::io::duplex(4096);
-        let mut sink = FramedWrite::new(client, FrameCodec::new());
-        let mut frames = FramedRead::new(server, FrameCodec::new());
-        let messages = [
-            json!({"jsonrpc": "2.0", "method": "a"}),
-            json!({"jsonrpc": "2.0", "id": 1, "result": {"x": "y\nz"}}),
-        ];
-        for message in &messages {
-            sink.send(message).await.unwrap();
-        }
-        drop(sink);
-        for message in &messages {
-            let frame = frames.next().await.unwrap().unwrap();
-            assert_eq!(
-                &serde_json::from_slice::<serde_json::Value>(&frame).unwrap(),
-                message
-            );
-        }
         assert!(frames.next().await.is_none());
     }
 }

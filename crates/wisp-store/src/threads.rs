@@ -169,11 +169,7 @@ impl Store {
             "SELECT {REPO_COLUMNS} FROM repos ORDER BY created_at ASC, id ASC"
         ))?;
         let rows = stmt.query_map([], repo_from_row)?;
-        let mut repos = Vec::new();
-        for row in rows {
-            repos.push(into_repo(row?)?);
-        }
-        Ok(repos)
+        rows.map(|row| into_repo(row?)).collect()
     }
 
     /// Records a normal thread in repo entry `repo_id`, with its run and the run's worktree, in
@@ -229,11 +225,7 @@ impl Store {
             "SELECT {THREAD_COLUMNS} FROM threads ORDER BY created_at ASC, id ASC"
         ))?;
         let rows = stmt.query_map([], thread_from_row)?;
-        let mut threads = Vec::new();
-        for row in rows {
-            threads.push(into_thread(row?)?);
-        }
-        Ok(threads)
+        rows.map(|row| into_thread(row?)).collect()
     }
 
     /// Archives thread `id` or brings it back, and returns it.

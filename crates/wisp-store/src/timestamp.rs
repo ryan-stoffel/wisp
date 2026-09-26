@@ -15,7 +15,6 @@ pub(crate) fn format(timestamp: Timestamp) -> String {
     PRINTER.timestamp_to_string(&timestamp)
 }
 
-/// Formats the current time. See [`format`].
 pub(crate) fn now() -> String {
     format(Timestamp::now())
 }

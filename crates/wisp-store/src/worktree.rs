@@ -1,5 +1,5 @@
 use jiff::Timestamp;
-use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Row, params};
 use uuid::Uuid;
 
 use crate::Store;
@@ -58,14 +58,6 @@ impl RawWorktree {
         })
     }
 
-    fn matches(&self, fields: &WorktreeFields) -> bool {
-        self.repo_path == fields.repo_path
-            && self.path == fields.path
-            && self.branch == fields.branch
-            && self.base == fields.base
-            && self.git_dir == fields.git_dir
-    }
-
     fn into_worktree(self) -> Result<Worktree, StoreError> {
         Ok(Worktree {
             id: Uuid::parse_str(&self.id)?,
@@ -91,61 +83,6 @@ fn fetch_raw(conn: &Connection, id_text: &str) -> Result<Option<RawWorktree>, St
 }
 
 impl Store {
-    /// Records the worktree created for run `id`.
-    ///
-    /// If a worktree for `id` already exists with the same `fields`, this returns that existing
-    /// row unchanged instead of creating a second one. If it exists with different fields, it
-    /// fails with [`StoreError::IdConflict`] rather than overwrite it.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StoreError::IdConflict`] as described above, or a database error.
-    pub fn create_worktree(
-        &mut self,
-        id: Uuid,
-        fields: &WorktreeFields,
-    ) -> Result<Worktree, StoreError> {
-        let id_text = id.to_string();
-
-        // See `create_project`'s fast path: a retry that already matches doesn't need the write
-        // lock.
-        if let Some(existing) = fetch_raw(&self.conn, &id_text)?
-            && existing.matches(fields)
-        {
-            return existing.into_worktree();
-        }
-
-        let now = timestamp::now();
-
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.execute(
-            "INSERT INTO worktrees (id, repo_path, path, branch, base, git_dir, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT (id) DO NOTHING",
-            params![
-                id_text,
-                fields.repo_path,
-                fields.path,
-                fields.branch,
-                fields.base,
-                fields.git_dir,
-                now
-            ],
-        )?;
-        let created = tx.changes() == 1;
-
-        let raw = fetch_raw(&tx, &id_text)?.ok_or(StoreError::NotFound { id })?;
-
-        if !created && !raw.matches(fields) {
-            return Err(StoreError::IdConflict { id });
-        }
-
-        tx.commit()?;
-        raw.into_worktree()
-    }
-
     /// Reads a worktree by its run id.
     ///
     /// # Errors
@@ -156,48 +93,10 @@ impl Store {
             .map(RawWorktree::into_worktree)
             .transpose()
     }
-
-    /// Lists every worktree, oldest first.
-    ///
-    /// Startup garbage collection uses this to tell which worktree folders under the wisp-owned
-    /// root are still recorded, and treats anything else there as an orphan.
-    ///
-    /// # Errors
-    ///
-    /// Returns a database error, or an error if a stored id or timestamp is corrupt.
-    pub fn list_worktrees(&self) -> Result<Vec<Worktree>, StoreError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, repo_path, path, branch, base, git_dir, created_at
-             FROM worktrees
-             ORDER BY created_at ASC, id ASC",
-        )?;
-        let rows = stmt.query_map([], RawWorktree::from_row)?;
-
-        let mut worktrees = Vec::new();
-        for row in rows {
-            worktrees.push(row?.into_worktree()?);
-        }
-        Ok(worktrees)
-    }
-
-    /// Deletes a worktree's row by its run id, if it exists.
-    ///
-    /// Returns whether a row was deleted.
-    ///
-    /// # Errors
-    ///
-    /// Returns a database error.
-    pub fn delete_worktree(&self, id: Uuid) -> Result<bool, StoreError> {
-        let changed = self.conn.execute(
-            "DELETE FROM worktrees WHERE id = ?1",
-            params![id.to_string()],
-        )?;
-        Ok(changed > 0)
-    }
 }
 
 /// Inserts a new worktree row for run `id`, failing with [`StoreError::IdConflict`] if one
-/// exists. For a caller that creates the row inside its own transaction.
+/// exists.
 pub(crate) fn insert_worktree(
     conn: &Connection,
     id: Uuid,
