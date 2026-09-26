@@ -162,6 +162,20 @@ const MIGRATIONS: &[Migration] = &[
         );
         CREATE INDEX events_run ON events (run_id, seq);",
     },
+    // Turn idempotency across a restart (#190): `Actor::turns` kept sent turns only in memory, so
+    // a wispd restart lost `agent/send`'s idempotency (0014) for a run's `turnId`s, and a retried
+    // `agent/send` could resume a session twice with the same message. No foreign key to `runs`,
+    // matching this database's existing style (`role_defaults`, `events`).
+    Migration {
+        version: 9,
+        sql: "CREATE TABLE turns (
+            run_id TEXT NOT NULL,
+            turn_id TEXT NOT NULL,
+            text TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (run_id, turn_id)
+        );",
+    },
 ];
 
 /// Bootstraps the `schema_version` table and applies any migration whose
