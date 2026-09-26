@@ -67,18 +67,20 @@ export const accountsChecks = [
         { timeout: 30_000 },
       );
 
-      step = 'clicking Sign in opens a terminal';
+      step = 'clicking Sign in opens a terminal that runs claude auth login';
       await signIn.click();
-      const terminal = window.locator('.terminal-wrapper .xterm, .terminal .xterm').first();
-      await terminal.waitFor({ state: 'visible', timeout: 20_000 });
-
-      step = 'the terminal runs claude auth login';
-      const deadline = Date.now() + 15_000;
+      // The proof file is the real assertion: it can exist only if a terminal actually ran the
+      // fake claude, which needs no keyboard interaction and so no dependency on exactly how (or
+      // in which part of the Agents window's layout) the terminal itself renders. Cold: this is
+      // the first terminal in a freshly-launched app, so give it longer than editor.ts's own
+      // terminal check does for one opened by Ctrl+Backtick into an already-warm window.
+      const deadline = Date.now() + 40_000;
       while (!existsSync(proofFile) && Date.now() < deadline) {
         await window.waitForTimeout(250);
       }
       if (!existsSync(proofFile)) {
-        throw new Error(`the terminal never ran the fake claude (expected ${proofFile})`);
+        const terminals = await window.locator('.terminal-wrapper .xterm, .terminal .xterm').count();
+        throw new Error(`the terminal never ran the fake claude (expected ${proofFile}; ${String(terminals)} terminal(s) visible)`);
       }
       const argv = readFileSync(proofFile, 'utf8').trim();
       if (argv !== 'auth login') {
