@@ -17,7 +17,7 @@ import { WispdError } from '../../../../../platform/wisp/common/wispd.js';
 import type { ContextFile } from '../../../../../platform/wisp/common/wispProtocol.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { WispContextAddFileFlow } from '../../browser/wispContextAddFile.js';
-import { WispContextEditorBanner, wispContextBannerMessage } from '../../browser/wispContextEditorBanner.js';
+import { WispContextEditorBanner, wispContextBannerMessage, wispContextBannerTitle } from '../../browser/wispContextEditorBanner.js';
 import { WispContextFileSystemProvider } from '../../browser/wispContextFileSystemProvider.js';
 import { IWispContextService, WispContextService } from '../../browser/wispContextService.js';
 import { contextFileDetail, projectFacts } from '../../browser/wispProjectView.js';
@@ -536,7 +536,6 @@ suite('wisp: shared context', () => {
 			const modelChange = new Emitter<void>();
 			let model = initialModel;
 			let nextId = 1;
-			let layoutZoneCalls = 0;
 			const zones = new Map<string, IViewZone>();
 			const editor = {
 				getModel: () => model,
@@ -545,7 +544,7 @@ suite('wisp: shared context', () => {
 					callback({
 						addZone: (zone: IViewZone) => { const id = String(nextId++); zones.set(id, zone); return id; },
 						removeZone: (id: string) => { zones.delete(id); },
-						layoutZone: () => { layoutZoneCalls++; },
+						layoutZone: () => { /* unused: the zone's height is fixed, never relaid out */ },
 					} as IViewZoneChangeAccessor);
 				},
 			};
@@ -553,39 +552,12 @@ suite('wisp: shared context', () => {
 				editor: editor as unknown as ICodeEditor,
 				zones,
 				setModel: (next: { uri: URI } | null) => { model = next; modelChange.fire(); },
-				layoutZoneCalls: () => layoutZoneCalls,
 				dispose: () => modelChange.dispose(),
 			};
 		}
 
 		function fakeHostStatus(host: string): IWispHostStatusService {
 			return { status: observableValue<IWispHostStatus>('status', { host } as unknown as IWispHostStatus) } as unknown as IWispHostStatusService;
-		}
-
-		/**
-		 * Replaces the global `ResizeObserver` for one test: `WispContextEditorBanner` measures its
-		 * inner text element with one instead of `ICodeEditor.onDidLayoutChange`, since upstream's view
-		 * zones start hidden (editor/vscode's viewZones.ts), so the zone's own domNode (and anything
-		 * inside it) measures 0px at the moment `addZone` returns; a `ResizeObserver` is what actually
-		 * notices the hidden-to-shown transition once the browser lays it out for real (#106's third
-		 * review), which nothing in this test double triggers on its own. `trigger` stands in for that.
-		 */
-		function fakeResizeObserver() {
-			const original = globalThis.ResizeObserver;
-			const observed = new Map<Element, ResizeObserverCallback>();
-			let disconnected = 0;
-			class FakeResizeObserver implements ResizeObserver {
-				constructor(private readonly callback: ResizeObserverCallback) { }
-				observe(target: Element): void { observed.set(target, this.callback); }
-				unobserve(target: Element): void { observed.delete(target); }
-				disconnect(): void { disconnected++; }
-			}
-			(globalThis as { ResizeObserver: typeof ResizeObserver }).ResizeObserver = FakeResizeObserver;
-			return {
-				trigger: (target: Element) => observed.get(target)?.([] as unknown as ResizeObserverEntry[], undefined as unknown as ResizeObserver),
-				disconnectCalls: () => disconnected,
-				restore: () => { (globalThis as { ResizeObserver: typeof ResizeObserver }).ResizeObserver = original; },
-			};
 		}
 
 		test('adds a zone naming the host for a wisp-context: model, and removes it for any other', () => {
@@ -622,51 +594,22 @@ suite('wisp: shared context', () => {
 			dispose();
 		});
 
-		test('carries the full message as a hover title, and resizes the zone once it is shown and again on width changes', () => {
-			const resizeObserver = fakeResizeObserver();
-			try {
-				const { editor, zones, layoutZoneCalls, dispose } = fakeEditor({ uri: toContextUri(ONE, 'notes.md') });
-				const banner = new WispContextEditorBanner(editor, fakeHostStatus('this Mac'));
-				const zone = [...zones.values()][0];
-				const message = wispContextBannerMessage('this Mac');
-				assert.strictEqual(zone.domNode.getAttribute('title'), message, 'the full sentence is readable on hover even if the zone is too short to show it all');
-				assert.strictEqual(zone.heightInPx, 28, 'starts with a single-line guess, since the zone is still hidden when it is added');
+		test('shows the short message, a fixed two-line zone, and the full sentence as a hover title', () => {
+			const { editor, zones, dispose } = fakeEditor({ uri: toContextUri(ONE, 'notes.md') });
+			const banner = new WispContextEditorBanner(editor, fakeHostStatus('this Mac'));
+			const zone = [...zones.values()][0];
 
-				const inner = zone.domNode.querySelector<HTMLElement>('.wisp-context-banner-text');
-				assert.ok(inner, 'measures a dedicated inner element, not the zone\'s own domNode, which the zone infrastructure positions itself');
+			// A fixed heightInLines, not a measured heightInPx (#106's third review): nothing about
+			// this depends on the browser laying anything out first, so it can never race the moment a
+			// newly added view zone is still hidden the way a dynamic, ResizeObserver-driven height did.
+			assert.strictEqual(zone.heightInLines, 2);
+			assert.strictEqual(zone.heightInPx, undefined);
+			assert.strictEqual(zone.domNode.textContent, wispContextBannerMessage('this Mac'));
+			assert.strictEqual(zone.domNode.getAttribute('title'), wispContextBannerTitle('this Mac'), 'the full sentence is reachable on hover even though the bar itself shows the shorter message');
+			assert.notStrictEqual(wispContextBannerMessage('this Mac'), wispContextBannerTitle('this Mac'));
 
-				// The zone is hidden when it is first added (upstream's viewZones.ts), so the editor's
-				// own first measurement of anything inside it is 0; a callback reporting that changes
-				// nothing (#106's third review: this used to be read as "no real content yet" and skipped,
-				// but a wrong test bailed the same way on a genuine, later 0, so this checks the guess is
-				// left alone rather than assuming why).
-				Object.defineProperty(inner, 'offsetHeight', { value: 0, configurable: true });
-				resizeObserver.trigger(inner);
-				assert.strictEqual(zone.heightInPx, 28);
-				assert.strictEqual(layoutZoneCalls(), 0);
-
-				// The zone is shown and the browser lays the wrapped text out for real.
-				Object.defineProperty(inner, 'offsetHeight', { value: 56, configurable: true });
-				resizeObserver.trigger(inner);
-				assert.strictEqual(zone.heightInPx, 56, 'relayouts to the now-known real height');
-				assert.strictEqual(layoutZoneCalls(), 1);
-
-				// The pane narrows further, wrapping a fourth line.
-				Object.defineProperty(inner, 'offsetHeight', { value: 74, configurable: true });
-				resizeObserver.trigger(inner);
-				assert.strictEqual(zone.heightInPx, 74, 'relayouts again on a later width-driven resize');
-				assert.strictEqual(layoutZoneCalls(), 2);
-
-				// A resize that doesn't change the measured height is a no-op.
-				resizeObserver.trigger(inner);
-				assert.strictEqual(layoutZoneCalls(), 2);
-
-				banner.dispose();
-				assert.strictEqual(resizeObserver.disconnectCalls(), 1, 'disposing the contribution disconnects the observer');
-				dispose();
-			} finally {
-				resizeObserver.restore();
-			}
+			banner.dispose();
+			dispose();
 		});
 	});
 

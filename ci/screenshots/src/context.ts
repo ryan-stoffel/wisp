@@ -21,11 +21,10 @@ export async function addSharedContextFile(window: Page, name: string): Promise<
   await window.locator('.wisp-project-context-link', { hasText: name }).waitFor({ state: 'visible' });
   await window.locator(`.monaco-editor[data-uri$="/${name}"] .view-lines`).waitFor({ state: 'visible' });
   await window.locator('.wisp-context-banner').waitFor({ state: 'visible' });
-  // The banner's view zone is added at a guessed height and only corrected once a ResizeObserver
-  // measures its real, wrapped content (#106's third review), which can land a frame or two after
-  // the banner first becomes visible at that guess. Waiting for `visible` alone caught that gap: line
-  // 1 of the file could still be drawn over the bar's own text. This polls the real layout instead,
-  // so the screenshot only happens once line 1 has actually moved below the bar.
+  // The banner is a fixed two-line zone (#106's third review), so line 1 of the file should always
+  // render below it without needing to wait for anything more than the elements existing. Checked
+  // here as a real assertion, not just a screenshot to eyeball, since a dynamic height once passed
+  // this same "visible" wait while still drawing line 1 over the bar's own text.
   await window.waitForFunction((path) => {
     const editor = document.querySelector(`.monaco-editor[data-uri$="${path}"]`);
     const banner = document.querySelector('.wisp-context-banner');

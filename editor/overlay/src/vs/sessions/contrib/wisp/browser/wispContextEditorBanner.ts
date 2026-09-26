@@ -7,7 +7,7 @@ import { $ } from '../../../../base/browser/dom.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { autorun } from '../../../../base/common/observable.js';
 import { localize } from '../../../../nls.js';
-import { ICodeEditor, IViewZone } from '../../../../editor/browser/editorBrowser.js';
+import { ICodeEditor } from '../../../../editor/browser/editorBrowser.js';
 import { EditorContributionInstantiation, registerEditorContribution } from '../../../../editor/browser/editorExtensions.js';
 import { IEditorContribution } from '../../../../editor/common/editorCommon.js';
 import { parseContextUri } from '../common/wispContextUri.js';
@@ -15,9 +15,29 @@ import { IWispHostStatusService } from './wispHostStatusService.js';
 
 export const WISP_CONTEXT_EDITOR_BANNER_ID = 'wisp.contrib.contextEditorBanner';
 
-/** The bar's text (docs/design/agents-window.md, note 10; issue #106's acceptance criteria). */
+/**
+ * How many lines the bar reserves, fixed rather than measured (#106's third review). A dynamic,
+ * ResizeObserver-driven height raced upstream's own hidden-then-shown cycle for a newly added view
+ * zone: the browser could still paint the zone at its initial guess before the observer's
+ * correction landed, so the packaged app's screenshot caught the file's own first line drawn over
+ * the bar's text, even though the same logic passed in a unit test that fakes the observer's
+ * timing. A fixed line count sidesteps that race entirely: nothing about it depends on the browser
+ * laying anything out first.
+ */
+const BANNER_LINES = 2;
+
+/**
+ * The bar's text (docs/design/agents-window.md, note 10), short enough to fit {@link BANNER_LINES}
+ * lines at the detail pane's minimum width. The full sentence is still reachable as the zone's
+ * hover title ({@link wispContextBannerTitle}).
+ */
 export function wispContextBannerMessage(host: string): string {
-	return localize('wispContext.banner', "This file lives on {0}, outside the repo. Every agent in the project reads it.", host);
+	return localize('wispContext.banner', "Lives on {0}, outside the repo. Every agent in this project reads it.", host);
+}
+
+/** The full sentence (issue #106's acceptance criteria), as the zone's hover title. */
+export function wispContextBannerTitle(host: string): string {
+	return localize('wispContext.bannerTitle', "This file lives on {0}, outside the repo. Every agent in the project reads it.", host);
 }
 
 /**
@@ -29,8 +49,6 @@ export class WispContextEditorBanner extends Disposable implements IEditorContri
 	static readonly ID = WISP_CONTEXT_EDITOR_BANNER_ID;
 
 	private zoneId: string | undefined;
-	private zone: IViewZone | undefined;
-	private resizeObserver: ResizeObserver | undefined;
 	private readonly zoneStore = this._register(new DisposableStore());
 
 	constructor(
@@ -58,53 +76,18 @@ export class WispContextEditorBanner extends Disposable implements IEditorContri
 
 	private renderZone(host: string): void {
 		this.removeZone();
-		const message = wispContextBannerMessage(host);
-		// A dedicated inner element to measure, kept apart from the domNode the zone infrastructure
-		// itself owns and positions: upstream's view zones add the zone hidden and only show it on the
-		// next render (editor/vscode's viewZones.ts), so the zone's own domNode measures 0px at the
-		// moment addZone returns, and the editor then keeps whatever heightInPx was passed as the
-		// guess. Measuring here is deferred to a ResizeObserver on the inner element instead, which
-		// fires once for that hidden-to-shown transition (0 to its real wrapped height) and again on
-		// every width change afterwards (the pane resizing, wrapping the sentence differently),
-		// covering both "re-measure once it's shown" and "re-measure on width changes" the same way
-		// (#106's third review). Until the first callback lands, the outer domNode clips to whatever
-		// height is current, so a still-wrong guess hides extra lines instead of drawing them over the
-		// file's own content below.
-		const inner = $('.wisp-context-banner-text', undefined, message);
-		const domNode = $('.wisp-context-banner', { role: 'note', title: message }, inner);
-		const zone: IViewZone = { afterLineNumber: 0, heightInPx: 28, domNode };
-		this.zone = zone;
+		const domNode = $('.wisp-context-banner', { role: 'note', title: wispContextBannerTitle(host) }, wispContextBannerMessage(host));
 		this.editor.changeViewZones(accessor => {
-			this.zoneId = accessor.addZone(zone);
+			this.zoneId = accessor.addZone({ afterLineNumber: 0, heightInLines: BANNER_LINES, domNode });
 		});
-		// removeZone() above already disconnected and cleared any previous observer.
-		this.resizeObserver = new ResizeObserver(() => this.resize(inner));
-		this.resizeObserver.observe(inner);
-	}
-
-	/** Relays out the zone to the inner element's current (natural, wrapped) height, if it changed. */
-	private resize(inner: HTMLElement): void {
-		if (this.zoneId === undefined || !this.zone) {
-			return;
-		}
-		const height = inner.offsetHeight;
-		if (!height || height === this.zone.heightInPx) {
-			return;
-		}
-		this.zone.heightInPx = height;
-		const id = this.zoneId;
-		this.editor.changeViewZones(accessor => accessor.layoutZone(id));
 	}
 
 	private removeZone(): void {
-		this.resizeObserver?.disconnect();
-		this.resizeObserver = undefined;
 		if (this.zoneId === undefined) {
 			return;
 		}
 		const id = this.zoneId;
 		this.zoneId = undefined;
-		this.zone = undefined;
 		this.editor.changeViewZones(accessor => accessor.removeZone(id));
 	}
 

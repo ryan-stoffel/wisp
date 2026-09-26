@@ -5,11 +5,9 @@
 /* The bar above a shared context file's content (note 10): theme tokens only. */
 
 /*
- * No fixed height: the contribution measures .wisp-context-banner-text's own (wrapped) height and
- * sizes the view zone to match, since the detail pane is often narrower than the message needs
- * (#106 review, rounds two and three). overflow stays hidden here so a view zone that is still the
- * previous (or the initial, still-hidden-zone) guess clips the extra lines instead of drawing them
- * over the file's own content below.
+ * A fixed two-line zone (#106's third review): overflow stays hidden so a host name long enough to
+ * need a third line is clipped instead of drawn over the file's own content below, the same way a
+ * still-wrong dynamic guess would have been (the previous approach this replaced).
  */
 .wisp-context-banner {
 	display: flex;
@@ -22,11 +20,6 @@
 	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
 	color: var(--vscode-descriptionForeground);
 	font-size: var(--vscode-fontSize-label1);
-}
-
-.wisp-context-banner-text {
-	flex: 1;
-	min-width: 0;
 	line-height: 1.4;
 	white-space: normal;
 }
