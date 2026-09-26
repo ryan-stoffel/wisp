@@ -10,6 +10,7 @@ import { ThemeIcon } from '../../../../../base/common/themables.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { localize } from '../../../../../nls.js';
 import { WispdState } from '../../../../../platform/wisp/common/wispd.js';
+import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { isLocalHost } from '../../../../../platform/wisp/common/wispdConfiguration.js';
 import type { Project } from '../../../../../platform/wisp/common/wispProtocol.js';
 import { ChatModelSource, IChat, ISession, ISessionType, ISessionWorkspace, ISessionWorkspaceBrowseAction, SessionRemoteConnectionFailureReason, SessionRemoteConnectionStatus } from '../../../../services/sessions/common/session.js';
@@ -19,19 +20,22 @@ import { IWispAgentLocation } from './wispAgentChat.js';
 import { IWispAgentsService } from './wispAgentsService.js';
 import { IWispProjectAgents, IWispProjectHost, WispProjectSession } from './wispProjectSession.js';
 import { IWispProjectsService } from './wispProjectsService.js';
+import { IWispThreadsService } from './wispThreadsService.js';
+import { WISP_THREAD_TYPE, WispThreadSessions } from './wispThreadSessions.js';
 
 export const WISP_SESSIONS_PROVIDER_ID = 'wisp';
 
 /**
  * wisp's sessions provider (decision record 0011): one `wisp.project` session per project on the
  * connected host, kept current by `IWispProjectsService`, which follows the editor's wispd
- * connection, with the project's agent runs from `IWispAgentsService` as its subagent chats (0015).
- * It holds no logic of its own beyond that mapping.
+ * connection, with the project's agent runs from `IWispAgentsService` as its subagent chats (0015),
+ * and one `wisp.thread` session per normal thread (0017), which `WispThreadSessions` keeps.
  *
- * Its capabilities are what wisp can do today. Projects are created from the sidebar, not from
- * upstream's new-session composer, so it offers no session types, workspaces, or quick chats, and
- * it has no models until accounts come (M2). Anything else that would create or change a session
- * or a chat is refused.
+ * Its capabilities are what wisp can do today. Projects are created from the sidebar. Normal
+ * threads come from upstream's new-session composer: when the host has the `threads` capability,
+ * the provider offers the `wisp.thread` type, repositories on the host as workspaces, and quick
+ * chats for threads with no repo. It has no models until accounts come (M2). Anything else that
+ * would create or change a session or a chat is refused.
  */
 export class WispSessionsProvider extends Disposable implements ISessionsProvider {
 
@@ -40,16 +44,18 @@ export class WispSessionsProvider extends Disposable implements ISessionsProvide
 	readonly icon: ThemeIcon = Codicon.server;
 	readonly order = 0;
 
-	readonly sessionTypes: readonly ISessionType[] = [];
-	readonly onDidChangeSessionTypes: Event<void> = Event.None;
 	readonly onDidChangeModels: Event<void> = Event.None;
 
 	private readonly _onDidChangeSessions = this._register(new Emitter<ISessionChangeEvent>());
 	readonly onDidChangeSessions: Event<ISessionChangeEvent> = this._onDidChangeSessions.event;
 
-	readonly browseActions: readonly ISessionWorkspaceBrowseAction[] = [];
-	readonly supportsLocalWorkspaces = false;
-	readonly supportsQuickChats = false;
+	private readonly _onDidChangeSessionTypes = this._register(new Emitter<void>());
+	readonly onDidChangeSessionTypes: Event<void> = this._onDidChangeSessionTypes.event;
+	private readonly _onDidChangeCapabilities = this._register(new Emitter<void>());
+	readonly onDidChangeCapabilities: Event<void> = this._onDidChangeCapabilities.event;
+
+	/** Normal threads and the composer's drafts (0017). */
+	readonly threads: WispThreadSessions;
 
 	/** By project id, in the order `project/list` gave them. */
 	private readonly sessions = new Map<string, WispProjectSession>();
@@ -60,6 +66,8 @@ export class WispSessionsProvider extends Disposable implements ISessionsProvide
 		@IWispProjectsService projectsService: IWispProjectsService,
 		@IWispHostStatusService private readonly hostStatusService: IWispHostStatusService,
 		@IWispAgentsService private readonly agentsService: IWispAgentsService,
+		@IWispThreadsService threadsService: IWispThreadsService,
+		@IInstantiationService instantiationService: IInstantiationService,
 	) {
 		super();
 		this.connectionStatus = derived(this, reader => sessionConnectionStatus(hostStatusService.state.read(reader)));
@@ -68,6 +76,41 @@ export class WispSessionsProvider extends Disposable implements ISessionsProvide
 			host: hostStatusService.status.read(reader).host,
 		}));
 		this._register(autorun(reader => this.sync(projectsService.projects.read(reader))));
+		this.threads = this._register(instantiationService.createInstance(WispThreadSessions, this.id, {
+			isLocal: derived(this, reader => isLocalHost(hostStatusService.configuredHost.read(reader))),
+			connectionStatus: this.connectionStatus,
+			location: this.location,
+		}));
+		this._register(this.threads.onDidChangeSessions(event => this._onDidChangeSessions.fire(event)));
+		// The thread type, quick chats, and the repo picker follow the host's `threads` capability.
+		let first = true;
+		this._register(autorun(reader => {
+			threadsService.available.read(reader);
+			hostStatusService.configuredHost.read(reader);
+			if (first) {
+				first = false;
+				return;
+			}
+			this._onDidChangeSessionTypes.fire();
+			this._onDidChangeCapabilities.fire();
+		}));
+	}
+
+	get sessionTypes(): readonly ISessionType[] {
+		return this.threads.available ? [WISP_THREAD_TYPE] : [];
+	}
+
+	get browseActions(): readonly ISessionWorkspaceBrowseAction[] {
+		return this.threads.available ? [this.threads.browseAction] : [];
+	}
+
+	/** A local host's folders can be picked with the native folder picker. */
+	get supportsLocalWorkspaces(): boolean {
+		return this.threads.available && isLocalHost(this.hostStatusService.configuredHost.get());
+	}
+
+	get supportsQuickChats(): boolean {
+		return this.threads.available;
 	}
 
 	private sync(projects: readonly Project[]): void {
@@ -118,34 +161,44 @@ export class WispSessionsProvider extends Disposable implements ISessionsProvide
 	}
 
 	getSessions(): ISession[] {
-		return [...this.sessions.values()];
+		return [...this.sessions.values(), ...this.threads.getSessions()];
 	}
 
-	getSessionTypes(_workspaceUri: URI): ISessionType[] {
-		return [];
+	getSessionTypes(workspaceUri: URI): ISessionType[] {
+		return this.threads.resolveWorkspace(workspaceUri) ? [WISP_THREAD_TYPE] : [];
 	}
 
-	resolveWorkspace(_workspaceUri: URI): ISessionWorkspace | undefined {
-		return undefined;
+	resolveWorkspace(workspaceUri: URI): ISessionWorkspace | undefined {
+		return this.threads.resolveWorkspace(workspaceUri);
 	}
 
 	getModelsSnapshot(_sessionId: string, _desiredModelId?: string): ISessionModelsSnapshot {
 		return { models: [], desiredModelResolution: { kind: 'notRequested' }, modelTarget: undefined };
 	}
 
-	getModelPickerOptions(_sessionId: string): ISessionModelPickerOptions {
-		return { useGroupedModelPicker: false, showFeatured: false, showUnavailableFeatured: false, showManageModelsAction: false, showAutoModel: false };
+	getModelPickerOptions(sessionId: string): ISessionModelPickerOptions {
+		// A thread's agent runs on the account wispd picks (0012), whose model is the CLI's.
+		const auto = !!this.threads.getSession(sessionId);
+		return { useGroupedModelPicker: false, showFeatured: false, showUnavailableFeatured: false, showManageModelsAction: false, showAutoModel: auto };
 	}
 
-	createNewSession(_workspaceUri: URI, _sessionTypeId: string): ISession {
-		throw notSupported();
+	createNewSession(workspaceUri: URI, sessionTypeId: string): ISession {
+		if (sessionTypeId !== WISP_THREAD_TYPE.id) {
+			throw notSupported();
+		}
+		return this.threads.createDraft(workspaceUri);
 	}
 
-	createQuickChat(_sessionTypeId: string): ISession {
-		throw notSupported();
+	createQuickChat(sessionTypeId: string): ISession {
+		if (sessionTypeId !== WISP_THREAD_TYPE.id) {
+			throw notSupported();
+		}
+		return this.threads.createDraft(undefined);
 	}
 
-	deleteNewSession(_sessionId: string): void { }
+	deleteNewSession(sessionId: string): void {
+		this.threads.deleteDraft(sessionId);
+	}
 
 	setModel(_sessionId: string, _chatResource: URI, _modelId: string, _source: ChatModelSource): void { }
 
@@ -157,32 +210,48 @@ export class WispSessionsProvider extends Disposable implements ISessionsProvide
 		throw notSupported();
 	}
 
-	async archiveSession(_sessionId: string): Promise<void> {
-		throw notSupported();
+	async archiveSession(sessionId: string): Promise<void> {
+		if (!this.threads.getSession(sessionId)) {
+			throw notSupported();
+		}
+		await this.threads.setArchived(sessionId, true);
 	}
 
-	async unarchiveSession(_sessionId: string): Promise<void> {
-		throw notSupported();
+	async unarchiveSession(sessionId: string): Promise<void> {
+		if (!this.threads.getSession(sessionId)) {
+			throw notSupported();
+		}
+		await this.threads.setArchived(sessionId, false);
 	}
 
 	async setSessionReadState(_sessionId: string, _isRead: boolean): Promise<void> {
 		// Projects are always read until the coordinator runs (M4).
 	}
 
-	async deleteSession(_sessionId: string): Promise<void> {
-		throw notSupported();
+	async deleteSession(sessionId: string): Promise<void> {
+		if (!this.threads.getSession(sessionId)) {
+			throw notSupported();
+		}
+		await this.threads.delete(sessionId);
 	}
 
-	async deleteSessions(_sessionIds: readonly string[]): Promise<void> {
-		throw notSupported();
+	async deleteSessions(sessionIds: readonly string[]): Promise<void> {
+		for (const sessionId of sessionIds) {
+			await this.deleteSession(sessionId);
+		}
 	}
 
 	async deleteChat(_sessionId: string, _chatUri: URI): Promise<boolean> {
 		return false;
 	}
 
-	async createNewChat(_sessionId: string, _prompt?: string): Promise<IChat> {
-		throw notSupported();
+	async createNewChat(sessionId: string, _prompt?: string): Promise<IChat> {
+		// The composer's first message: a draft thread's one chat, which `sendRequest` starts.
+		const draft = this.threads.isDraft(sessionId) ? this.threads.getSession(sessionId) : undefined;
+		if (!draft) {
+			throw notSupported();
+		}
+		return draft.mainChat.get();
 	}
 
 	async forkChat(_sessionId: string, _sourceChat: URI, _turnId: string): Promise<IChat> {
@@ -193,7 +262,10 @@ export class WispSessionsProvider extends Disposable implements ISessionsProvide
 		throw notSupported();
 	}
 
-	async sendRequest(_sessionId: string, _chatResource: URI, _options: ISendRequestOptions): Promise<ISession> {
+	async sendRequest(sessionId: string, _chatResource: URI, options: ISendRequestOptions): Promise<ISession> {
+		if (this.threads.isDraft(sessionId)) {
+			return this.threads.send(sessionId, options.query);
+		}
 		throw new Error(localize('wispSessionsProvider.noCoordinator', "The coordinator can't take messages yet."));
 	}
 }
