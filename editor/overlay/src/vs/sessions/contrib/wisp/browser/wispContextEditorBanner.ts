@@ -30,6 +30,7 @@ export class WispContextEditorBanner extends Disposable implements IEditorContri
 
 	private zoneId: string | undefined;
 	private zone: IViewZone | undefined;
+	private resizeObserver: ResizeObserver | undefined;
 	private readonly zoneStore = this._register(new DisposableStore());
 
 	constructor(
@@ -49,10 +50,6 @@ export class WispContextEditorBanner extends Disposable implements IEditorContri
 		if (!parsed?.path) {
 			return;
 		}
-		// The detail pane is often narrower than the sentence needs (round two of #106's review), so
-		// the zone's height follows the domNode's own wrapped height, not a fixed guess, and is kept
-		// in sync as the editor's width changes (the pane resizing, or the window itself).
-		this.zoneStore.add(this.editor.onDidLayoutChange(() => this.resize()));
 		this.zoneStore.add(autorun(reader => {
 			const status = this.hostStatusService.status.read(reader);
 			this.renderZone(status.host);
@@ -62,21 +59,35 @@ export class WispContextEditorBanner extends Disposable implements IEditorContri
 	private renderZone(host: string): void {
 		this.removeZone();
 		const message = wispContextBannerMessage(host);
-		const domNode = $('.wisp-context-banner', { role: 'note', title: message }, message);
+		// A dedicated inner element to measure, kept apart from the domNode the zone infrastructure
+		// itself owns and positions: upstream's view zones add the zone hidden and only show it on the
+		// next render (editor/vscode's viewZones.ts), so the zone's own domNode measures 0px at the
+		// moment addZone returns, and the editor then keeps whatever heightInPx was passed as the
+		// guess. Measuring here is deferred to a ResizeObserver on the inner element instead, which
+		// fires once for that hidden-to-shown transition (0 to its real wrapped height) and again on
+		// every width change afterwards (the pane resizing, wrapping the sentence differently),
+		// covering both "re-measure once it's shown" and "re-measure on width changes" the same way
+		// (#106's third review). Until the first callback lands, the outer domNode clips to whatever
+		// height is current, so a still-wrong guess hides extra lines instead of drawing them over the
+		// file's own content below.
+		const inner = $('.wisp-context-banner-text', undefined, message);
+		const domNode = $('.wisp-context-banner', { role: 'note', title: message }, inner);
 		const zone: IViewZone = { afterLineNumber: 0, heightInPx: 28, domNode };
 		this.zone = zone;
 		this.editor.changeViewZones(accessor => {
 			this.zoneId = accessor.addZone(zone);
 		});
-		this.resize();
+		// removeZone() above already disconnected and cleared any previous observer.
+		this.resizeObserver = new ResizeObserver(() => this.resize(inner));
+		this.resizeObserver.observe(inner);
 	}
 
-	/** Measures the domNode's own (wrapped) height and relays out the zone if it changed. */
-	private resize(): void {
+	/** Relays out the zone to the inner element's current (natural, wrapped) height, if it changed. */
+	private resize(inner: HTMLElement): void {
 		if (this.zoneId === undefined || !this.zone) {
 			return;
 		}
-		const height = this.zone.domNode.offsetHeight;
+		const height = inner.offsetHeight;
 		if (!height || height === this.zone.heightInPx) {
 			return;
 		}
@@ -86,6 +97,8 @@ export class WispContextEditorBanner extends Disposable implements IEditorContri
 	}
 
 	private removeZone(): void {
+		this.resizeObserver?.disconnect();
+		this.resizeObserver = undefined;
 		if (this.zoneId === undefined) {
 			return;
 		}

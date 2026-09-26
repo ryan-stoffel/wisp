@@ -5,20 +5,28 @@
 /* The bar above a shared context file's content (note 10): theme tokens only. */
 
 /*
- * No fixed height: the contribution measures this node's own (wrapped) height and sizes the view
- * zone to match, since the detail pane is often narrower than the message needs (#106 review,
- * round two).
+ * No fixed height: the contribution measures .wisp-context-banner-text's own (wrapped) height and
+ * sizes the view zone to match, since the detail pane is often narrower than the message needs
+ * (#106 review, rounds two and three). overflow stays hidden here so a view zone that is still the
+ * previous (or the initial, still-hidden-zone) guess clips the extra lines instead of drawing them
+ * over the file's own content below.
  */
 .wisp-context-banner {
 	display: flex;
 	align-items: center;
 	box-sizing: border-box;
 	width: 100%;
+	overflow: hidden;
 	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size160);
 	background-color: var(--vscode-editorWidget-background);
 	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
 	color: var(--vscode-descriptionForeground);
 	font-size: var(--vscode-fontSize-label1);
+}
+
+.wisp-context-banner-text {
+	flex: 1;
+	min-width: 0;
 	line-height: 1.4;
 	white-space: normal;
 }
