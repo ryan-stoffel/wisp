@@ -10,40 +10,15 @@ import { IQuickInputService } from '../../../../platform/quickinput/common/quick
 import { WispdError, WispdUnavailableError } from '../../../../platform/wisp/common/wispd.js';
 import type { ContextFile, ProjectId } from '../../../../platform/wisp/common/wispProtocol.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
-import { toContextUri } from '../common/wispContextUri.js';
+import { toContextUri, validateContextFileName } from '../common/wispContextUri.js';
 import { IWispContextService } from './wispContextService.js';
-
-/** wispd's limit on a shared context file's name (0005, #155). */
-const MAX_NAME_BYTES = 255;
-const EXTENSIONS = ['.md', '.markdown', '.txt'];
-const encoder = new TextEncoder();
-
-/**
- * wispd only ever holds Markdown or plain text in a project's shared context: one file name, no
- * path, no leading dot, and one of the extensions it accepts.
- */
-export function validateContextFileName(name: string): string | undefined {
-	if (name.length === 0) {
-		return localize('wispContext.nameEmpty', "Enter a file name.");
-	}
-	if (name.includes('/') || name.includes('\\')) {
-		return localize('wispContext.nameSlash', "Enter a file name, not a path.");
-	}
-	if (name.startsWith('.')) {
-		return localize('wispContext.nameDot', "Enter a name that doesn't start with a dot.");
-	}
-	if (!EXTENSIONS.some(extension => name.endsWith(extension))) {
-		return localize('wispContext.nameExtension', "Enter a name ending in .md, .markdown, or .txt.");
-	}
-	if (encoder.encode(name).length > MAX_NAME_BYTES) {
-		return localize('wispContext.nameLength', "Enter a name of at most {0} bytes.", MAX_NAME_BYTES);
-	}
-	return undefined;
-}
 
 /**
  * Adds a shared context file (docs/design/agents-window.md, note 10; decision record 0005): asks
- * for its name, creates it empty with `context/write`, and opens it in the editor.
+ * for its name, and either opens it if it already exists, or creates it empty with `context/write`
+ * and opens it. wispd's protocol has no listing method that is cheaper than a read, and the
+ * watched list can be stale (another agent's write, or a project nobody has watched yet), so this
+ * always checks with `context/read` rather than trusting `IWispContextService.state`.
  */
 export class WispContextAddFileFlow {
 
@@ -59,18 +34,35 @@ export class WispContextAddFileFlow {
 		if (name === undefined) {
 			return undefined;
 		}
+		let existing: ContextFile | undefined;
+		try {
+			existing = (await this.contextService.read(project, name)).file;
+		} catch (error) {
+			if (!(error instanceof WispdError && error.kind === 'contextNotFound')) {
+				this.notifyFailure(name, error);
+				return undefined;
+			}
+		}
+		if (existing) {
+			await this.editorService.openEditor({ resource: toContextUri(project, name) });
+			return existing;
+		}
 		let file: ContextFile;
 		try {
 			file = await this.contextService.write(project, name, '');
 		} catch (error) {
-			const message = error instanceof WispdError || error instanceof WispdUnavailableError
-				? error.message
-				: error instanceof Error ? error.message : String(error);
-			this.notificationService.error(localize('wispContext.addFailed', "Couldn't add {0}: {1}", name, message));
+			this.notifyFailure(name, error);
 			return undefined;
 		}
 		await this.editorService.openEditor({ resource: toContextUri(project, name) });
 		return file;
+	}
+
+	private notifyFailure(name: string, error: unknown): void {
+		const message = error instanceof WispdError || error instanceof WispdUnavailableError
+			? error.message
+			: error instanceof Error ? error.message : String(error);
+		this.notificationService.error(localize('wispContext.addFailed', "Couldn't add {0}: {1}", name, message));
 	}
 
 	private ask(): Promise<string | undefined> {
