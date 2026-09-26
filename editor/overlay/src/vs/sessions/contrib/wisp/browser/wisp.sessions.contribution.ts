@@ -19,6 +19,7 @@ import './wispHostMenu.js';
 import './wispNewProject.js';
 import './wispSearch.js';
 import './wispProject.contribution.js';
+import './wispContext.contribution.js';
 import './wispComposerFooter.js';
 import './wispAccountsEditor.js';
 import './wispComposerAccount.js';
