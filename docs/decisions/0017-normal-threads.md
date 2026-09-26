@@ -16,7 +16,7 @@
 - **A repo entry** is a lightweight record of a repository on the host: `{id, name, path, scratch}`, registered by `repo/add` when the user picks the repository. It has no coordinator and no Project tab. One entry per canonical path, so asking twice for the same folder returns the first entry, whatever id the second request carried.
 - **A run's scope.** `AgentRun.project`, the runs table's `project_id`, and the event log's project column hold a *scope id*: a project's id for a subagent, or a repo entry's id for a thread. So `agent/list {project}` and `events/subscribe {project}` take a repo entry's id as they take a project's, and a thread's `agent.*` events go to its entry's id. Both kinds of id are UUIDv7s, generated independently, so they never collide. The editor reuses #105's per-project code for repo entries unchanged.
 - **Threads with no repo.** Each gets its own scratch repository at `<data folder>/scratch/<run id>`, which wispd makes with `git init`, a local `wisp <wisp@localhost>` identity, and one empty commit on `main`. The worktree is cut from it, as from any repository. Separate repositories keep one quick chat from reading another's files. All of them belong to one scratch entry (`scratch: true`, named "No Repo", with the `scratch` folder as its path), made on first use and announced with `repo.added`.
-- **Shared context.** A thread writes notes to its entry's context folder, `context/<repo id>`, which the runner already gives every run. Threads in one repository share it. No UI shows it yet.
+- **Context.** A thread in a repository writes notes to its entry's context folder, `context/<repo id>`, which the runner already gives every run, so threads in one repository share it. A thread with no repo gets its own, `context/<run id>`, so quick chats share no notes, for the same reason each has its own scratch repository. No UI shows either yet.
 - **The first prompt** tells a thread's agent its limits, as a worker's does, without calling it a worker or mentioning a project.
 - **The sandbox** (0013) is unchanged except that Claude's `allowRead` now also lists the read-only git paths: the worktree's `.git` file and the repository's git folder. A scratch repository's git folder lies inside wispd's data folder, which is `denyRead`. Without this, a thread with no repo couldn't run `git status` or `git diff`. For a repository outside the data folder, those paths were readable already, so nothing changes there. They stay `denyWrite`.
 
@@ -32,13 +32,13 @@
 
 - `Thread` is `{id, repo, archived?, createdAt}`, where `id` is the run's id. The run itself comes from `agent/list` and `agent.*`, as for a subagent.
 - Host-level events: `repo.added {repo}`, `thread.started {thread}`, `thread.updated {thread}` (archive), and `thread.deleted {runId, repo}`.
-- New error kinds: `repoNotFound`, `threadNotFound`, and `runActive`. `thread/delete` fails with `runActive` while the run's CLI runs, and the editor cancels the run first.
-- `repo/add` takes an absolute path with no `.` or `..` segments that is the top folder of a git working tree (`notARepository` otherwise, as for `project/create`), and refuses wisp's own worktrees and scratch repositories.
-- **Deleting** removes the thread, run, and worktree rows and the run's stored events in one transaction. It then removes the worktree and its branch, and a scratch repository after checking that its path is exactly `<scratch folder>/<run id>`. Startup's garbage collection removes a worktree folder that a crash left behind (#171).
+- New error kinds: `repoNotFound` and `threadNotFound`.
+- `repo/add` takes an absolute path with no `.` or `..` segments that is the top folder of a git working tree (`notARepository` otherwise, as for `project/create`), and refuses anything inside wispd's data folder, which holds wisp's own worktrees, scratch repositories, and notes.
+- **Deleting** goes through the run's actor, as `agent/accept` does, so it never races a resume, a commit, or an accept. A running CLI is cancelled first, and the delete waits for it to exit and its changes to be committed. Then one transaction removes the thread, run, and worktree rows and the run's stored events, and the run's events leave the in-memory replay window. Last, it removes the worktree and its branch, and for a thread with no repo its context folder and its scratch repository, after checking that the latter's path is exactly `<scratch folder>/<run id>`. A worktree folder that a crash left behind is for startup's garbage collection (#171), once wispd calls it (#209).
 
 ### Store
 
-Migration 9 adds `repos` and `threads`; version 8 is #157's. Migrations now apply every version that isn't recorded, not only those above the newest, so two branches that each add one can land in either order.
+Migration 9 adds `repos` and `threads`; version 8 is #157's. Migrations now apply every version that isn't recorded, not only those above the newest, so a developer database that ran a branch's migration before an earlier-numbered one landed still gets it. Versions must be exactly `1..=N`, which a unit test checks: two branches that each add a migration must take distinct numbers, and the test fails whichever merges second with a duplicate.
 
 ### Editor
 

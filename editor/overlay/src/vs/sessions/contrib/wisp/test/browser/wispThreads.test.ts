@@ -281,7 +281,7 @@ suite('wisp: threads', () => {
 
 	suite('archive and delete', () => {
 
-		test('go through the provider to wispd, stopping a running agent before deleting', async () => {
+		test('go through the provider to wispd, which stops a running agent itself', async () => {
 			const context = await services();
 			const [inRepo] = threadSessions(context);
 			await context.provider.archiveSession(inRepo.sessionId);
@@ -289,7 +289,7 @@ suite('wisp: threads', () => {
 			await context.provider.deleteSession(inRepo.sessionId);
 			await settle();
 			const calls = context.wispd.requests.map(([method]) => method).filter(method => method.startsWith('thread/') && method !== 'thread/list' || method === 'agent/cancel');
-			assert.deepStrictEqual(calls, ['thread/archive', 'agent/cancel', 'thread/delete']);
+			assert.deepStrictEqual(calls, ['thread/archive', 'thread/delete']);
 			assert.ok(!threadSessions(context).some((session: ISession) => session === inRepo), 'the deleted thread leaves the list');
 			await assert.rejects(() => context.provider.archiveSession('wisp:wisp.project:/nope'));
 		});

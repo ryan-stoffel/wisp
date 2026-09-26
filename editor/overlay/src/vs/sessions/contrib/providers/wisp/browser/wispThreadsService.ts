@@ -7,9 +7,8 @@ import { derived, IObservable, observableValue, transaction } from '../../../../
 import { createDecorator } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { generateUuidV7 } from '../../../../../platform/wisp/common/uuidv7.js';
-import { IWispdService, WispdError, WispdState, WispdSubscriptionMessage } from '../../../../../platform/wisp/common/wispd.js';
+import { IWispdService, WispdState, WispdSubscriptionMessage } from '../../../../../platform/wisp/common/wispd.js';
 import type { AccountChoice, AgentRun, LogId, Repo, RepoId, RunId, Thread } from '../../../../../platform/wisp/common/wispProtocol.js';
-import { isRunActive } from '../common/wispAgentRuns.js';
 import { THREADS_CAPABILITY } from '../common/wispThreads.js';
 import { IWispAgentsService } from './wispAgentsService.js';
 
@@ -122,21 +121,9 @@ export class WispThreadsService extends Disposable implements IWispThreadsServic
 	}
 
 	async delete(runId: RunId): Promise<void> {
-		const run = this.agentsService.getRun(runId);
-		if (run && isRunActive(run)) {
-			await this.agentsService.cancel(runId);
-		}
 		const generation = this.generation;
-		try {
-			await this.wispdService.request('thread/delete', { runId });
-		} catch (error) {
-			if (!(error instanceof WispdError && error.kind === 'runActive')) {
-				throw error;
-			}
-			// The cancel hasn't landed yet: try once more after it has had a moment.
-			await new Promise(resolve => setTimeout(resolve, 1000));
-			await this.wispdService.request('thread/delete', { runId });
-		}
+		// wispd stops a running agent first, and answers once it has exited.
+		await this.wispdService.request('thread/delete', { runId });
 		if (generation === this.generation) {
 			this.removeThread(runId);
 		}

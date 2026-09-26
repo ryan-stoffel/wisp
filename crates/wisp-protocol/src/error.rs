@@ -65,9 +65,6 @@ pub enum ErrorKind {
     RepoNotFound,
     /// No normal thread has the given run id (#110).
     ThreadNotFound,
-    /// The run's CLI is running, so wispd won't do what was asked, such as deleting its thread
-    /// (#110). Cancel it first.
-    RunActive,
     /// A kind this version does not know yet.
     #[serde(other)]
     #[ts(skip)]
@@ -172,7 +169,6 @@ mod tests {
             (ErrorKind::MergeConflict, "mergeConflict"),
             (ErrorKind::RepoNotFound, "repoNotFound"),
             (ErrorKind::ThreadNotFound, "threadNotFound"),
-            (ErrorKind::RunActive, "runActive"),
         ] {
             assert_eq!(serde_json::to_value(kind).unwrap(), json!(name));
             assert_eq!(

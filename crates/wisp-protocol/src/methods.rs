@@ -204,8 +204,8 @@ method_table! {
         ThreadStart = "thread/start": ThreadStartParams => ThreadStartResult;
         /// `thread/archive`: archives a normal thread or brings it back.
         ThreadArchive = "thread/archive": ThreadArchiveParams => ThreadArchiveResult;
-        /// `thread/delete`: deletes a normal thread with its run, worktree, and stored events.
-        /// Refused with `runActive` while its CLI runs.
+        /// `thread/delete`: deletes a normal thread with its run, worktree, and stored events,
+        /// stopping its CLI first if it runs.
         ThreadDelete = "thread/delete": ThreadDeleteParams => ThreadDeleteResult;
     }
     notifications {

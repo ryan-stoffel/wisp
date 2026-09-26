@@ -156,7 +156,7 @@ pub(crate) fn store_error(error: &StoreError) -> ErrorObject {
     ErrorObject::internal_error(format!("the project store failed: {error}"))
 }
 
-fn run_not_found(id: RunId) -> ErrorObject {
+pub(super) fn run_not_found(id: RunId) -> ErrorObject {
     ErrorObject::wisp(ErrorKind::RunNotFound, format!("no agent run has id {id}"))
 }
 
@@ -171,22 +171,29 @@ fn requested_account(account: Option<&AccountChoice>) -> Option<String> {
     account.and_then(|account| serde_json::to_string(account).ok())
 }
 
-/// The project's repository, the routing inputs, and the paths a worker for `project` needs,
+/// The project's repository, the routing inputs, and the paths run `run` of `project` needs,
 /// checked: everything that can refuse a worker before anything is created.
 pub(super) async fn prepare(
     daemon: &Arc<Daemon>,
     project: ProjectId,
+    run: RunId,
     requested: Option<AccountChoice>,
 ) -> Result<(Prepared, String), ErrorObject> {
-    let (repo_path, defaults, accounts) = store(daemon, move |db| {
+    let (repo_path, context_scope, defaults, accounts) = store(daemon, move |db| {
         let repo_path = crate::threads::scope_path(db, project)?;
+        let context_scope = crate::threads::context_scope(db, project, run)?;
         let defaults = crate::methods::read_defaults(db)?;
         let mut accounts = HashMap::new();
         for account in db.list_accounts().map_err(|error| store_error(&error))? {
             let account = crate::store::key_account(account)?;
             accounts.insert(account.id, account.provider);
         }
-        Ok((repo_path, defaults, StoredKeyAccounts(accounts)))
+        Ok((
+            repo_path,
+            context_scope,
+            defaults,
+            StoredKeyAccounts(accounts),
+        ))
     })
     .await?;
     let defaults = Defaults {
@@ -216,7 +223,7 @@ pub(super) async fn prepare(
     }
     let home = worker::home()?;
     let data_dir = sandbox_path(daemon.data_dir.root(), "wispd's data folder")?;
-    let context = crate::context::ensure_dir(&daemon.data_dir, project).map_err(|error| {
+    let context = crate::context::ensure_dir(&daemon.data_dir, context_scope).map_err(|error| {
         worker_unavailable(format!(
             "could not create the shared context folder: {error}"
         ))
@@ -445,7 +452,7 @@ pub(crate) async fn create(daemon: Arc<Daemon>, new: NewRun) -> Result<CreatedRu
         };
         return Ok(CreatedRun { run, thread: row });
     }
-    let (prepared, scope_path) = prepare(&daemon, project, account).await?;
+    let (prepared, scope_path) = prepare(&daemon, project, run_id, account).await?;
     let repo_path = match thread.as_ref().and_then(|thread| thread.scratch.clone()) {
         Some(scratch) => scratch.to_string_lossy().into_owned(),
         None => scope_path,
@@ -518,14 +525,13 @@ pub(crate) async fn create(daemon: Arc<Daemon>, new: NewRun) -> Result<CreatedRu
 }
 
 impl Agents {
-    /// Holds off every run's creation, and every actor's spawning, while a thread is deleted
-    /// (#110).
+    /// Holds off every run's creation, and every actor's spawning, while a thread's rows are
+    /// deleted and its actor dropped (#110).
     pub(crate) async fn creation_lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.start_lock.lock().await
     }
 
-    /// Drops run `id`'s actor, if it has one, so it stops once it has nothing left to do. Its
-    /// next command, if any, reads the run from the store again.
+    /// Drops run `id`'s actor from the map, so no new command reaches it.
     pub(crate) fn forget(&self, id: RunId) {
         self.actors
             .lock()
@@ -602,9 +608,10 @@ pub(crate) async fn cancel(daemon: Arc<Daemon>, id: RunId) -> Result<AgentRun, E
     ask(&daemon, id, |reply| Command::Cancel { reply }).await
 }
 
-/// Whether a stored run's CLI is starting or running.
-pub(crate) fn is_active(row: &wisp_store::Run) -> bool {
-    row.state.status == convert::STARTING || row.state.status == convert::RUNNING
+/// `thread/delete`'s part in the runner: through the run's actor, which stops a running CLI
+/// first and never races the run's own resume, commit, or accept.
+pub(crate) async fn delete(daemon: &Arc<Daemon>, id: RunId) -> Result<(), ErrorObject> {
+    ask(daemon, id, |reply| Command::Delete { reply }).await
 }
 
 /// `agent/accept`: through the run's actor, so it never races the run's own CLI or commit.

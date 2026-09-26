@@ -249,7 +249,7 @@ mod tests {
         let generated = generate();
         assert!(!generated.contains("bigint"));
         assert!(!generated.contains("\"unknown\""));
-        assert!(generated.contains("export type ErrorKind = \"notInitialized\" | \"incompatibleProtocol\" | \"resyncRequired\" | \"projectNotFound\" | \"accountNotFound\" | \"keychainUnavailable\" | \"idConflict\" | \"contextNotFound\" | \"contextTooLarge\" | \"notARepository\" | \"runNotFound\" | \"runNotResumable\" | \"workerUnavailable\" | \"worktreeFailed\" | \"runAccepted\" | \"mergeRefused\" | \"mergeConflict\" | \"repoNotFound\" | \"threadNotFound\" | \"runActive\";"));
+        assert!(generated.contains("export type ErrorKind = \"notInitialized\" | \"incompatibleProtocol\" | \"resyncRequired\" | \"projectNotFound\" | \"accountNotFound\" | \"keychainUnavailable\" | \"idConflict\" | \"contextNotFound\" | \"contextTooLarge\" | \"notARepository\" | \"runNotFound\" | \"runNotResumable\" | \"workerUnavailable\" | \"worktreeFailed\" | \"runAccepted\" | \"mergeRefused\" | \"mergeConflict\" | \"repoNotFound\" | \"threadNotFound\";"));
         assert!(
             generated.contains(
                 "\"initialize\": { params: InitializeParams, result: InitializeResult },"

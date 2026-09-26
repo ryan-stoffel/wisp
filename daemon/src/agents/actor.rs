@@ -1,7 +1,8 @@
 //! One run's actor: the task that owns a run for as long as wispd runs.
 //!
-//! It takes commands (`agent/send`, `agent/cancel`) and the run's backend events in one loop, so
-//! nothing about a run needs a lock, and events are logged in the order they happened.
+//! It takes commands (`agent/send`, `agent/cancel`, `agent/accept`, `thread/delete`) and the run's
+//! backend events in one loop, so nothing about a run needs a lock, and events are logged in the
+//! order they happened.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -56,6 +57,27 @@ pub(super) enum Command {
         reviewed: Option<String>,
         reply: oneshot::Sender<Result<(AgentRun, AgentMerge), ErrorObject>>,
     },
+    /// `thread/delete` (#110): stops the run's CLI, waits for it to exit, and deletes the thread.
+    Delete {
+        reply: oneshot::Sender<Result<(), ErrorObject>>,
+    },
+}
+
+impl Command {
+    /// Answers the command with `error` without running it.
+    fn refuse(self, error: ErrorObject) {
+        match self {
+            Self::Send { reply, .. } | Self::Cancel { reply } => {
+                let _ = reply.send(Err(error));
+            }
+            Self::Accept { reply, .. } => {
+                let _ = reply.send(Err(error));
+            }
+            Self::Delete { reply } => {
+                let _ = reply.send(Err(error));
+            }
+        }
+    }
 }
 
 struct Live {
@@ -85,6 +107,8 @@ pub(super) struct Actor {
     /// The latest prompt or message, for the commit message.
     last_message: String,
     stopping: bool,
+    /// Set once `thread/delete` removed the run: the actor stops, refusing what is still queued.
+    deleted: bool,
 }
 
 impl Actor {
@@ -106,6 +130,7 @@ impl Actor {
             turns: HashMap::new(),
             last_message,
             stopping: false,
+            deleted: false,
         }
     }
 
@@ -146,6 +171,12 @@ impl Actor {
                 break;
             }
         }
+        if self.deleted {
+            commands.close();
+            while let Ok(command) = commands.try_recv() {
+                command.refuse(super::run_not_found(self.id));
+            }
+        }
     }
 
     async fn on_command(&mut self, command: Command) {
@@ -173,7 +204,36 @@ impl Actor {
                 let answer = self.accept(id, reviewed).await;
                 let _ = reply.send(answer);
             }
+            Command::Delete { reply } => {
+                let answer = self.delete().await;
+                if answer.is_ok() {
+                    self.deleted = true;
+                    self.stopping = true;
+                }
+                let _ = reply.send(answer);
+            }
         }
+    }
+
+    /// `thread/delete`: cancels a running CLI and waits for it to exit and its changes to be
+    /// committed, then deletes the thread's rows, events, worktree, and scratch folders, and
+    /// drops this actor from the map. Running here, between commands, it never races a resume
+    /// or an accept.
+    async fn delete(&mut self) -> Result<(), ErrorObject> {
+        if let Some(live) = &self.live {
+            info!(run = %self.id, "cancelling an agent run to delete its thread");
+            live.run.cancel();
+            while self.live.is_some() {
+                let event = next_event(&mut self.live).await;
+                self.on_event(event).await;
+            }
+        }
+        self.flush();
+        let _creating = self.daemon.agents.creation_lock().await;
+        crate::threads::purge(&self.daemon, self.id, self.worktree.clone()).await?;
+        self.worktree = None;
+        self.daemon.agents.forget(self.id);
+        Ok(())
     }
 
     /// `agent/accept`: merges the run's latest commit into the project's current branch, removes
@@ -340,7 +400,8 @@ impl Actor {
                 format!("run {} can't be resumed: {why}", self.id),
             )
         };
-        let (prepared, _) = match prepare(&self.daemon, self.project, Some(account)).await {
+        let (prepared, _) = match prepare(&self.daemon, self.project, self.id, Some(account)).await
+        {
             Ok(prepared) => prepared,
             Err(error)
                 if error

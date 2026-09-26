@@ -182,11 +182,7 @@
   {
     "jsonrpc": "2.0",
     "id": 6,
-    "error": {
-      "code": -32000,
-      "message": "the thread's agent is still running; stop it before deleting the thread",
-      "data": { "kind": "runActive" }
-    }
+    "result": {}
   },
   {
     "jsonrpc": "2.0",

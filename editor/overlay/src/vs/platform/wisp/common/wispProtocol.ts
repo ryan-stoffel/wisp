@@ -176,8 +176,8 @@ export type WispRequests = {
 	 */
 	"thread/archive": { params: ThreadArchiveParams, result: ThreadArchiveResult },
 	/**
-	 * `thread/delete`: deletes a normal thread with its run, worktree, and stored events.
-	 * Refused with `runActive` while its CLI runs.
+	 * `thread/delete`: deletes a normal thread with its run, worktree, and stored events,
+	 * stopping its CLI first if it runs.
 	 */
 	"thread/delete": { params: ThreadDeleteParams, result: ThreadDeleteResult },
 };
@@ -1980,8 +1980,8 @@ export type ThreadArchiveResult = {
  * Params of `thread/delete`: deletes a thread, its run, its worktree and branch, a thread with
  * no repo's scratch repository, and its stored events.
  *
- * It fails with `runActive` while the run's CLI is running; cancel it first. Deleting a thread
- * that doesn't exist fails with `threadNotFound`.
+ * A running CLI is cancelled first, and the delete answers once it has exited and its changes
+ * were committed. Deleting a thread that doesn't exist fails with `threadNotFound`.
  */
 export type ThreadDeleteParams = {
 	/**
@@ -2057,7 +2057,7 @@ export type ErrorData = {
  * A newer wispd may send kinds that are not listed here. Treat those as unknown errors, so a
  * `switch` over this type must not end in an exhaustiveness assertion.
  */
-export type ErrorKind = "notInitialized" | "incompatibleProtocol" | "resyncRequired" | "projectNotFound" | "accountNotFound" | "keychainUnavailable" | "idConflict" | "contextNotFound" | "contextTooLarge" | "notARepository" | "runNotFound" | "runNotResumable" | "workerUnavailable" | "worktreeFailed" | "runAccepted" | "mergeRefused" | "mergeConflict" | "repoNotFound" | "threadNotFound" | "runActive";
+export type ErrorKind = "notInitialized" | "incompatibleProtocol" | "resyncRequired" | "projectNotFound" | "accountNotFound" | "keychainUnavailable" | "idConflict" | "contextNotFound" | "contextTooLarge" | "notARepository" | "runNotFound" | "runNotResumable" | "workerUnavailable" | "worktreeFailed" | "runAccepted" | "mergeRefused" | "mergeConflict" | "repoNotFound" | "threadNotFound";
 
 /**
  * The `detail` of `incompatibleProtocol`. Its shape never changes, so every editor can read it

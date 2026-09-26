@@ -79,6 +79,9 @@ struct Inner {
     events: VecDeque<Arc<Entry>>,
     /// The sum of `events`' sizes, kept alongside for O(1) eviction decisions.
     bytes: usize,
+    /// The oldest `seq` that can still be replayed. Eviction moves it on; [`EventLog::purge_run`]
+    /// doesn't, since the events it removes are gone on purpose, not dropped.
+    floor: u64,
     /// The log's own connection to the store's database, or `None` for a log in memory only.
     db: Option<Store>,
 }
@@ -114,10 +117,17 @@ fn kind_of(event: &WispEvent) -> String {
 /// keeping `bytes` (the sum of what remains) in sync. Always leaves at least one event, so a
 /// single one over `max_bytes` on its own is never dropped outright. Shared by construction and
 /// by every append, so the bound holds the same way whichever put the log over it.
-fn evict(events: &mut VecDeque<Arc<Entry>>, bytes: &mut usize, retention: usize, max_bytes: usize) {
+fn evict(
+    events: &mut VecDeque<Arc<Entry>>,
+    bytes: &mut usize,
+    floor: &mut u64,
+    retention: usize,
+    max_bytes: usize,
+) {
     while events.len() > 1 && (events.len() > retention || *bytes > max_bytes) {
         if let Some(evicted) = events.pop_front() {
             *bytes = bytes.saturating_sub(evicted.bytes);
+            *floor = evicted.seq + 1;
         }
     }
 }
@@ -211,13 +221,19 @@ impl EventLog {
         // a hole `resyncRequired` would never notice (0016).
         let host_retention = host_retention.max(retention);
         let mut bytes = events.iter().map(|entry| entry.bytes).sum();
-        evict(&mut events, &mut bytes, retention, max_bytes);
+        let mut floor = events.front().map_or(head + 1, |entry| entry.seq);
+        evict(&mut events, &mut bytes, &mut floor, retention, max_bytes);
         Self {
             id,
             retention,
             max_bytes,
             host_retention,
-            inner: Mutex::new(Inner { events, bytes, db }),
+            inner: Mutex::new(Inner {
+                events,
+                bytes,
+                floor,
+                db,
+            }),
             head: watch::Sender::new(head),
         }
     }
@@ -279,9 +295,10 @@ impl EventLog {
         let Inner {
             events: entries,
             bytes: total_bytes,
+            floor,
             ..
         } = &mut *inner;
-        evict(entries, total_bytes, self.retention, self.max_bytes);
+        evict(entries, total_bytes, floor, self.retention, self.max_bytes);
         self.head.send_replace(seq);
         seq
     }
@@ -323,9 +340,23 @@ impl EventLog {
         Ok((entries, false))
     }
 
+    /// Removes `run`'s events from the in-memory replay window, for a deleted thread (#110), so
+    /// `events/subscribe` stops replaying them. The stored ones go with the run's rows.
+    pub fn purge_run(&self, run: RunId) {
+        let mut inner = self.inner();
+        let Inner { events, bytes, .. } = &mut *inner;
+        events.retain(|entry| {
+            let keep = run_of(&entry.event) != Some(run);
+            if !keep {
+                *bytes = bytes.saturating_sub(entry.bytes);
+            }
+            keep
+        });
+    }
+
     /// Whether the events after `after` can all still be replayed.
     pub fn check(&self, after: u64) -> Result<(), Gone> {
-        self.start(&self.inner().events, after).map(|_| ())
+        self.start(&self.inner(), after).map(|_| ())
     }
 
     /// The first event after `after` that belongs to `project`, where `None` means host-level
@@ -339,7 +370,7 @@ impl EventLog {
         project: Option<ProjectId>,
     ) -> Result<(Option<Arc<Entry>>, u64), Gone> {
         let inner = self.inner();
-        let start = self.start(&inner.events, after)?;
+        let start = self.start(&inner, after)?;
         match inner
             .events
             .range(start..)
@@ -352,16 +383,15 @@ impl EventLog {
 
     // The index of the first event after `after`. `seq`s increase but may have gaps: an event
     // that failed to be stored is missing from a log reloaded after a restart.
-    fn start(&self, events: &VecDeque<Arc<Entry>>, after: u64) -> Result<usize, Gone> {
+    fn start(&self, inner: &Inner, after: u64) -> Result<usize, Gone> {
         let head = self.head();
         if after > head {
             return Err(Gone::Unknown { head });
         }
-        let oldest = events.front().map_or(head + 1, |event| event.seq);
-        if after + 1 < oldest {
+        if after + 1 < inner.floor {
             return Err(Gone::Dropped);
         }
-        Ok(events.partition_point(|event| event.seq <= after))
+        Ok(inner.events.partition_point(|event| event.seq <= after))
     }
 
     fn inner(&self) -> MutexGuard<'_, Inner> {
@@ -434,6 +464,25 @@ mod tests {
         let (event, _) = log.next(1, Some(project)).unwrap();
         assert_eq!(event.unwrap().seq, 3);
         assert_eq!(log.next(3, Some(project)).unwrap().1, 3);
+    }
+
+    #[test]
+    fn purging_a_run_removes_only_its_events_and_drops_nothing_else() {
+        let log = EventLog::new(10);
+        let project = ProjectId::generate();
+        let (gone, kept) = (RunId::generate(), RunId::generate());
+        log.append(jiff::Timestamp::now(), Some(project), finished(gone));
+        log.append(jiff::Timestamp::now(), Some(project), finished(kept));
+        log.append(jiff::Timestamp::now(), Some(project), finished(gone));
+
+        log.purge_run(gone);
+
+        assert_eq!(log.check(0), Ok(()));
+        let (event, seq) = log.next(0, Some(project)).unwrap();
+        assert_eq!((event.unwrap().seq, seq), (2, 2));
+        let (event, seq) = log.next(2, Some(project)).unwrap();
+        assert!(event.is_none());
+        assert_eq!(seq, 3);
     }
 
     #[test]

@@ -151,8 +151,8 @@ pub struct ThreadArchiveResult {
 /// Params of `thread/delete`: deletes a thread, its run, its worktree and branch, a thread with
 /// no repo's scratch repository, and its stored events.
 ///
-/// It fails with `runActive` while the run's CLI is running; cancel it first. Deleting a thread
-/// that doesn't exist fails with `threadNotFound`.
+/// A running CLI is cancelled first, and the delete answers once it has exited and its changes
+/// were committed. Deleting a thread that doesn't exist fails with `threadNotFound`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadDeleteParams {

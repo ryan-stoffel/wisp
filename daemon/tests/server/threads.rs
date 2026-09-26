@@ -10,16 +10,17 @@ use std::time::Duration;
 use rustix::process::Signal;
 use tempfile::TempDir;
 use tokio::time::Instant;
-use wisp_protocol::jsonrpc::{ErrorObject, INVALID_PARAMS, Message, Notification};
+use wisp_protocol::jsonrpc::{ErrorObject, INVALID_PARAMS, Message, Notification, RequestId};
 use wisp_protocol::methods::{
-    AgentCancel, AgentEvents, AgentList, EventsEvent, EventsSubscribe, NotificationMethod, RepoAdd,
-    RequestMethod, ThreadArchive, ThreadDelete, ThreadList, ThreadStart,
+    AgentAccept, AgentEvents, AgentList, AgentSend, EventsEvent, EventsSubscribe, HostHealth,
+    NotificationMethod, RepoAdd, RequestMethod, ThreadArchive, ThreadDelete, ThreadList,
+    ThreadStart,
 };
 use wisp_protocol::{
-    AccountChoice, AgentCancelParams, AgentEventsParams, AgentListParams, AgentStatus, ErrorKind,
-    EventsEventParams, EventsSubscribeParams, ProjectId, Provider, Repo, RepoAddParams, RepoId,
-    RunId, ThreadArchiveParams, ThreadDeleteParams, ThreadListParams, ThreadListResult,
-    ThreadStartParams, WispEvent,
+    AcceptId, AccountChoice, AgentAcceptParams, AgentEventsParams, AgentListParams,
+    AgentSendParams, AgentStatus, ErrorKind, EventsEventParams, EventsSubscribeParams,
+    HostHealthParams, ProjectId, Provider, Repo, RepoAddParams, RepoId, RunId, ThreadArchiveParams,
+    ThreadDeleteParams, ThreadListParams, ThreadListResult, ThreadStartParams, TurnId, WispEvent,
 };
 use wispd::backend::Event;
 use wispd::backend::fake::{FakeBackend, Script, Step};
@@ -114,7 +115,10 @@ fn start_params(repo: Option<RepoId>, prompt: &str) -> ThreadStartParams {
 }
 
 struct Host {
+    /// wispd's data folder.
     dir: TempDir,
+    /// Where the tests' own repositories live: outside the data folder, which `repo/add` refuses.
+    work: TempDir,
     server: InProcess,
 }
 
@@ -124,7 +128,11 @@ impl Host {
         let mut config = InProcess::config(dir.path());
         config.backends = Some(backends);
         let server = InProcess::start(config);
-        Self { dir, server }
+        Self {
+            dir,
+            work: temp_dir(),
+            server,
+        }
     }
 
     async fn client(&self) -> Conn {
@@ -206,6 +214,49 @@ impl Conn {
         }
     }
 
+    /// Sends a request without waiting for its response, which [`Conn::responses`] collects.
+    async fn send<M: RequestMethod>(&mut self, params: M::Params) -> RequestId {
+        self.client.send::<M>(params).await
+    }
+
+    /// The responses to `ids`, in that order, keeping the events that arrive meanwhile.
+    async fn responses(
+        &mut self,
+        ids: &[RequestId],
+    ) -> Vec<Result<serde_json::Value, ErrorObject>> {
+        let mut answers: Vec<Option<Result<serde_json::Value, ErrorObject>>> =
+            ids.iter().map(|_| None).collect();
+        while answers.iter().any(Option::is_none) {
+            match self.client.next().await {
+                Some(Message::Response(response)) => {
+                    let at = ids
+                        .iter()
+                        .position(|id| response.id.as_ref() == Some(id))
+                        .expect("a response to one of the requests");
+                    answers[at] = Some(response.into_result());
+                }
+                Some(Message::Notification(notification)) => {
+                    self.pending.push_back(event(notification));
+                }
+                other => panic!("expected a response, got {other:?}"),
+            }
+        }
+        answers.into_iter().map(Option::unwrap).collect()
+    }
+
+    async fn running_agents(&mut self) -> u32 {
+        self.call::<HostHealth>(HostHealthParams {})
+            .await
+            .unwrap()
+            .running_agents
+    }
+
+    async fn delete(&mut self, run_id: RunId) -> Result<(), ErrorObject> {
+        self.call::<ThreadDelete>(ThreadDeleteParams { run_id })
+            .await
+            .map(|_| ())
+    }
+
     async fn list(&mut self) -> ThreadListResult {
         self.call::<ThreadList>(ThreadListParams {}).await.unwrap()
     }
@@ -232,7 +283,7 @@ fn scope(repo: RepoId) -> ProjectId {
 #[tokio::test]
 async fn a_thread_runs_in_a_worktree_of_its_repo_entry_and_lists_under_it() {
     let host = Host::start(fake(editing()));
-    let path = real_repo(host.dir.path(), "app");
+    let path = real_repo(host.work.path(), "app");
     let mut client = host.client().await;
     let listed = client.list().await;
     assert!(listed.repos.is_empty() && listed.threads.is_empty());
@@ -353,16 +404,26 @@ async fn a_thread_with_no_repo_gets_its_own_scratch_repository() {
 }
 
 #[tokio::test]
-async fn a_thread_archives_and_deletes_once_its_agent_stops() {
+async fn deleting_a_running_thread_stops_its_agent_and_removes_everything() {
     let host = Host::start(fake(hang()));
     let mut client = host.client().await;
     let params = start_params(None, "Wait for me");
     let started = client.call::<ThreadStart>(params.clone()).await.unwrap();
     let repository = host.data().join("scratch").join(params.run_id.to_string());
+    let context = host.data().join("context").join(params.run_id.to_string());
     let worktree = PathBuf::from(started.run.worktree_path.unwrap());
     client.subscribe(0, None).await;
     client.subscribe(0, Some(scope(started.thread.repo))).await;
     client.until(updated_to(AgentStatus::Running)).await;
+    assert!(context.is_dir(), "a thread with no repo has its own notes");
+    assert!(
+        !host
+            .data()
+            .join("context")
+            .join(started.thread.repo.to_string())
+            .exists(),
+        "quick chats share no notes"
+    );
 
     let archived = client
         .call::<ThreadArchive>(ThreadArchiveParams {
@@ -380,30 +441,18 @@ async fn a_thread_archives_and_deletes_once_its_agent_stops() {
         .await;
     assert!(client.list().await.threads[0].archived);
 
-    let refused = client
-        .call::<ThreadDelete>(ThreadDeleteParams {
-            run_id: params.run_id,
-        })
-        .await
-        .unwrap_err();
-    assert_eq!(kind(&refused), ErrorKind::RunActive);
-
-    client
-        .call::<AgentCancel>(AgentCancelParams {
-            run_id: params.run_id,
-        })
-        .await
-        .unwrap();
-    client.until(updated_to(AgentStatus::Cancelled)).await;
-    client
-        .call::<ThreadDelete>(ThreadDeleteParams {
-            run_id: params.run_id,
-        })
-        .await
-        .unwrap();
-    client
+    client.delete(params.run_id).await.unwrap();
+    let events = client
         .until(|event| matches!(&event.event, WispEvent::ThreadDeleted { run_id, .. } if *run_id == params.run_id))
         .await;
+    assert!(
+        events.iter().any(|event| matches!(
+            &event.event,
+            WispEvent::AgentFinished { run_id, .. } if *run_id == params.run_id
+        )),
+        "the agent was stopped first"
+    );
+    assert_eq!(client.running_agents().await, 0);
 
     assert!(client.list().await.threads.is_empty());
     let runs = client
@@ -425,20 +474,137 @@ async fn a_thread_archives_and_deletes_once_its_agent_stops() {
     assert_eq!(kind(&events), ErrorKind::RunNotFound);
     assert!(!worktree.exists(), "the worktree is removed");
     assert!(!repository.exists(), "the scratch repository is removed");
-    let missing = client
-        .call::<ThreadDelete>(ThreadDeleteParams {
+    assert!(!context.exists(), "the thread's notes are removed");
+
+    let mut replay = host.client().await;
+    replay.subscribe(0, Some(scope(started.thread.repo))).await;
+    let health = replay.running_agents().await;
+    assert_eq!(health, 0);
+    assert!(
+        replay
+            .pending
+            .iter()
+            .all(|event| event.project != Some(scope(started.thread.repo))),
+        "a deleted thread's transcript isn't replayed: {:#?}",
+        replay.pending
+    );
+
+    let missing = client.delete(params.run_id).await.unwrap_err();
+    assert_eq!(kind(&missing), ErrorKind::ThreadNotFound);
+}
+
+#[tokio::test]
+async fn a_delete_racing_a_message_to_a_finished_thread_leaves_nothing_running() {
+    let host = Host::start(fake(editing()));
+    let path = real_repo(host.work.path(), "app");
+    let mut client = host.client().await;
+    let repo = client.add(&path).await;
+    let params = start_params(Some(repo.id), "Write some notes");
+    let started = client.call::<ThreadStart>(params.clone()).await.unwrap();
+    let worktree = PathBuf::from(started.run.worktree_path.unwrap());
+    let branch = started.run.branch.unwrap();
+    client.subscribe(0, Some(scope(repo.id))).await;
+    client.until(updated_to(AgentStatus::Completed)).await;
+
+    let send = client
+        .send::<AgentSend>(AgentSendParams {
             run_id: params.run_id,
+            turn_id: TurnId::generate(),
+            text: "And some more".to_owned(),
+        })
+        .await;
+    let delete = client
+        .send::<ThreadDelete>(ThreadDeleteParams {
+            run_id: params.run_id,
+        })
+        .await;
+    let answers = client.responses(&[send, delete]).await;
+    if let Err(error) = &answers[0] {
+        assert_eq!(kind(error), ErrorKind::RunNotFound, "{error:?}");
+    }
+    answers[1].as_ref().expect("the delete succeeds");
+
+    assert_eq!(client.running_agents().await, 0);
+    assert!(client.list().await.threads.is_empty());
+    let runs = client
+        .call::<AgentList>(AgentListParams {
+            project: Some(scope(repo.id)),
+        })
+        .await
+        .unwrap()
+        .runs;
+    assert!(runs.is_empty());
+    assert!(!worktree.exists(), "the worktree is removed");
+    let branches = git(&path, &["branch", "--list", &branch]);
+    assert!(branches.is_empty(), "the branch is removed: {branches}");
+    let after = client
+        .send::<AgentSend>(AgentSendParams {
+            run_id: params.run_id,
+            turn_id: TurnId::generate(),
+            text: "Still there?".to_owned(),
+        })
+        .await;
+    let answer = client.responses(&[after]).await.remove(0).unwrap_err();
+    assert_eq!(kind(&answer), ErrorKind::RunNotFound);
+}
+
+#[tokio::test]
+async fn an_accepted_quick_chat_deletes_its_scratch_repository() {
+    let host = Host::start(fake(editing()));
+    let mut client = host.client().await;
+    let params = start_params(None, "Jot something down");
+    let started = client.call::<ThreadStart>(params.clone()).await.unwrap();
+    let repository = host.data().join("scratch").join(params.run_id.to_string());
+    client.subscribe(0, Some(scope(started.thread.repo))).await;
+    client.until(updated_to(AgentStatus::Completed)).await;
+    client
+        .call::<AgentAccept>(AgentAcceptParams {
+            run_id: params.run_id,
+            id: AcceptId::generate(),
+            commit: None,
+        })
+        .await
+        .unwrap();
+    assert!(repository.is_dir());
+
+    client.delete(params.run_id).await.unwrap();
+    assert!(
+        !repository.exists(),
+        "removed although the accept removed the worktree row"
+    );
+}
+
+#[tokio::test]
+async fn a_retried_start_on_a_taken_run_id_makes_no_scratch_repository() {
+    let host = Host::start(fake(editing()));
+    let path = real_repo(host.work.path(), "app");
+    let mut client = host.client().await;
+    let repo = client.add(&path).await;
+    let params = start_params(Some(repo.id), "Write some notes");
+    client.call::<ThreadStart>(params.clone()).await.unwrap();
+
+    let conflict = client
+        .call::<ThreadStart>(ThreadStartParams {
+            repo: None,
+            ..params.clone()
         })
         .await
         .unwrap_err();
-    assert_eq!(kind(&missing), ErrorKind::ThreadNotFound);
+    assert_eq!(kind(&conflict), ErrorKind::IdConflict);
+    assert!(
+        !host
+            .data()
+            .join("scratch")
+            .join(params.run_id.to_string())
+            .exists()
+    );
 }
 
 #[tokio::test]
 async fn repo_entries_and_threads_refuse_what_they_cant_run() {
     let host = Host::start(fake(editing()));
     let mut client = host.client().await;
-    let plain = host.dir.path().join("plain");
+    let plain = host.work.path().join("plain");
     std::fs::create_dir_all(&plain).unwrap();
     let error = client
         .call::<RepoAdd>(RepoAddParams {
@@ -457,8 +623,34 @@ async fn repo_entries_and_threads_refuse_what_they_cant_run() {
         .unwrap_err();
     assert_eq!(relative.code, INVALID_PARAMS);
 
-    let path = real_repo(host.dir.path(), "app");
-    let other = real_repo(host.dir.path(), "other");
+    let notes = host.data().join("context").join("planted");
+    std::fs::create_dir_all(&notes).unwrap();
+    git(&notes, &["init", "-q"]);
+    let inside = client
+        .call::<RepoAdd>(RepoAddParams {
+            id: RepoId::generate(),
+            path: notes.to_str().unwrap().to_owned(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(kind(&inside), ErrorKind::NotARepository, "{inside:?}");
+    let link = host.work.path().join("link");
+    std::os::unix::fs::symlink(&notes, &link).unwrap();
+    let linked = client
+        .call::<RepoAdd>(RepoAddParams {
+            id: RepoId::generate(),
+            path: link.to_str().unwrap().to_owned(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        kind(&linked),
+        ErrorKind::NotARepository,
+        "a link into the data folder"
+    );
+
+    let path = real_repo(host.work.path(), "app");
+    let other = real_repo(host.work.path(), "other");
     let id = RepoId::generate();
     client
         .call::<RepoAdd>(RepoAddParams {
