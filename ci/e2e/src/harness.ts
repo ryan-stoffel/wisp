@@ -5,7 +5,7 @@
 // leaves it (0010): `launch` here is screenshots' own, unwrapped, so every check gets a real
 // connection unless it asks for something else (a fake wispd, mid-session).
 import { spawn } from 'node:child_process';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -195,7 +195,8 @@ async function queryProjects(child: {
  * attach` against `dataDir`, and reads back `project/list`. Ground truth for "no duplicate project
  * after a reconnect" (reconnect.ts): `WispProjectsService` keeps its old list across a reconnect
  * until the resubscribe's `resync` lands and it re-lists, so reading the UI right after the chip
- * reconnects can see the stale array. wispd's own store has no such lag.
+ * reconnects can see the stale array. wispd's own store has no such lag. Also used by ssh.ts to
+ * confirm this Mac's own wispd (session.wispdDataDir) does *not* hold a project created over ssh.
  */
 export function queryProjectsDirect(wispdExecutable: string, dataDir: string): Promise<readonly { id: string }[]> {
   const child = spawn(wispdExecutable, ['attach'], {
@@ -210,11 +211,10 @@ export function queryProjectsDirect(wispdExecutable: string, dataDir: string): P
  * points at (`launchConnectedForSsh`), so this reaches the identical `WISPD_DATA_DIR` the editor's
  * own ssh session does.
  *
- * Not currently called: every CI run that used this (or an equivalent local `attach` against the
- * ssh-side `WISPD_DATA_DIR`) found the project missing, even right after the sidebar showed it
- * (#219). Whether that means the request lands on the wrong host after a switch, or something more
- * mundane about a second connection here, is what #219 is for. ssh.ts's own check asserts only the
- * sidebar row until #219 has an answer; re-enable this alongside it.
+ * Ground truth for ssh.ts's project-creation check: before #219's fix, every CI run that used this
+ * (or an equivalent local `attach` against the ssh-side `WISPD_DATA_DIR`) found the project
+ * missing, even right after the sidebar showed it -- a race that sent `project/create` to the old
+ * host's wispd instead. #219 fixed that race, and #224 re-enabled this assertion in ssh.ts.
  */
 export function queryProjectsOverSsh(wrapperPath: string, destination = 'localhost'): Promise<readonly { id: string }[]> {
   const child = spawn(
@@ -223,6 +223,82 @@ export function queryProjectsOverSsh(wrapperPath: string, destination = 'localho
     { stdio: ['pipe', 'pipe', 'ignore'] },
   );
   return queryProjects(child);
+}
+
+/** ci.yml points this at a folder to save into for `saveWispdDiagnostics`; unset for a local run. */
+const DIAGNOSTICS_DIR_ENV = 'WISP_E2E_DIAGNOSTICS_DIR';
+
+/**
+ * Best-effort snapshot for a failed ground-truth check (ssh.ts): each named data folder's own
+ * `logs/wispd.log` (daemon/src/paths.rs), plus a listing of every `wispd serve` process on this
+ * machine with the data folder its own environment names (`ps eww`, since the data folder is
+ * passed as the `WISPD_DATA_DIR` environment variable, not a command-line argument -- see
+ * `DataDir::command`), so a failure has more to go on than "it was empty". Saved under a
+ * timestamped subfolder so more than one failure in a run keeps all of them. Does nothing unless
+ * `ci.yml`'s `e2e` job has set `WISP_E2E_DIAGNOSTICS_DIR`, and never throws: a diagnostics step
+ * that fails shouldn't hide the assertion failure that triggered it.
+ */
+export async function saveWispdDiagnostics(dataDirs: Readonly<Record<string, string>>): Promise<void> {
+  const dir = process.env[DIAGNOSTICS_DIR_ENV];
+  if (!dir) {
+    return;
+  }
+  try {
+    const out = join(dir, `wispd-${String(Date.now())}`);
+    await mkdir(out, { recursive: true });
+    for (const [label, dataDir] of Object.entries(dataDirs)) {
+      try {
+        await writeFile(join(out, `${label}.log`), await readFile(join(dataDir, 'logs', 'wispd.log')));
+      } catch {
+        // no log file yet for this data folder; nothing to save.
+      }
+    }
+    await writeFile(join(out, 'wispd-serve-processes.txt'), await listWispdServeProcesses());
+  } catch {
+    // diagnostics are best-effort.
+  }
+}
+
+/** `ps`'s own listing of every `wispd serve` process, with the data folder from its environment. */
+async function listWispdServeProcesses(): Promise<string> {
+  const matches = (await runCommand('ps', ['-axo', 'pid=,command=']))
+    .split('\n')
+    .map((line) => /^\s*(\d+)\s+(.*\bwispd\b.*\bserve\b.*)$/.exec(line))
+    .filter((match): match is RegExpExecArray => match !== null);
+  if (matches.length === 0) {
+    return '(no wispd serve processes found)\n';
+  }
+  const lines = await Promise.all(
+    matches.map(async (match) => {
+      const pid = match[1] ?? '';
+      const command = match[2] ?? '';
+      const env = await runCommand('ps', ['eww', '-p', pid, '-o', 'command=']);
+      const dataDir = /WISPD_DATA_DIR=(\S+)/.exec(env)?.[1] ?? '(unknown)';
+      return `pid ${pid}: ${dataDir} -- ${command}`;
+    }),
+  );
+  return `${lines.join('\n')}\n`;
+}
+
+/** Runs `command` and resolves with its stdout, or `''` on any error (diagnostics are best-effort). */
+function runCommand(command: string, args: readonly string[]): Promise<string> {
+  return new Promise((resolve) => {
+    let output = '';
+    try {
+      const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'ignore'] });
+      child.stdout.on('data', (chunk: Buffer) => {
+        output += chunk.toString();
+      });
+      child.on('close', () => {
+        resolve(output);
+      });
+      child.on('error', () => {
+        resolve(output);
+      });
+    } catch {
+      resolve(output);
+    }
+  });
 }
 
 /** Reads a small `KEY=value` file, such as one `scripts/ci/ssh-localhost` wrote. */
