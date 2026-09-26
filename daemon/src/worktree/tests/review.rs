@@ -1,10 +1,12 @@
 //! Reviewing and accepting a run's commit (#157), against real temporary repositories.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use wisp_protocol::RunId;
 
 use super::{git, git_output, init_repo, manager, rev_parse, write_sentinel_script};
+use crate::worktree::review::Target;
 use crate::worktree::{
     AcceptError, ChangeStatus, CreatedWorktree, MAX_BLOB_BYTES, MergeHow, WorktreeManager,
 };
@@ -672,4 +674,170 @@ async fn a_failing_user_filter_leaves_the_checkout_as_it_was() {
         "one\ntwo\nthree\n"
     );
     assert!(!f.repo.join(".git/index.lock").exists());
+}
+
+/// The agent's commit, and the changes Accept's checkout would make for it, from HEAD.
+async fn fast_forward_target(f: &Fixture) -> (String, String, Vec<(char, String)>) {
+    std::fs::write(f.worktree().join("README.md"), "agent\n").unwrap();
+    std::fs::write(f.worktree().join("new/dir/added.txt"), "agent\n")
+        .or_else(|_| {
+            std::fs::create_dir_all(f.worktree().join("new/dir"))?;
+            std::fs::write(f.worktree().join("new/dir/added.txt"), "agent\n")
+        })
+        .unwrap();
+    let commit = f.commit().await;
+    let head = rev_parse(&f.repo, "HEAD");
+    let changes = git_output(
+        &f.repo,
+        &[
+            "diff",
+            "--name-status",
+            "-z",
+            "--no-renames",
+            &head,
+            &commit,
+        ],
+    );
+    (
+        head,
+        commit,
+        crate::worktree::review::parse_changes(&changes),
+    )
+}
+
+#[tokio::test]
+async fn a_merge_blocked_by_another_gits_index_lock_puts_nothing_back() {
+    let f = fixture().await;
+    let (head, commit, changes) = fast_forward_target(&f).await;
+    // Another git process holds the index, and the user edits a file the agent changed after
+    // Accept's overlap check passed: exactly what a rollback must never overwrite.
+    let lock = f.repo.join(".git/index.lock");
+    std::fs::write(&lock, "").unwrap();
+    std::fs::write(f.repo.join("README.md"), "the user's edit\n").unwrap();
+
+    let target = Target {
+        repo_root: &f.repo,
+        repo: "repo",
+        into: "main",
+        head: &head,
+        result: &commit,
+        changes: &changes,
+    };
+    let error = f.mgr.check_out(&target).await.unwrap_err();
+    assert!(
+        matches!(&error, AcceptError::Refused(message) if message.contains("index.lock") && message.contains("changed nothing")),
+        "{error:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("README.md")).unwrap(),
+        "the user's edit\n"
+    );
+    assert!(lock.exists(), "another process's lock is never removed");
+    assert_eq!(rev_parse(&f.repo, "HEAD"), head);
+}
+
+#[tokio::test]
+async fn a_failed_ref_update_puts_back_the_index_and_the_files_git_wrote() {
+    let f = fixture().await;
+    let (head, commit, changes) = fast_forward_target(&f).await;
+    // git checks out the result, index and files, then can't move the branch.
+    let ref_lock = f.repo.join(".git/refs/heads/main.lock");
+    std::fs::write(&ref_lock, "").unwrap();
+
+    let target = Target {
+        repo_root: &f.repo,
+        repo: "repo",
+        into: "main",
+        head: &head,
+        result: &commit,
+        changes: &changes,
+    };
+    let error = f.mgr.check_out(&target).await.unwrap_err();
+    assert!(
+        matches!(&error, AcceptError::Refused(message) if message.contains("nothing changed")),
+        "{error:?}"
+    );
+    std::fs::remove_file(&ref_lock).unwrap();
+    assert_eq!(rev_parse(&f.repo, "HEAD"), head);
+    assert_eq!(git_output(&f.repo, &["status", "--porcelain"]), "");
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("README.md")).unwrap(),
+        "hello\n"
+    );
+    assert!(
+        !f.repo.join("new").exists(),
+        "the added file and the folders it needed are gone"
+    );
+}
+
+#[tokio::test]
+async fn a_file_someone_else_writes_during_the_checkout_is_left_alone_and_named() {
+    let f = fixture().await;
+    let readme = f.repo.join("README.md");
+    // The user's filter, when git checks out b.txt, stands in for another writer: it saves the
+    // user's edit to README.md (which git has already written) and then fails.
+    let smudge = format!(
+        "sh -c 'printf \"the user'\\''s edit\\n\" > \"{}\"; exit 1'",
+        readme.display()
+    );
+    git(&f.repo, &["config", "filter.boom.clean", "cat"]);
+    git(&f.repo, &["config", "filter.boom.smudge", &smudge]);
+    git(&f.repo, &["config", "filter.boom.required", "true"]);
+    std::fs::write(f.worktree().join(".gitattributes"), "b.txt filter=boom\n").unwrap();
+    std::fs::write(f.worktree().join("README.md"), "agent\n").unwrap();
+    std::fs::write(f.worktree().join("b.txt"), "agent\n").unwrap();
+    std::fs::write(f.worktree().join("notes.txt"), "agent notes\n").unwrap();
+    let commit = f.commit().await;
+    let head = rev_parse(&f.repo, "HEAD");
+
+    let error = f.accept(&commit).await.unwrap_err();
+    let AcceptError::Refused(message) = &error else {
+        panic!("{error:?}");
+    };
+    assert!(
+        message.contains("left alone README.md"),
+        "the other writer's file is named: {message}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&readme).unwrap(),
+        "the user's edit\n",
+        "and kept"
+    );
+    assert_eq!(rev_parse(&f.repo, "HEAD"), head);
+    assert!(!f.repo.join(".gitattributes").exists());
+    assert!(!f.repo.join("b.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("notes.txt")).unwrap(),
+        "one\ntwo\nthree\n"
+    );
+    assert_eq!(
+        git_output(&f.repo, &["status", "--porcelain"]),
+        "M README.md",
+        "only the other writer's change is left"
+    );
+}
+
+#[tokio::test]
+async fn a_checkout_stopped_at_the_timeout_names_the_lock_it_left() {
+    let f = fixture().await;
+    git(&f.repo, &["config", "filter.slow.clean", "cat"]);
+    git(&f.repo, &["config", "filter.slow.smudge", "sleep 10"]);
+    git(&f.repo, &["config", "filter.slow.required", "true"]);
+    std::fs::write(f.worktree().join(".gitattributes"), "*.txt filter=slow\n").unwrap();
+    std::fs::write(f.worktree().join("slow.txt"), "agent\n").unwrap();
+    let commit = f.commit().await;
+    let head = rev_parse(&f.repo, "HEAD");
+
+    let mgr = f.mgr.clone().with_merge_timeout(Duration::from_secs(1));
+    let error = mgr
+        .accept(&f.repo, &commit, "Merge wisp run: test\n")
+        .await
+        .unwrap_err();
+    let lock = f.repo.join(".git/index.lock");
+    assert!(lock.exists(), "git was killed holding the index lock");
+    assert!(
+        matches!(&error, AcceptError::Refused(message) if message.contains("index.lock") && message.contains("remove the lock")),
+        "{error:?}"
+    );
+    assert_eq!(rev_parse(&f.repo, "HEAD"), head);
 }

@@ -12,17 +12,18 @@
 //! any file, ignored ones included, sits where the result adds one. Only then does it move the
 //! branch and working tree, with `git merge --ff-only --no-overwrite-ignore <result>`, whose
 //! two-way checkout keeps every other uncommitted change. If that checkout stops part way (one of
-//! the user's own filters failed or timed out), wispd puts back the files it had written, so the
-//! checkout ends as it was. It never pushes.
+//! the user's own filters failed, or the branch couldn't move), wispd puts back only the files
+//! that still hold exactly what git wrote, and names any that changed meanwhile; after a lock
+//! failure or a timeout it puts back nothing (see `WorktreeManager::roll_back`). It never pushes.
 //!
 //! Those calls use the user's own configuration, since the checkout is theirs: global config,
 //! filters such as Git LFS's, merge drivers, and identity. Hooks are the exception: like every git
 //! call wispd makes, they run with `core.hooksPath=/dev/null` (see `WorktreeManager::run_git`).
 //! The merge commit is not signed, because signing can wait on a prompt.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use tokio::time::timeout;
 use tracing::warn;
@@ -55,7 +56,7 @@ const MAX_DIFF_FILES: usize = 3000;
 
 /// How long Accept's `merge --ff-only` may run: it checks files out through the user's own
 /// filters, and a Git LFS smudge can download for a while.
-const MERGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+pub(super) const MERGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// The longest path `agent/file` takes, in bytes.
 const MAX_PATH_BYTES: usize = 4096;
@@ -535,50 +536,90 @@ impl WorktreeManager {
         let changes = parse_changes(&changes);
         self.refuse_overlap(&repo_root, &repo, &changes).await?;
 
+        let target = Target {
+            repo_root: &repo_root,
+            repo: &repo,
+            into: &into,
+            head: &head,
+            result: &result,
+            changes: &changes,
+        };
+        self.check_out(&target).await?;
+        Ok(Accepted {
+            commit: result,
+            into,
+            how,
+        })
+    }
+
+    /// Moves the branch and working tree to the merge's result with `git merge --ff-only`, and
+    /// puts back what a failed checkout wrote (see [`Self::roll_back`]).
+    pub(super) async fn check_out(&self, target: &Target<'_>) -> Result<(), AcceptError> {
+        let Target {
+            repo_root,
+            repo,
+            into,
+            result,
+            changes,
+            ..
+        } = *target;
         let merged = self
             .run_git_for(
-                &repo_root,
+                repo_root,
                 &[
                     "merge",
                     "--ff-only",
                     "--no-autostash",
                     "--no-stat",
                     "--no-overwrite-ignore",
-                    &result,
+                    result,
                 ],
-                MERGE_TIMEOUT,
+                self.merge_timeout,
             )
             .await;
         let failure = match merged {
             Ok(output) if output.success() => None,
-            Ok(output) if describe_failure(&output).contains("would be overwritten") => {
-                return Err(AcceptError::Refused(format!(
-                    "git would have to overwrite files in {repo} to update {into}, so it changed \
-                     nothing: {}",
-                    describe_failure(&output)
-                )));
+            Ok(output) => {
+                let detail = describe_failure(&output);
+                // git refused before writing anything: something in the way, or another git
+                // process holding the index. Nothing to put back, and a "roll back" here could
+                // only overwrite what that other process is writing.
+                if detail.contains("would be overwritten") || detail.contains("index.lock") {
+                    return Err(AcceptError::Refused(format!(
+                        "git could not update {into} in {repo}, so it changed nothing: {detail}"
+                    )));
+                }
+                Some(detail)
             }
-            Ok(output) => Some(describe_failure(&output)),
-            Err(WorktreeError::Timeout { .. }) => Some(format!(
-                "it did not finish within {}s",
-                MERGE_TIMEOUT.as_secs()
-            )),
+            Err(WorktreeError::Timeout { .. }) => {
+                let lock = self.git_path(repo_root, "index.lock").await?;
+                if tokio::fs::symlink_metadata(&lock).await.is_ok() {
+                    let paths: Vec<&str> = changes.iter().map(|(_, path)| path.as_str()).collect();
+                    return Err(AcceptError::Refused(format!(
+                        "git did not finish updating {into} in {repo} within {}s, and was \
+                         stopped. It left {} behind, so wispd put nothing back: these files may \
+                         be partly updated: {}. If no other git is running there, remove the \
+                         lock, then check git status",
+                        self.merge_timeout.as_secs(),
+                        lock.display(),
+                        list_paths(&paths)
+                    )));
+                }
+                Some(format!(
+                    "it did not finish within {}s",
+                    self.merge_timeout.as_secs()
+                ))
+            }
             Err(error) => return Err(error.into()),
         };
         if let Some(failure) = failure {
-            if self.resolve_commit(&repo_root, "HEAD").await? == result {
+            if self.resolve_commit(repo_root, "HEAD").await? == *result {
                 warn!(repo, %failure, "git reported a failure after moving the branch; the accept stands");
             } else {
-                return Err(self
-                    .roll_back(&repo_root, &repo, &into, &changes, &failure)
-                    .await);
+                return Err(self.roll_back(target, &failure).await);
             }
         }
-        Ok(Accepted {
-            commit: result,
-            into,
-            how,
-        })
+        Ok(())
     }
 
     /// Refuses when a local change would be lost or overwritten by the merge: uncommitted changes
@@ -628,66 +669,226 @@ impl WorktreeManager {
         )))
     }
 
-    /// Puts back the files a failed `merge --ff-only` may have written before it stopped, such as
-    /// when one of the user's own filters (a Git LFS smudge, say) failed or timed out part way.
-    /// git hasn't moved the branch or written the index then, and [`Self::refuse_overlap`]
-    /// proved none of these paths had local changes, so the index's version (HEAD's) is the
-    /// user's own. Paths the merge added are removed; `.gitattributes` files go first, so the
-    /// rest are checked out with the user's own filters again.
-    async fn roll_back(
-        &self,
-        repo_root: &Path,
-        repo: &str,
-        into: &str,
-        changes: &[(char, String)],
-        failure: &str,
-    ) -> AcceptError {
-        let mut ordered: Vec<&(char, String)> = changes.iter().collect();
-        ordered.sort_by_key(|(_, path)| !is_attributes(path));
-        let mut restore = Vec::new();
-        let mut left = Vec::new();
-        for (kind, path) in ordered {
-            if *kind == 'A' {
-                match tokio::fs::remove_file(repo_root.join(path)).await {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(_) => left.push(path.clone()),
+    /// Puts back the files a failed `merge --ff-only` wrote before it stopped, such as when one
+    /// of the user's own filters (a Git LFS smudge, say) failed part way. Only a file that still
+    /// holds exactly the merge's version is put back, index and working tree, from HEAD (a file
+    /// the merge added is removed): nothing else can have written it since. A file that holds
+    /// HEAD's version needs nothing. A file that holds neither was written by someone else during
+    /// the checkout, so it is left alone and named. `.gitattributes` files go first, so the rest
+    /// are checked out with the user's own attributes again.
+    async fn roll_back(&self, target: &Target<'_>, failure: &str) -> AcceptError {
+        let Target {
+            repo_root,
+            repo,
+            into,
+            head,
+            result,
+            changes,
+        } = *target;
+        let paths: Vec<&str> = changes.iter().map(|(_, path)| path.as_str()).collect();
+        let states = async {
+            let at_head = self.blob_ids(repo_root, head, &paths).await?;
+            let at_result = self.blob_ids(repo_root, result, &paths).await?;
+            let on_disk = self.worktree_ids(repo_root, &paths).await?;
+            Ok::<_, WorktreeError>((at_head, at_result, on_disk))
+        }
+        .await;
+        let (at_head, at_result, on_disk) = match states {
+            Ok(states) => states,
+            Err(error) => {
+                return AcceptError::Refused(format!(
+                    "git could not update {into} in {repo} ({failure}), and wispd could not tell \
+                     which files it had written ({error}), so it put nothing back; check git \
+                     status for {}",
+                    list_paths(&paths)
+                ));
+            }
+        };
+        let mut restore: Vec<&str> = Vec::new();
+        let mut remove: Vec<&str> = Vec::new();
+        let mut foreign: Vec<&str> = Vec::new();
+        for path in &paths {
+            let (theirs, ours, now) =
+                (at_result.get(*path), at_head.get(*path), on_disk.get(*path));
+            if now == theirs && theirs != ours {
+                if ours.is_none() {
+                    remove.push(path);
+                } else {
+                    restore.push(path);
                 }
-            } else if is_attributes(path) {
-                if self
-                    .run_git(repo_root, &["checkout-index", "--force", "--", path])
-                    .await
-                    .map_or(true, |output| !output.success())
-                {
-                    left.push(path.clone());
-                }
-            } else {
-                restore.push(path.as_str());
+            } else if now != ours {
+                foreign.push(path);
             }
         }
-        for chunk in restore.chunks(200) {
-            let mut args = vec!["checkout-index", "--force", "--"];
+        let left = self.put_back(repo_root, head, &mut restore, &remove).await;
+        let mut message = format!("git could not update {into} in {repo} ({failure}). ");
+        if left.is_empty() && foreign.is_empty() {
+            message
+                .push_str("wispd put back the files it had started to write, so nothing changed");
+        } else {
+            message.push_str("wispd put back the files only git had written");
+            if !foreign.is_empty() {
+                let _ = write!(
+                    message,
+                    "; it left alone {}, which changed while git ran",
+                    list_paths(&foreign)
+                );
+            }
+            if !left.is_empty() {
+                let _ = write!(message, "; it could not put back {}", list_paths(&left));
+            }
+            message.push_str(". Check them with git status");
+        }
+        AcceptError::Refused(message)
+    }
+
+    /// Removes `remove` from the index and working tree, and restores `restore` in both from
+    /// `head`, `.gitattributes` files first. Returns the paths it could not put back.
+    async fn put_back(
+        &self,
+        repo_root: &Path,
+        head: &str,
+        restore: &mut [&str],
+        remove: &[&str],
+    ) -> Vec<String> {
+        restore.sort_by_key(|path| !is_attributes(path));
+        let mut left: Vec<String> = Vec::new();
+        for path in remove
+            .iter()
+            .copied()
+            .filter(|path| is_attributes(path))
+            .chain(remove.iter().copied().filter(|path| !is_attributes(path)))
+        {
+            let ok = self
+                .run_git(
+                    repo_root,
+                    &[
+                        "--literal-pathspecs",
+                        "rm",
+                        "--quiet",
+                        "--cached",
+                        "--ignore-unmatch",
+                        "--",
+                        path,
+                    ],
+                )
+                .await
+                .is_ok_and(|output| output.success());
+            match tokio::fs::remove_file(repo_root.join(path)).await {
+                Ok(()) if ok => remove_empty_parents(repo_root, path).await,
+                Err(error) if ok && error.kind() == std::io::ErrorKind::NotFound => {}
+                _ => left.push(path.to_owned()),
+            }
+        }
+        let (attributes, rest): (Vec<&str>, Vec<&str>) =
+            restore.iter().partition(|path| is_attributes(path));
+        for chunk in attributes.chunks(1).chain(rest.chunks(200)) {
+            let mut args = vec![
+                "--literal-pathspecs",
+                "restore",
+                "--source",
+                head,
+                "--staged",
+                "--worktree",
+                "--",
+            ];
             args.extend_from_slice(chunk);
-            if self
+            if !self
                 .run_git(repo_root, &args)
                 .await
-                .map_or(true, |output| !output.success())
+                .is_ok_and(|output| output.success())
             {
                 left.extend(chunk.iter().map(|path| (*path).to_owned()));
             }
         }
-        if left.is_empty() {
-            AcceptError::Refused(format!(
-                "git could not update {into} in {repo} ({failure}); wispd put back the files it \
-                 had started to write, so nothing changed"
-            ))
-        } else {
-            AcceptError::Refused(format!(
-                "git could not update {into} in {repo} ({failure}), and wispd could not put back \
-                 {}; check them with git status",
-                list_paths(&left)
-            ))
+        left
+    }
+
+    /// The blob id of each of `paths` in `commit`, by path; a path that isn't a file there is
+    /// missing from the map.
+    async fn blob_ids(
+        &self,
+        repo_root: &Path,
+        commit: &str,
+        paths: &[&str],
+    ) -> Result<HashMap<String, String>, WorktreeError> {
+        let mut ids = HashMap::new();
+        for chunk in paths.chunks(200) {
+            let mut args = vec![
+                "--literal-pathspecs",
+                "ls-tree",
+                "-z",
+                "--full-tree",
+                commit,
+                "--",
+            ];
+            args.extend_from_slice(chunk);
+            let listing = self.run_checkout_git_ok(repo_root, &args).await?;
+            for entry in z_tokens(&listing) {
+                let Some((meta, name)) = entry.split_once('\t') else {
+                    continue;
+                };
+                let mut fields = meta.split_whitespace();
+                if let (Some(mode), Some(_), Some(object)) =
+                    (fields.next(), fields.next(), fields.next())
+                {
+                    ids.insert(name.to_owned(), format!("{mode} {object}"));
+                }
+            }
         }
+        Ok(ids)
+    }
+
+    /// What each of `paths` holds in the working tree, as the id git would give it (through the
+    /// same filters `git add` would use), keyed like [`Self::blob_ids`]; a missing path is
+    /// missing from the map. A symlink or folder gets an id no blob matches, so it counts as
+    /// written by someone else unless absent on both sides.
+    async fn worktree_ids(
+        &self,
+        repo_root: &Path,
+        paths: &[&str],
+    ) -> Result<HashMap<String, String>, WorktreeError> {
+        let mut ids = HashMap::new();
+        let mut files: Vec<(&str, &str)> = Vec::new();
+        for path in paths {
+            match tokio::fs::symlink_metadata(repo_root.join(path)).await {
+                Ok(meta) if meta.is_file() => {
+                    let mode = if std::os::unix::fs::PermissionsExt::mode(&meta.permissions())
+                        & 0o111
+                        != 0
+                    {
+                        "100755"
+                    } else {
+                        "100644"
+                    };
+                    files.push((path, mode));
+                }
+                Ok(_) => {
+                    ids.insert((*path).to_owned(), "other".to_owned());
+                }
+                Err(_) => {}
+            }
+        }
+        for chunk in files.chunks(200) {
+            let mut args = vec!["hash-object", "--"];
+            args.extend(chunk.iter().map(|(path, _)| *path));
+            let hashes = self.run_checkout_git_ok(repo_root, &args).await?;
+            for ((path, mode), object) in chunk.iter().zip(hashes.lines()) {
+                ids.insert((*path).to_owned(), format!("{mode} {}", object.trim()));
+            }
+        }
+        Ok(ids)
+    }
+
+    /// `git rev-parse --git-path <name>` as an absolute path.
+    async fn git_path(&self, repo_root: &Path, name: &str) -> Result<PathBuf, WorktreeError> {
+        let path = self
+            .run_checkout_git_ok(
+                repo_root,
+                &["rev-parse", "--path-format=absolute", "--git-path", name],
+            )
+            .await?;
+        Ok(PathBuf::from(path.trim()))
     }
 
     async fn refuse_in_progress(&self, repo_root: &Path, repo: &str) -> Result<(), AcceptError> {
@@ -857,13 +1058,35 @@ fn json_len(text: &str) -> usize {
 }
 
 /// Parses `git diff --name-status -z --no-renames`: `(status letter, path)` per file.
-fn parse_changes(output: &str) -> Vec<(char, String)> {
+pub(super) fn parse_changes(output: &str) -> Vec<(char, String)> {
     let mut tokens = z_tokens(output);
     let mut changes = Vec::new();
     while let (Some(code), Some(path)) = (tokens.next(), tokens.next()) {
         changes.push((code.chars().next().unwrap_or('M'), path.to_owned()));
     }
     changes
+}
+
+/// Where Accept's checkout is going: see [`WorktreeManager::check_out`].
+#[derive(Clone, Copy)]
+pub(super) struct Target<'a> {
+    pub(super) repo_root: &'a Path,
+    pub(super) repo: &'a str,
+    pub(super) into: &'a str,
+    pub(super) head: &'a str,
+    pub(super) result: &'a str,
+    pub(super) changes: &'a [(char, String)],
+}
+
+/// Removes the folders above `path` that are left empty, up to `repo_root`.
+async fn remove_empty_parents(repo_root: &Path, path: &str) {
+    let mut dir = Path::new(path).parent();
+    while let Some(parent) = dir.filter(|parent| !parent.as_os_str().is_empty()) {
+        if tokio::fs::remove_dir(repo_root.join(parent)).await.is_err() {
+            break;
+        }
+        dir = parent.parent();
+    }
 }
 
 fn is_attributes(path: &str) -> bool {

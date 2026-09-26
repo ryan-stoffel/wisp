@@ -384,6 +384,7 @@ pub struct WorktreeManager {
     git_safe_home: PathBuf,
     timeout: Duration,
     max_diff_bytes: usize,
+    merge_timeout: Duration,
     repo_locks: Arc<StdMutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>>,
 }
 
@@ -398,6 +399,7 @@ impl WorktreeManager {
             git_safe_home: data_dir_root.join(GIT_SAFE_HOME_DIR),
             timeout: DEFAULT_TIMEOUT,
             max_diff_bytes: DEFAULT_MAX_DIFF_BYTES,
+            merge_timeout: review::MERGE_TIMEOUT,
             repo_locks: Arc::new(StdMutex::new(HashMap::new())),
         }
     }
@@ -406,6 +408,13 @@ impl WorktreeManager {
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    /// Overrides how long Accept's checkout may run, 300 s by default.
+    #[must_use]
+    pub fn with_merge_timeout(mut self, merge_timeout: Duration) -> Self {
+        self.merge_timeout = merge_timeout;
         self
     }
 
