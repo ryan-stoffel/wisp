@@ -19,6 +19,12 @@ pub(super) const MAX_TOOL_OUTPUT_BYTES: usize = 32 * 1024;
 /// a `Write` of a big file, becomes `{"truncated": true, "bytes": n}`.
 pub(super) const MAX_TOOL_INPUT_BYTES: usize = 32 * 1024;
 
+/// The longest free text field of any other `agent.output` item — `Text`, `TextDelta`,
+/// `Reasoning`, `Notice.detail`, `Warning.detail`, `TurnFinished.result` — in bytes, at the same
+/// cap as a tool's output (#190 N8). Without this, one item near 0007's 8 MiB frame would close
+/// every subscriber and then be replayed again on every reconnect.
+pub(super) const MAX_TEXT_ITEM_BYTES: usize = 32 * 1024;
+
 pub(super) const STARTING: &str = "starting";
 pub(super) const RUNNING: &str = "running";
 pub(super) const COMPLETED: &str = "completed";
@@ -206,11 +212,11 @@ pub(super) fn output_item(event: &Event) -> Option<AgentOutputItem> {
         Event::TurnStarted { turn_id } => AgentOutputItem::TurnStarted { turn_id: *turn_id },
         Event::TextDelta { message_id, text } => AgentOutputItem::TextDelta {
             message_id: message_id.clone(),
-            text: text.clone(),
+            text: truncate(text, MAX_TEXT_ITEM_BYTES),
         },
         Event::Text { message_id, text } => AgentOutputItem::Text {
             message_id: message_id.clone(),
-            text: text.clone(),
+            text: truncate(text, MAX_TEXT_ITEM_BYTES),
         },
         Event::ToolCall {
             call_id,
@@ -234,7 +240,7 @@ pub(super) fn output_item(event: &Event) -> Option<AgentOutputItem> {
         },
         Event::Reasoning { message_id, text } => AgentOutputItem::Reasoning {
             message_id: message_id.clone(),
-            text: text.clone(),
+            text: truncate(text, MAX_TEXT_ITEM_BYTES),
         },
         Event::TodoList { items } => AgentOutputItem::TodoList {
             items: items
@@ -246,7 +252,7 @@ pub(super) fn output_item(event: &Event) -> Option<AgentOutputItem> {
                 .collect(),
         },
         Event::Notice { detail } => AgentOutputItem::Notice {
-            detail: detail.clone(),
+            detail: truncate(detail, MAX_TEXT_ITEM_BYTES),
         },
         Event::Usage(delta) => AgentOutputItem::Usage {
             model: delta.model.clone(),
@@ -258,13 +264,15 @@ pub(super) fn output_item(event: &Event) -> Option<AgentOutputItem> {
         },
         Event::TurnFinished { turn_id, result } => AgentOutputItem::TurnFinished {
             turn_id: *turn_id,
-            result: result.clone(),
+            result: result
+                .as_deref()
+                .map(|result| truncate(result, MAX_TEXT_ITEM_BYTES)),
         },
         Event::FollowUpDropped { turn_id } => {
             AgentOutputItem::FollowUpDropped { turn_id: *turn_id }
         }
         Event::Warning { detail, .. } => AgentOutputItem::Warning {
-            detail: detail.clone(),
+            detail: truncate(detail, MAX_TEXT_ITEM_BYTES),
         },
         Event::RateLimit(_)
         | Event::AccountFallback { .. }
@@ -283,7 +291,9 @@ mod tests {
     use serde_json::json;
     use wisp_protocol::{AgentOutputItem, AgentToolStatus};
 
-    use super::{MAX_TOOL_INPUT_BYTES, MAX_TOOL_OUTPUT_BYTES, output_item, truncate};
+    use super::{
+        MAX_TEXT_ITEM_BYTES, MAX_TOOL_INPUT_BYTES, MAX_TOOL_OUTPUT_BYTES, output_item, truncate,
+    };
     use crate::backend::{Event, LimitStatus, LimitWindow, ModelUsage, ToolStatus, Usage};
 
     #[test]
@@ -348,5 +358,61 @@ mod tests {
         );
         assert!(output.ends_with("bytes cut)"));
         assert_eq!(truncate("short", 10), "short");
+    }
+
+    /// #190 N8: every free text field of an `agent.output` item is capped, not only a tool's.
+    #[test]
+    fn oversized_text_fields_are_cut_to_the_same_cap_as_tool_output() {
+        let big = "x".repeat(MAX_TEXT_ITEM_BYTES + 1);
+        let cut = |field: &str| assert!(field.len() < MAX_TEXT_ITEM_BYTES + 64, "{}", field.len());
+
+        let Some(AgentOutputItem::TextDelta { text, .. }) = output_item(&Event::TextDelta {
+            message_id: None,
+            text: big.clone(),
+        }) else {
+            panic!("a text delta");
+        };
+        cut(&text);
+
+        let Some(AgentOutputItem::Text { text, .. }) = output_item(&Event::Text {
+            message_id: None,
+            text: big.clone(),
+        }) else {
+            panic!("text");
+        };
+        cut(&text);
+
+        let Some(AgentOutputItem::Reasoning { text, .. }) = output_item(&Event::Reasoning {
+            message_id: None,
+            text: big.clone(),
+        }) else {
+            panic!("reasoning");
+        };
+        cut(&text);
+
+        let Some(AgentOutputItem::Notice { detail }) = output_item(&Event::Notice {
+            detail: big.clone(),
+        }) else {
+            panic!("a notice");
+        };
+        cut(&detail);
+
+        let Some(AgentOutputItem::Warning { detail }) = output_item(&Event::Warning {
+            warning: crate::backend::WarningKind::Other,
+            detail: big.clone(),
+        }) else {
+            panic!("a warning");
+        };
+        cut(&detail);
+
+        let Some(AgentOutputItem::TurnFinished { result, .. }) =
+            output_item(&Event::TurnFinished {
+                turn_id: None,
+                result: Some(big),
+            })
+        else {
+            panic!("a turn finished");
+        };
+        cut(&result.unwrap());
     }
 }
