@@ -53,8 +53,11 @@ export interface IWispContextService {
 	write(project: ProjectId, path: string, content: string): Promise<ContextFile>;
 }
 
-/** One project's watch. Disposing it ends its subscription, which `WispContextService` does when
- * the project leaves `IWispProjectsService.projects`, or when the service itself is disposed. */
+/** One project's watch, kept for as long as the service lives once created: `WispContextService`
+ * pauses it (clears the subscription, resets to `idle`) rather than disposing it when the project
+ * leaves `IWispProjectsService.projects`, so a provider `watch()` still holding this same {@link
+ * Watch.state} keeps working if the project reappears (a host switched away and back). Only the
+ * whole service being disposed disposes a `Watch`. */
 class Watch extends Disposable {
 	readonly state = observableValue<WispContextState>('wispContextState', { kind: 'idle' });
 	readonly subscription = this._register(new MutableDisposable());
@@ -96,16 +99,25 @@ export class WispContextService extends Disposable implements IWispContextServic
 		}, () => { /* The shared process is gone; the window is closing. */ });
 		// Only once the current host's projects are confidently known (never mid reset, such as the
 		// moment a host change clears the list before relisting) does a project missing from it mean
-		// it is gone, not just not listed yet; dropping a watch ends its `events/subscribe` too.
+		// it is gone, not just not listed yet. Absent projects are paused (subscription cleared,
+		// state reset to idle) rather than removed, and a project that comes back is reloaded here
+		// if something is still watching it, so a `wisp-context:` editor left open across the gap
+		// picks its changes back up instead of going quiet forever.
 		this._register(autorun(reader => {
 			const projects = projectsService.projects.read(reader);
 			if (projectsService.state.read(reader).kind !== 'ready') {
 				return;
 			}
 			const ids = new Set(projects.map(project => project.id));
-			for (const id of [...this.watches.keys()]) {
-				if (!ids.has(id)) {
-					this.watches.deleteAndDispose(id);
+			for (const [id, watch] of this.watches) {
+				const present = ids.has(id);
+				const kind = watch.state.get().kind;
+				if (!present && kind !== 'idle') {
+					watch.generation++;
+					watch.subscription.clear();
+					watch.state.set({ kind: 'idle' }, undefined);
+				} else if (present && watch.watching && kind === 'idle' && this.connection?.kind === 'connected') {
+					this.load(id, watch);
 				}
 			}
 		}));
