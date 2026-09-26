@@ -68,6 +68,8 @@ export class WispProjectsService extends Disposable implements IWispProjectsServ
 	private connection: WispdState | undefined;
 	/** Bumped on every list and every host change, so a stale answer or event is dropped. */
 	private generation = 0;
+	/** Bumped on every host change only, so a list or resync doesn't drop the answer to a create. */
+	private hostGeneration = 0;
 	private receivedState = false;
 
 	constructor(
@@ -91,9 +93,9 @@ export class WispProjectsService extends Disposable implements IWispProjectsServ
 	}
 
 	async create(params: ProjectCreateParams): Promise<Project> {
-		const generation = this.generation;
+		const hostGeneration = this.hostGeneration;
 		const { project } = await this.wispdService.request('project/create', params);
-		if (generation === this.generation) {
+		if (hostGeneration === this.hostGeneration) {
 			this.add(project);
 		}
 		return project;
@@ -111,6 +113,7 @@ export class WispProjectsService extends Disposable implements IWispProjectsServ
 		if (previous !== undefined && previous.command !== state.command) {
 			// Another host, or another wispd on it: its projects are not this one's.
 			this.generation++;
+			this.hostGeneration++;
 			this.subscription.clear();
 			transaction(tx => {
 				this._projects.set([], tx);
@@ -129,6 +132,7 @@ export class WispProjectsService extends Disposable implements IWispProjectsServ
 		const generation = ++this.generation;
 		this.subscription.clear();
 		this._state.set({ kind: 'loading' }, undefined);
+		const known = new Set(this._projects.get().map(project => project.id));
 		let listed;
 		try {
 			listed = await this.wispdService.request('project/list', {});
@@ -142,8 +146,14 @@ export class WispProjectsService extends Disposable implements IWispProjectsServ
 		if (generation !== this.generation) {
 			return;
 		}
+		// wispd can answer a project/create sent after this list before the list itself, so the
+		// list is older than a project that create added meanwhile (#183). wispd never removes a
+		// project, so that one stays, after the listed ones; its project.created event, later
+		// than the list's seq, finds it already there.
+		const listedIds = new Set(listed.projects.map(project => project.id));
+		const newer = this._projects.get().filter(project => !known.has(project.id) && !listedIds.has(project.id));
 		transaction(tx => {
-			this._projects.set(listed.projects, tx);
+			this._projects.set([...listed.projects, ...newer], tx);
 			this._state.set({ kind: 'ready' }, tx);
 		});
 		this.subscription.value = this.wispdService.subscribe({ after: listed.seq, logId })(message => {

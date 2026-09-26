@@ -17,6 +17,7 @@ mod project;
 mod runs;
 mod threads;
 mod timestamp;
+mod turns;
 mod usage;
 mod worktree;
 

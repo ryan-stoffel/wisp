@@ -122,7 +122,7 @@ fn write_context_file(
         content.as_bytes(),
     );
     let file = context::context_file(name, &metadata, writer);
-    let seq = daemon.log.append(
+    let seq = daemon.log.append_blocking(
         jiff::Timestamp::now(),
         Some(project),
         WispEvent::ContextChanged { file: file.clone() },

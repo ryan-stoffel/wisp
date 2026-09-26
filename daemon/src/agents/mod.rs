@@ -32,7 +32,7 @@ use uuid::Uuid;
 use wisp_protocol::jsonrpc::ErrorObject;
 use wisp_protocol::{
     AccountChoice, AgentAcceptParams, AgentAcceptResult, AgentOutcome, AgentRun, AgentRunState,
-    AgentSendParams, AgentStartParams, ErrorKind, ProjectId, Role, RunId, WispEvent,
+    AgentSendParams, AgentStartParams, ErrorKind, ProjectId, Role, RunId, TurnId, WispEvent,
 };
 use wisp_store::{RunFields, RunState, StoreError, WorktreeFields};
 
@@ -53,12 +53,74 @@ pub(crate) struct Agents {
     backends: BackendRegistry,
     worktrees: WorktreeManager,
     actors: Mutex<HashMap<RunId, mpsc::Sender<Command>>>,
-    /// Held while a run is created, and while an actor is spawned for a run created earlier, so
-    /// one run never gets two worktrees or two actors.
-    start_lock: tokio::sync::Mutex<()>,
+    /// One lock per run id, held while that run is being created, or while its actor is spawned
+    /// for a run created earlier, so one run never gets two worktrees or two actors (#190: a run
+    /// id's lock never makes an unrelated run's `agent/start`, `agent/send`, or `agent/cancel`
+    /// wait, unlike the single lock this replaced).
+    starting: StartLocks,
     running: AtomicU32,
     tracker: TaskTracker,
     shutdown: CancellationToken,
+}
+
+/// Per-run-id locks for [`Agents::starting`] (#190).
+#[derive(Default)]
+struct StartLocks {
+    locks: Mutex<HashMap<RunId, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+impl StartLocks {
+    /// `run_id`'s lock, creating one if this is the first caller to ask for it.
+    ///
+    /// Also sweeps every entry nothing holds any more (#190 review): a waiter whose own task was
+    /// cancelled while queued on `.lock_owned().await` never runs `release`, since it never got
+    /// as far as constructing a `Starting` to drop — its `Arc` simply disappears when its future
+    /// does, which `release` alone can't observe. Left alone, such an entry would sit in the map
+    /// forever holding a lock nobody can ever take again. This sweep, run on every `get`, catches
+    /// it: nothing but the map's own clone remains, so `strong_count` is 1.
+    fn get(&self, run_id: RunId) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self.locks.lock().unwrap_or_else(PoisonError::into_inner);
+        locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+        Arc::clone(
+            locks
+                .entry(run_id)
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+        )
+    }
+
+    /// Drops `run_id`'s entry, but only if nothing besides this map and the caller's own
+    /// about-to-be-dropped guard still holds it (#190 review): removing it unconditionally would
+    /// let a fresh caller's `get` hand out a *different*, uncontended lock while another caller
+    /// that queued earlier is still waiting on the old one, so both could end up inside the
+    /// critical section together — exactly the double-worktree, double-actor race this whole
+    /// mechanism exists to prevent, and one that only shows up when the first attempt fails
+    /// (`existing()`'s fast path in `start`, and `agents.actor(id)` in `actor_for`, both have
+    /// nothing to find until a start actually succeeds). `Starting::drop` calls this while its own
+    /// `OwnedMutexGuard` is still alive, so a caller with no other waiters sees `strong_count == 2`
+    /// (the map's clone and that guard's); anything higher means a waiter is still queued, and the
+    /// entry is left for `get`'s sweep to clean up once every waiter is done with it.
+    fn release(&self, run_id: RunId) {
+        let mut locks = self.locks.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(lock) = locks.get(&run_id)
+            && Arc::strong_count(lock) <= 2
+        {
+            locks.remove(&run_id);
+        }
+    }
+}
+
+/// Held for as long as `run_id` is being created or its actor spawned; releases the per-run lock
+/// on drop, from whichever exit path (#190).
+pub(super) struct Starting<'a> {
+    agents: &'a Agents,
+    run_id: RunId,
+    _lock: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl Drop for Starting<'_> {
+    fn drop(&mut self) {
+        self.agents.starting.release(self.run_id);
+    }
 }
 
 impl std::fmt::Debug for Agents {
@@ -86,10 +148,24 @@ impl Agents {
             backends,
             worktrees,
             actors: Mutex::new(HashMap::new()),
-            start_lock: tokio::sync::Mutex::new(()),
+            starting: StartLocks::default(),
             running: AtomicU32::new(0),
             tracker: TaskTracker::new(),
             shutdown: CancellationToken::new(),
+        }
+    }
+
+    /// Locks `run_id`'s per-run start lock, waiting only on another call for the same run id
+    /// (#190). Also used by `Actor::delete` (#110) to hold off a concurrent `create`/`actor_for`
+    /// retry for this exact run id while its rows are deleted and its actor dropped: since a
+    /// live actor's own fast path (`agents.actor(id)`) never reaches this lock, nothing here
+    /// waits on an unrelated run's.
+    pub(super) async fn start_guard(&self, run_id: RunId) -> Starting<'_> {
+        let lock = self.starting.get(run_id).lock_owned().await;
+        Starting {
+            agents: self,
+            run_id,
+            _lock: lock,
         }
     }
 
@@ -434,7 +510,6 @@ pub(crate) struct CreatedRun {
 /// Creates and starts a run: see the module documentation. Idempotent on the run id.
 pub(crate) async fn create(daemon: Arc<Daemon>, new: NewRun) -> Result<CreatedRun, ErrorObject> {
     let agents = &daemon.agents;
-    let _creating = agents.start_lock.lock().await;
     let NewRun {
         run_id,
         scope: project,
@@ -442,6 +517,7 @@ pub(crate) async fn create(daemon: Arc<Daemon>, new: NewRun) -> Result<CreatedRu
         account,
         thread,
     } = new;
+    let _starting = agents.start_guard(run_id).await;
     let requested = requested_account(account.as_ref());
 
     if let Some(run) = existing(&daemon, run_id, project, &prompt, requested.as_deref()).await? {
@@ -483,20 +559,24 @@ pub(crate) async fn create(daemon: Arc<Daemon>, new: NewRun) -> Result<CreatedRu
     )
     .await?;
     let snapshot = agent_run(&row, Some(&worktree))?;
-    daemon.log.append(
-        snapshot.created_at,
-        Some(project),
-        WispEvent::AgentStarted {
-            run_id,
-            run: Some(snapshot),
-        },
-    );
+    daemon
+        .log
+        .append(
+            snapshot.created_at,
+            Some(project),
+            WispEvent::AgentStarted {
+                run_id,
+                run: Some(snapshot),
+            },
+        )
+        .await;
     if let Some(thread) = &thread_row {
-        crate::threads::log_started(&daemon, thread);
+        crate::threads::log_started(&daemon, thread).await;
     }
     info!(run = %run_id, project = %project, backend = %row.fields.backend, thread = is_thread, "created an agent run");
 
-    let mut actor = Actor::new(Arc::clone(&daemon), row, Some(worktree));
+    // A run just created here has no sent turns yet.
+    let mut actor = Actor::new(Arc::clone(&daemon), row, Some(worktree), HashMap::new());
     let task = match &thread {
         Some(thread) => worker::thread_prompt(
             &prompt,
@@ -525,12 +605,6 @@ pub(crate) async fn create(daemon: Arc<Daemon>, new: NewRun) -> Result<CreatedRu
 }
 
 impl Agents {
-    /// Holds off every run's creation, and every actor's spawning, while a thread's rows are
-    /// deleted and its actor dropped (#110).
-    pub(crate) async fn creation_lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.start_lock.lock().await
-    }
-
     /// Drops run `id`'s actor from the map, so no new command reaches it.
     pub(crate) fn forget(&self, id: RunId) {
         self.actors
@@ -552,11 +626,11 @@ async fn actor_for(daemon: &Arc<Daemon>, id: RunId) -> Result<mpsc::Sender<Comma
     if let Some(actor) = agents.actor(id) {
         return Ok(actor);
     }
-    let _creating = agents.start_lock.lock().await;
+    let _starting = agents.start_guard(id).await;
     if let Some(actor) = agents.actor(id) {
         return Ok(actor);
     }
-    let (row, worktree) = store(daemon, move |db| {
+    let (row, worktree, turns) = store(daemon, move |db| {
         let row = db
             .get_run(id.into())
             .map_err(|e| store_error(&e))?
@@ -567,10 +641,24 @@ async fn actor_for(daemon: &Arc<Daemon>, id: RunId) -> Result<mpsc::Sender<Comma
                 "run {id} has no recorded worktree"
             )));
         }
-        Ok((row, worktree))
+        let turns = db.run_turns(id.into()).map_err(|e| store_error(&e))?;
+        Ok((row, worktree, turns))
     })
     .await?;
-    Ok(agents.spawn(Actor::new(Arc::clone(daemon), row, worktree)))
+    // A restarted actor rebuilds `agent/send`'s idempotency from the store (#190), since a fresh
+    // one has no memory of what a previous wispd already sent to this run's CLI.
+    let turns = turns
+        .into_iter()
+        .filter_map(|(turn_id, text)| {
+            if let Ok(turn_id) = TurnId::try_from(turn_id) {
+                Some((turn_id, text))
+            } else {
+                warn!(run = %id, "a stored turn id is not a UUIDv7; ignoring it");
+                None
+            }
+        })
+        .collect();
+    Ok(agents.spawn(Actor::new(Arc::clone(daemon), row, worktree, turns)))
 }
 
 async fn ask<T>(
@@ -662,31 +750,165 @@ pub(crate) async fn recover(daemon: &Arc<Daemon>) {
         Ok(runs) => {
             for run in runs {
                 info!(run = %run.id, "an agent run was interrupted when wispd last stopped");
-                daemon.log.append(
-                    run.updated_at,
-                    Some(run.project),
-                    WispEvent::AgentFinished {
-                        run_id: run.id,
-                        outcome: AgentOutcome::Interrupted,
-                    },
-                );
-                daemon.log.append(
-                    run.updated_at,
-                    Some(run.project),
-                    WispEvent::AgentUpdated {
-                        run_id: run.id,
-                        state: AgentRunState {
-                            status: run.status,
-                            account_id: run.account_id,
-                            session_id: run.session_id,
-                            error: run.error,
-                            diff: run.diff,
-                            updated_at: run.updated_at,
+                daemon
+                    .log
+                    .append(
+                        run.updated_at,
+                        Some(run.project),
+                        WispEvent::AgentFinished {
+                            run_id: run.id,
+                            outcome: AgentOutcome::Interrupted,
                         },
-                    },
-                );
+                    )
+                    .await;
+                daemon
+                    .log
+                    .append(
+                        run.updated_at,
+                        Some(run.project),
+                        WispEvent::AgentUpdated {
+                            run_id: run.id,
+                            state: AgentRunState {
+                                status: run.status,
+                                account_id: run.account_id,
+                                session_id: run.session_id,
+                                error: run.error,
+                                diff: run.diff,
+                                updated_at: run.updated_at,
+                            },
+                        },
+                    )
+                    .await;
             }
         }
         Err(error) => warn!(error = %error.message, "could not recover interrupted agent runs"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use wisp_protocol::RunId;
+
+    use super::StartLocks;
+
+    #[test]
+    fn different_run_ids_get_independent_locks() {
+        let locks = StartLocks::default();
+        let (a, b) = (RunId::generate(), RunId::generate());
+        assert!(!Arc::ptr_eq(&locks.get(a), &locks.get(b)));
+    }
+
+    #[test]
+    fn the_same_run_id_gets_the_same_lock_until_it_is_released() {
+        let locks = StartLocks::default();
+        let id = RunId::generate();
+        let first = locks.get(id);
+        assert!(Arc::ptr_eq(&first, &locks.get(id)));
+        locks.release(id);
+        assert!(
+            !Arc::ptr_eq(&first, &locks.get(id)),
+            "a released id starts fresh, for the next caller to lock uncontended"
+        );
+    }
+
+    /// #190 N4: two different runs proceed concurrently through `agents::start`/`actor_for`,
+    /// while retries or a race for the very same run id still serialize, exactly as the single
+    /// lock this replaced did.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn two_different_run_ids_proceed_concurrently_while_the_same_one_serializes() {
+        let locks = StartLocks::default();
+        let (a, b) = (RunId::generate(), RunId::generate());
+        let hold_a = locks.get(a).lock_owned().await;
+
+        tokio::time::timeout(Duration::from_millis(200), locks.get(b).lock_owned())
+            .await
+            .expect("a different run id was blocked by an unrelated one's lock");
+
+        let waiting = tokio::spawn({
+            let lock = locks.get(a);
+            async move {
+                lock.lock_owned().await;
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !waiting.is_finished(),
+            "a retry for the same run id did not wait for its own lock"
+        );
+        drop(hold_a);
+        waiting.await.unwrap();
+    }
+
+    /// #190 review, blocking item 3: releasing a run id's lock while a queued retry still holds a
+    /// clone of it must not let a *third*, fresh caller in on a different, uncontended lock. That
+    /// would mean the retry and the fresh caller could both end up inside the run's critical
+    /// section at once — exactly what happens after a failed `agent/start`, since the failed
+    /// attempt's fast path (`existing()`) has nothing to find, so a naive `release` looks safe to
+    /// call unconditionally.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_released_lock_is_not_reused_while_a_queued_retry_still_holds_it() {
+        let locks = Arc::new(StartLocks::default());
+        let id = RunId::generate();
+
+        // The first attempt takes the lock, then fails and drops its own guard.
+        let first = locks.get(id);
+        let first_guard = Arc::clone(&first).lock_owned().await;
+
+        // A retry queues behind it, using the very same lock instance.
+        let retry = locks.get(id);
+        assert!(
+            Arc::ptr_eq(&first, &retry),
+            "a queued retry shares the first attempt's own lock"
+        );
+        let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let retry_task = tokio::spawn({
+            let retry = Arc::clone(&retry);
+            let entered = Arc::clone(&entered);
+            async move {
+                let _guard = retry.lock_owned().await;
+                entered.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!retry_task.is_finished(), "the retry is still queued");
+
+        // The first attempt "fails" (a real caller's `Starting` guard would drop here) and
+        // releases, exactly as `agents::start`/`actor_for` do on any error path.
+        drop(first_guard);
+        locks.release(id);
+
+        // A caller arriving after the release, while the retry is still queued, must still be
+        // handed the SAME lock: nothing has succeeded yet, so there is no fast path (`agents.
+        // actor(id)`/`existing()`) to protect a third caller from racing the retry.
+        let fresh = locks.get(id);
+        assert!(
+            Arc::ptr_eq(&retry, &fresh),
+            "a caller after the release still contends for the queued retry's own lock"
+        );
+        assert!(
+            !entered.load(std::sync::atomic::Ordering::SeqCst),
+            "the retry has not run yet: nothing has bypassed it"
+        );
+
+        retry_task.await.unwrap();
+        assert!(entered.load(std::sync::atomic::Ordering::SeqCst));
+
+        // Once nobody but the map itself holds it — dropping every local clone this test kept
+        // around, not just the ones a real caller would have released already — the *next* `get`
+        // sweeps it away and a later caller gets a brand-new, uncontended lock: the entry doesn't
+        // leak forever. Checked with a `Weak` rather than comparing the new `Arc`'s address to
+        // the old one's: once the old allocation is freed, a new one is free to reuse the very
+        // same address, which would make a raw-pointer comparison an unreliable false negative.
+        let old = Arc::downgrade(&retry);
+        drop((first, retry, fresh));
+        let after = locks.get(id);
+        assert!(
+            old.upgrade().is_none(),
+            "the swept lock is still kept alive somewhere"
+        );
+        drop(after);
     }
 }

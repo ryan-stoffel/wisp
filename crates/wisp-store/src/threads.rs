@@ -252,7 +252,8 @@ impl Store {
         fetch_thread(&self.conn, id)?.ok_or(StoreError::NotFound { id })
     }
 
-    /// Deletes thread `id` with its run, its worktree row, and its stored events, in one
+    /// Deletes thread `id` with its run, its worktree row, its stored events, and its sent turns
+    /// (#190: `turns` has no foreign key to `runs`, so nothing else removes them), in one
     /// transaction. Returns whether the thread existed.
     ///
     /// # Errors
@@ -267,6 +268,7 @@ impl Store {
         tx.execute("DELETE FROM runs WHERE id = ?1", params![key])?;
         tx.execute("DELETE FROM worktrees WHERE id = ?1", params![key])?;
         tx.execute("DELETE FROM events WHERE run_id = ?1", params![key])?;
+        tx.execute("DELETE FROM turns WHERE run_id = ?1", params![key])?;
         tx.commit()?;
         Ok(existed)
     }

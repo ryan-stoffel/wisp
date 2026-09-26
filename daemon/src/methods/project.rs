@@ -69,7 +69,7 @@ pub(crate) async fn create(
                 .map_err(|error| store_error(&error))?;
             let project = store::project(row)?;
             if !existed {
-                let seq = log.append(
+                let seq = log.append_blocking(
                     project.created_at,
                     None,
                     WispEvent::ProjectCreated {

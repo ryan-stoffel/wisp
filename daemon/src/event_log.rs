@@ -1,12 +1,12 @@
 //! The event log: every change on this host, numbered by a daemon-wide `seq` (0007).
 //!
-//! From M3 the log lives in SQLite (#156, decision 0014): [`EventLog::open`] keeps its own
-//! connection to the store's database, writes every event there as it is appended, and on start
-//! reloads the log's id, its head `seq`, and the newest events. So `logId` and `seq` survive a
-//! restart, and `agent/events` can page through a run's whole history. The newest `retention`
-//! events are also kept in memory, which is what `events/subscribe` replays from; older ones need
-//! a resync. If the database can't be opened, the log runs in memory only, starting over with a
-//! new `logId` on every start, as it did in M1.
+//! From M3 the log lives in SQLite (#156, decision 0014): [`EventLog::open`] opens two
+//! connections to the store's database — one owned by a dedicated writer thread, the other kept
+//! for `run_events`'s reads — and on start reloads the log's id, its head `seq`, and the newest
+//! events. So `logId` and `seq` survive a restart, and `agent/events` can page through a run's
+//! whole history. The newest `retention` events are also kept in memory, which is what
+//! `events/subscribe` replays from; older ones need a resync. If the database can't be opened,
+//! the log runs in memory only, starting over with a new `logId` on every start, as it did in M1.
 //!
 //! The table is compacted on a retention policy (#187, decision 0016): an agent run's events stay
 //! as long as its run row does (nothing removes one yet, so in practice they are not pruned by
@@ -27,13 +27,41 @@
 //! Subscribers don't get their own queues. Each subscription is a cursor that reads the log (see
 //! `methods::events::Cursors`), so a slow subscriber costs nothing until it reads, and whoever
 //! appends never waits for one.
+//!
+//! **Locking (#190).** The write connection is owned by a [`Writer`] thread of its own (mirroring
+//! `daemon::store::StoreHandle`'s pattern), and `run_events` reads from a second, independent
+//! connection behind its own lock, so paging a run's history never contends with appending.
+//! [`EventLog::append`] and [`EventLog::append_blocking`] dispatch a self-contained job to the
+//! writer thread and wait for its reply (async, or blocking for the few callers with no runtime
+//! context: `project/create`'s job on the store's own thread, and the shared-context `notify`
+//! watcher's callback thread). Crucially, that job — not the caller — assigns the `seq`, attempts
+//! the write, and publishes the entry to the in-memory window, all in one synchronous call on the
+//! writer thread. Jobs are processed one at a time, strictly in the order they were dispatched, so
+//! this serializes every append without a separate lock, and it does so *unconditionally*: once a
+//! job is sent to the writer thread's queue, it runs to completion no matter what happens to the
+//! caller waiting on it. A caller whose task is dropped mid-await (0007's lost-connection retry
+//! case: closing a connection aborts every handler) can no longer leave the log's `seq` counter
+//! and its in-memory window disagreeing with what SQLite has, because there is no window between
+//! "assign" and "publish" that depends on the caller still being there. A log with no database
+//! serializes the same way, only without a writer thread to hand the job to: `append_in_memory`
+//! does assign-and-publish as one synchronous, uninterruptible critical section under `inner`'s
+//! own lock, which cannot be preempted by a caller's cancellation either, since it never awaits
+//! partway through.
+//!
+//! `head` — the newest assigned `seq` — lives in [`Inner`], read and written under the same lock
+//! as the in-memory window itself, so a subscriber's cursor (`check`/`next`) always sees `head`
+//! and the window agree: it can never observe a `head` that has moved to `seq` N before entry N
+//! is actually in the window. A separate `watch::Sender` only wakes subscribers to go re-check;
+//! it is not itself a source of truth.
 
 use std::collections::VecDeque;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
+use std::thread;
 
 use jiff::Timestamp;
-use tokio::sync::watch;
+use tokio::sync::{oneshot, watch};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 use wisp_protocol::{LogId, ProjectId, RunId, WispEvent};
@@ -63,7 +91,6 @@ pub(crate) enum Gone {
 }
 
 pub(crate) struct EventLog {
-    id: LogId,
     retention: usize,
     /// The in-memory replay window's byte bound (#187): even within `retention`, evicts older
     /// events once their JSON exceeds this many bytes.
@@ -71,19 +98,126 @@ pub(crate) struct EventLog {
     /// How many of the newest host and project events (no `run_id`) the stored log keeps;
     /// older ones are pruned after each one is appended. Irrelevant for a log with no database.
     host_retention: usize,
-    inner: Mutex<Inner>,
-    head: watch::Sender<u64>,
+    /// The in-memory replay window and `head`, together, so they're always updated atomically
+    /// (#190): a reader never sees `head` reflect a `seq` whose entry isn't in `events` yet.
+    /// `Arc`-wrapped so a write job, running on the writer thread, can share it directly instead
+    /// of needing `self` to still be reachable from an awaiting caller that might be gone by then.
+    inner: Arc<Mutex<Inner>>,
+    /// The event log's dedicated writer thread, or `None` for a log with no database.
+    writer: Option<Writer>,
+    /// A connection dedicated to `run_events`'s reads, independent of `writer`'s, so paging a
+    /// run's history never shares a lock with appending (#190).
+    reader: Option<Mutex<Store>>,
+    /// Wakes a subscriber to go re-check `inner`; not itself a source of truth for `head` (#190).
+    id: LogId,
+    head_watch: watch::Sender<u64>,
 }
 
 struct Inner {
     events: VecDeque<Arc<Entry>>,
     /// The sum of `events`' sizes, kept alongside for O(1) eviction decisions.
     bytes: usize,
+    /// The newest assigned `seq`, or 0 before the first: the log's real counter. Updated in the
+    /// same critical section as `events`, so the two never disagree (#190).
+    head: u64,
     /// The oldest `seq` that can still be replayed. Eviction moves it on; [`EventLog::purge_run`]
     /// doesn't, since the events it removes are gone on purpose, not dropped.
     floor: u64,
-    /// The log's own connection to the store's database, or `None` for a log in memory only.
-    db: Option<Store>,
+}
+
+/// A write to the event log's database, run on [`Writer`]'s own thread.
+type WriteJob = Box<dyn FnOnce(&Store) + Send>;
+
+/// Applies writes to the event log's database on a thread of its own, so appending never blocks a
+/// tokio worker thread on SQLite (#190). Mirrors `daemon::store::StoreHandle`'s dedicated thread,
+/// but owns a connection of its own rather than sharing the project store's: the two write
+/// independently, and diagnosing a stuck append should never depend on knowing they share a
+/// thread.
+struct Writer {
+    /// `None` only ever briefly, while `Drop` is closing the channel before it joins the thread.
+    jobs: Option<mpsc::Sender<WriteJob>>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl Writer {
+    /// Starts the thread, or fails if it can't be started: the caller decides what that means for
+    /// the log as a whole (#190 review non-blocking note — previously this fell back to
+    /// appending nothing while keeping the database's already-stored `logId`, which a later
+    /// restart would reuse `seq`s against; `EventLog::load` now treats it the same as the
+    /// database failing to open at all, so the log falls back to memory with a fresh id instead).
+    fn spawn(db: Store) -> std::io::Result<Self> {
+        let (jobs, queue) = mpsc::channel::<WriteJob>();
+        let thread = thread::Builder::new()
+            .name("wispd-events".to_owned())
+            .spawn(move || {
+                while let Ok(job) = queue.recv() {
+                    // A panicking job drops its `done` sender, which only fails that one
+                    // caller's wait (see `dispatch`); the thread keeps serving the rest.
+                    if catch_unwind(AssertUnwindSafe(|| job(&db))).is_err() {
+                        error!("an event log write job panicked");
+                    }
+                }
+            })?;
+        Ok(Self {
+            jobs: Some(jobs),
+            thread: Some(thread),
+        })
+    }
+
+    /// Runs `job` on the writer thread and waits for its result, from a tokio task: the wait is a
+    /// plain `.await`, so it doesn't block the calling worker thread. If the caller's own future
+    /// is dropped while waiting, `job` still runs to completion on the writer thread regardless
+    /// (#190): it was already handed off before the first await point.
+    async fn run<T: Send + 'static>(
+        &self,
+        job: impl FnOnce(&Store) -> T + Send + 'static,
+    ) -> Option<T> {
+        let (done, wait) = oneshot::channel();
+        self.dispatch(job, done);
+        wait.await.ok()
+    }
+
+    /// Runs `job` on the writer thread and blocks the calling thread until it finishes. Only for
+    /// callers with no tokio runtime context of their own: `blocking_recv` panics inside one.
+    fn run_blocking<T: Send + 'static>(
+        &self,
+        job: impl FnOnce(&Store) -> T + Send + 'static,
+    ) -> Option<T> {
+        let (done, wait) = oneshot::channel();
+        self.dispatch(job, done);
+        wait.blocking_recv().ok()
+    }
+
+    fn dispatch<T: Send + 'static>(
+        &self,
+        job: impl FnOnce(&Store) -> T + Send + 'static,
+        done: oneshot::Sender<T>,
+    ) {
+        let job: WriteJob = Box::new(move |db| {
+            let result = job(db);
+            let _ = done.send(result);
+        });
+        // A send error means the thread ended (or, transiently, is being dropped), which for a
+        // running log only happens if it could not be started (jobs never panic past
+        // `catch_unwind`); `wait` then resolves on its own once `done` drops, so the caller is
+        // never left hanging.
+        if let Some(jobs) = &self.jobs {
+            let _ = jobs.send(job);
+        }
+    }
+}
+
+impl Drop for Writer {
+    /// Closes the job channel first, so the thread's `queue.recv()` loop ends, then joins it:
+    /// makes "shutdown flushes pending writes" (every `append`/`append_blocking` already awaits
+    /// its own job before returning) an explicit guarantee at the log's own level, rather than
+    /// something that merely happens to hold today (#190 review non-blocking note).
+    fn drop(&mut self) {
+        drop(self.jobs.take());
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 /// The run an event belongs to, for `agent/events`.
@@ -132,6 +266,48 @@ fn evict(
     }
 }
 
+// The index of the first event after `after`. `seq`s increase but may have gaps: an event that
+// failed to be stored is missing from a log reloaded after a restart, and `purge_run` (#110)
+// removes a deleted thread's events from the middle of the window on purpose. Reads `head`,
+// `floor`, and `events` from the same locked `inner`, so all three are always consistent with
+// each other (#190): `head` never says a `seq` exists that `events` hasn't published yet.
+fn start(inner: &Inner, after: u64) -> Result<usize, Gone> {
+    let head = inner.head;
+    if after > head {
+        return Err(Gone::Unknown { head });
+    }
+    if after + 1 < inner.floor {
+        return Err(Gone::Dropped);
+    }
+    Ok(inner.events.partition_point(|event| event.seq <= after))
+}
+
+/// Pushes `entry` into the window and advances `head` to its `seq`, in one critical section, then
+/// notifies watchers — all while still holding the lock (#190), so no reader can ever observe
+/// `head` having moved without the entry already being there to back it up.
+fn publish(
+    inner: &Mutex<Inner>,
+    head_watch: &watch::Sender<u64>,
+    retention: usize,
+    max_bytes: usize,
+    entry: Entry,
+) {
+    let mut inner = inner.lock().unwrap_or_else(PoisonError::into_inner);
+    let seq = entry.seq;
+    let bytes = entry.bytes;
+    inner.events.push_back(Arc::new(entry));
+    inner.bytes += bytes;
+    inner.head = seq;
+    head_watch.send_replace(seq);
+    let Inner {
+        events,
+        bytes: total_bytes,
+        floor,
+        ..
+    } = &mut *inner;
+    evict(events, total_bytes, floor, retention, max_bytes);
+}
+
 impl EventLog {
     /// An empty log in memory only, which keeps the newest `retention` events with no byte bound.
     /// For tests that don't care about the byte bound or the store's own host-event pruning.
@@ -150,6 +326,7 @@ impl EventLog {
             usize::MAX,
             VecDeque::new(),
             0,
+            None,
             None,
         )
     }
@@ -187,6 +364,23 @@ impl EventLog {
             .into_iter()
             .map(|stored| Arc::new(entry(&stored)))
             .collect();
+        // Treated the same as the database failing to open at all (`?`, not a fallback): a writer
+        // that can't start would otherwise leave the database's already-stored `logId` in place
+        // while appending nothing, so a later restart reloads that `logId` and reuses `seq`s a
+        // degraded session already handed out in memory (#190 review non-blocking note). Falling
+        // all the way back to `EventLog::open`'s in-memory mode instead starts a fresh `logId`,
+        // which is what should happen whenever this log can't actually persist.
+        let writer = Writer::spawn(db)?;
+        // A second connection, dedicated to `run_events`'s reads, so paging a run's history never
+        // shares a lock with appending (#190). WAL mode (`configure`, in `wisp_store`) lets it
+        // read freely alongside the writer thread's own connection.
+        let reader = match Store::open(path) {
+            Ok(reader) => Some(reader),
+            Err(error) => {
+                warn!(path = %path.display(), %error, "could not open a second connection for the event log's reads; agent/events falls back to memory");
+                None
+            }
+        };
         info!(log_id = %id, head, "opened the event log");
         Ok(Self::with(
             id,
@@ -195,7 +389,8 @@ impl EventLog {
             host_retention,
             events,
             head,
-            Some(db),
+            Some(writer),
+            reader,
         ))
     }
 
@@ -207,7 +402,8 @@ impl EventLog {
         host_retention: usize,
         mut events: VecDeque<Arc<Entry>>,
         head: u64,
-        db: Option<Store>,
+        writer: Option<Writer>,
+        reader: Option<Store>,
     ) -> Self {
         let retention = retention.max(1);
         let max_bytes = max_bytes.max(1);
@@ -224,17 +420,19 @@ impl EventLog {
         let mut floor = events.front().map_or(head + 1, |entry| entry.seq);
         evict(&mut events, &mut bytes, &mut floor, retention, max_bytes);
         Self {
-            id,
             retention,
             max_bytes,
             host_retention,
-            inner: Mutex::new(Inner {
+            inner: Arc::new(Mutex::new(Inner {
                 events,
                 bytes,
+                head,
                 floor,
-                db,
-            }),
-            head: watch::Sender::new(head),
+            })),
+            writer,
+            reader: reader.map(Mutex::new),
+            id,
+            head_watch: watch::Sender::new(head),
         }
     }
 
@@ -244,23 +442,85 @@ impl EventLog {
 
     /// The newest event's `seq`, or 0 before the first.
     pub fn head(&self) -> u64 {
-        *self.head.borrow()
+        self.inner().head
     }
 
     /// A receiver that wakes after every append.
     pub fn watch(&self) -> watch::Receiver<u64> {
-        self.head.subscribe()
+        self.head_watch.subscribe()
     }
 
     /// Appends an event, stores it, and returns its `seq`. An event that can't be stored is still
-    /// delivered from memory, and the failure is logged.
-    pub fn append(&self, time: Timestamp, project: Option<ProjectId>, event: WispEvent) -> u64 {
-        let mut inner = self.inner();
-        let seq = self.head() + 1;
-        let run_id = run_of(&event);
-        let payload = serde_json::to_string(&event).unwrap_or_default();
-        let bytes = payload.len();
-        if let Some(db) = &inner.db {
+    /// delivered from memory, and the failure is logged. From a tokio task: the writer thread
+    /// does the assigning, the SQLite write, and the publish, as one job, and awaiting its reply
+    /// here yields the worker thread to other work instead of blocking it — and, unlike a
+    /// caller-side lock, keeps working correctly even if this call is aborted mid-wait (#190).
+    pub async fn append(
+        &self,
+        time: Timestamp,
+        project: Option<ProjectId>,
+        event: WispEvent,
+    ) -> u64 {
+        match &self.writer {
+            Some(writer) => writer
+                .run(self.job(time, project, event))
+                .await
+                .unwrap_or_else(|| self.writer_unresponsive()),
+            None => self.append_in_memory(time, project, event),
+        }
+    }
+
+    /// [`EventLog::append`], for a caller with no tokio runtime context of its own: `project/
+    /// create`'s job on the project store's own dedicated thread, and the shared-context `notify`
+    /// watcher's callback thread. Blocks the calling thread until the write finishes, which is
+    /// harmless there since neither is a tokio worker thread to begin with.
+    pub fn append_blocking(
+        &self,
+        time: Timestamp,
+        project: Option<ProjectId>,
+        event: WispEvent,
+    ) -> u64 {
+        match &self.writer {
+            Some(writer) => writer
+                .run_blocking(self.job(time, project, event))
+                .unwrap_or_else(|| self.writer_unresponsive()),
+            None => self.append_in_memory(time, project, event),
+        }
+    }
+
+    /// Practically unreachable: every job runs under `catch_unwind`, so the only way the writer
+    /// thread fails to answer is if it could never be started, in which case `self.writer` is
+    /// already `None`. Logs and reports a `seq` without touching any state, so the event is lost
+    /// rather than risking a second, colliding assignment.
+    fn writer_unresponsive(&self) -> u64 {
+        error!("the event log's writer thread did not answer; the event was not delivered");
+        self.head()
+    }
+
+    /// Builds the self-contained job [`Writer::run`]/[`Writer::run_blocking`] hands to the writer
+    /// thread: assigning `event`'s `seq`, attempting to store it, and publishing it are all one
+    /// synchronous call, so nothing about a caller's own fate can leave the assignment and the
+    /// publish disagreeing (#190).
+    fn job(
+        &self,
+        time: Timestamp,
+        project: Option<ProjectId>,
+        event: WispEvent,
+    ) -> impl FnOnce(&Store) -> u64 + Send + 'static {
+        let inner = Arc::clone(&self.inner);
+        let head_watch = self.head_watch.clone();
+        let (retention, max_bytes, host_retention) =
+            (self.retention, self.max_bytes, self.host_retention);
+        move |db: &Store| {
+            let run_id = run_of(&event);
+            let payload = serde_json::to_string(&event).unwrap_or_default();
+            let bytes = payload.len();
+            // A short, separate critical section just to read the counter: the write itself must
+            // not hold this lock, or a reader (`check`/`next`/`run_events`'s in-memory fallback)
+            // would block on it for as long as SQLite does (#190's original complaint, just
+            // against a different lock). No other job can run between this and `publish` below,
+            // since the writer thread processes one job at a time to completion.
+            let seq = inner.lock().unwrap_or_else(PoisonError::into_inner).head + 1;
             let stored = StoredEvent {
                 seq,
                 time,
@@ -279,11 +539,39 @@ impl EventLog {
             } else if run_id.is_none() {
                 // Only a host or project event can grow past the retention this way (#187): a
                 // run's events stay until its run row is removed, which nothing does yet.
-                if let Err(error) = db.prune_host_events(self.host_retention) {
+                if let Err(error) = db.prune_host_events(host_retention) {
                     error!(%error, "could not prune host and project events");
                 }
             }
+            publish(
+                &inner,
+                &head_watch,
+                retention,
+                max_bytes,
+                Entry {
+                    seq,
+                    time,
+                    project,
+                    event,
+                    bytes,
+                },
+            );
+            seq
         }
+    }
+
+    /// [`EventLog::append`] for a log with no database: assigning the `seq` and publishing the
+    /// entry happen in one synchronous, uninterruptible critical section under `inner`'s own
+    /// lock, with no await point in between for a caller's cancellation to land on (#190).
+    fn append_in_memory(
+        &self,
+        time: Timestamp,
+        project: Option<ProjectId>,
+        event: WispEvent,
+    ) -> u64 {
+        let bytes = serde_json::to_string(&event).map_or(0, |json| json.len());
+        let mut inner = self.inner();
+        let seq = inner.head + 1;
         inner.events.push_back(Arc::new(Entry {
             seq,
             time,
@@ -292,21 +580,23 @@ impl EventLog {
             bytes,
         }));
         inner.bytes += bytes;
+        inner.head = seq;
+        self.head_watch.send_replace(seq);
         let Inner {
-            events: entries,
+            events,
             bytes: total_bytes,
             floor,
             ..
         } = &mut *inner;
-        evict(entries, total_bytes, floor, self.retention, self.max_bytes);
-        self.head.send_replace(seq);
+        evict(events, total_bytes, floor, self.retention, self.max_bytes);
         seq
     }
 
     /// `run`'s events after `after`, oldest first, from the database, or from memory for a log
     /// that has none: at most `limit` of them and about `max_bytes` of event JSON, but always at
     /// least one when any exists, so a page fits in a frame and paging always moves on. The
-    /// flag says whether more follow.
+    /// flag says whether more follow. Reads through its own connection (`reader`), independent of
+    /// `append`'s, so a slow page never blocks a concurrent append or vice versa (#190).
     pub fn run_events(
         &self,
         run: RunId,
@@ -314,8 +604,8 @@ impl EventLog {
         limit: usize,
         max_bytes: usize,
     ) -> Result<(Vec<Arc<Entry>>, bool), StoreError> {
-        let inner = self.inner();
-        if let Some(db) = &inner.db {
+        if let Some(reader) = &self.reader {
+            let db = reader.lock().unwrap_or_else(PoisonError::into_inner);
             let (stored, more) = db.run_events(run.into(), after, limit, max_bytes)?;
             let entries = stored
                 .iter()
@@ -323,6 +613,7 @@ impl EventLog {
                 .collect();
             return Ok((entries, more));
         }
+        let inner = self.inner();
         let mut entries = Vec::new();
         let mut bytes = 0;
         for entry in inner
@@ -356,7 +647,7 @@ impl EventLog {
 
     /// Whether the events after `after` can all still be replayed.
     pub fn check(&self, after: u64) -> Result<(), Gone> {
-        self.start(&self.inner(), after).map(|_| ())
+        start(&self.inner(), after).map(|_| ())
     }
 
     /// The first event after `after` that belongs to `project`, where `None` means host-level
@@ -370,28 +661,15 @@ impl EventLog {
         project: Option<ProjectId>,
     ) -> Result<(Option<Arc<Entry>>, u64), Gone> {
         let inner = self.inner();
-        let start = self.start(&inner, after)?;
+        let index = start(&inner, after)?;
         match inner
             .events
-            .range(start..)
+            .range(index..)
             .find(|event| event.project == project)
         {
             Some(event) => Ok((Some(Arc::clone(event)), event.seq)),
-            None => Ok((None, self.head())),
+            None => Ok((None, inner.head)),
         }
-    }
-
-    // The index of the first event after `after`. `seq`s increase but may have gaps: an event
-    // that failed to be stored is missing from a log reloaded after a restart.
-    fn start(&self, inner: &Inner, after: u64) -> Result<usize, Gone> {
-        let head = self.head();
-        if after > head {
-            return Err(Gone::Unknown { head });
-        }
-        if after + 1 < inner.floor {
-            return Err(Gone::Dropped);
-        }
-        Ok(inner.events.partition_point(|event| event.seq <= after))
     }
 
     fn inner(&self) -> MutexGuard<'_, Inner> {
@@ -416,13 +694,15 @@ fn entry(stored: &StoredEvent) -> Entry {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::sync::Arc;
+    use std::time::Duration;
 
     use wisp_protocol::{AgentOutcome, AgentOutputItem, ProjectId, RunId, WispEvent};
 
     use super::{EventLog, Gone};
 
     fn append(log: &EventLog, project: Option<ProjectId>) -> u64 {
-        log.append(jiff::Timestamp::now(), project, WispEvent::Unknown)
+        log.append_blocking(jiff::Timestamp::now(), project, WispEvent::Unknown)
     }
 
     fn finished(run_id: RunId) -> WispEvent {
@@ -471,9 +751,9 @@ mod tests {
         let log = EventLog::new(10);
         let project = ProjectId::generate();
         let (gone, kept) = (RunId::generate(), RunId::generate());
-        log.append(jiff::Timestamp::now(), Some(project), finished(gone));
-        log.append(jiff::Timestamp::now(), Some(project), finished(kept));
-        log.append(jiff::Timestamp::now(), Some(project), finished(gone));
+        log.append_blocking(jiff::Timestamp::now(), Some(project), finished(gone));
+        log.append_blocking(jiff::Timestamp::now(), Some(project), finished(kept));
+        log.append_blocking(jiff::Timestamp::now(), Some(project), finished(gone));
 
         log.purge_run(gone);
 
@@ -515,7 +795,7 @@ mod tests {
         let run = RunId::generate();
         let first = open(&path, 2);
         append(&first, None);
-        first.append(jiff::Timestamp::now(), Some(project), finished(run));
+        first.append_blocking(jiff::Timestamp::now(), Some(project), finished(run));
         append(&first, Some(project));
         let id = first.id();
         drop(first);
@@ -551,9 +831,9 @@ mod tests {
         std::fs::write(&file, "").unwrap();
         let log = open(&file.join("nested.sqlite3"), 10);
         let run = RunId::generate();
-        log.append(jiff::Timestamp::now(), None, finished(run));
+        log.append_blocking(jiff::Timestamp::now(), None, finished(run));
         assert_eq!(log.head(), 1);
-        log.append(jiff::Timestamp::now(), None, finished(run));
+        log.append_blocking(jiff::Timestamp::now(), None, finished(run));
         assert_eq!(log.run_events(run, 0, 10, usize::MAX).unwrap().0.len(), 2);
         let (page, more) = log.run_events(run, 0, 10, 1).unwrap();
         assert_eq!(
@@ -639,17 +919,17 @@ mod tests {
         // Room for a little more than one event, so a second one evicts the first even though
         // `retention` (1000) is nowhere close.
         let log = EventLog::new_bounded(1000, one + 10);
-        log.append(
+        log.append_blocking(
             jiff::Timestamp::now(),
             None,
             big_output(run, &"a".repeat(80)),
         );
-        log.append(
+        log.append_blocking(
             jiff::Timestamp::now(),
             None,
             big_output(run, &"b".repeat(80)),
         );
-        log.append(
+        log.append_blocking(
             jiff::Timestamp::now(),
             None,
             big_output(run, &"c".repeat(80)),
@@ -674,7 +954,7 @@ mod tests {
         // seq 1 even though they're inside what a restart still reloads.
         let log = EventLog::open(&path, 3, usize::MAX, 1);
         append(&log, None); // seq 1: host
-        log.append(jiff::Timestamp::now(), None, finished(run)); // seq 2: run, never pruned
+        log.append_blocking(jiff::Timestamp::now(), None, finished(run)); // seq 2: run, never pruned
         append(&log, None); // seq 3: host
         append(&log, None); // seq 4: host
         append(&log, None); // seq 5: host, old enough that pruning it is legitimate
@@ -714,17 +994,17 @@ mod tests {
             .unwrap()
             .len();
         let log = EventLog::open(&path, 1000, usize::MAX, 1000);
-        log.append(
+        log.append_blocking(
             jiff::Timestamp::now(),
             None,
             big_output(run, &"a".repeat(80)),
         );
-        log.append(
+        log.append_blocking(
             jiff::Timestamp::now(),
             None,
             big_output(run, &"b".repeat(80)),
         );
-        log.append(
+        log.append_blocking(
             jiff::Timestamp::now(),
             None,
             big_output(run, &"c".repeat(80)),
@@ -741,5 +1021,112 @@ mod tests {
         );
         assert_eq!(reopened.check(2), Ok(()));
         assert_eq!(reopened.next(2, None).unwrap().0.unwrap().seq, 3);
+    }
+
+    /// #190 N2: `run_events` reads through its own connection, so a page held open doesn't wait
+    /// on, or make wait, a concurrent append.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_append_is_not_blocked_by_a_long_page_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wispd.sqlite3");
+        let log = Arc::new(open(&path, 10));
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let reading = {
+            let log = Arc::clone(&log);
+            std::thread::spawn(move || {
+                let reader = log
+                    .reader
+                    .as_ref()
+                    .expect("a stored log has its own read connection");
+                let _guard = reader.lock().unwrap();
+                started_tx.send(()).unwrap();
+                // Held "reading" until the test says otherwise, standing in for a slow page.
+                release_rx.recv().unwrap();
+            })
+        };
+        started_rx.recv().unwrap();
+
+        let seq = tokio::time::timeout(
+            Duration::from_secs(5),
+            log.append(jiff::Timestamp::now(), None, WispEvent::Unknown),
+        )
+        .await
+        .expect("an append waited on a concurrent page read");
+        assert_eq!(seq, 1);
+
+        release_tx.send(()).unwrap();
+        reading.join().unwrap();
+    }
+
+    /// #190 review, blocking item 1: an `append` whose caller is dropped mid-wait must not leave
+    /// the log's `seq` counter out of step with what SQLite actually has. Reproduces the
+    /// reviewer's repro: occupy the writer thread, dispatch an append, abort the task awaiting it
+    /// before the writer thread ever gets to the job, release the writer thread, then append
+    /// again — the second append must not reuse the first's `seq`, and the database must agree.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_aborted_appends_job_still_publishes_so_the_next_one_does_not_collide() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wispd.sqlite3");
+        let log = Arc::new(open(&path, 10));
+
+        // Occupies the writer thread on a plain OS thread (not async: `run_blocking` would panic
+        // inside a runtime), so the append dispatched below is still queued, not yet started,
+        // when its caller is aborted.
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let occupied = std::thread::spawn({
+            let log = Arc::clone(&log);
+            move || {
+                let writer = log.writer.as_ref().expect("a stored log has a writer");
+                writer.run_blocking(move |_db: &wisp_store::Store| {
+                    started_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                });
+            }
+        });
+        started_rx.recv().unwrap();
+
+        let aborted = tokio::spawn({
+            let log = Arc::clone(&log);
+            async move {
+                log.append(jiff::Timestamp::now(), None, WispEvent::Unknown)
+                    .await
+            }
+        });
+        // Long enough for the spawned task to run and dispatch its job (a channel send, not
+        // waiting on anything); the writer thread stays occupied throughout, so this is not a
+        // race against when the job itself runs, only against when it's queued.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        aborted.abort();
+        let _ = aborted.await;
+
+        // Let the writer thread move on to the aborted append's job, publishing it even though
+        // nobody is waiting for it any more.
+        release_tx.send(()).unwrap();
+        occupied.join().unwrap();
+
+        let seq = log
+            .append(jiff::Timestamp::now(), None, WispEvent::Unknown)
+            .await;
+        assert_eq!(
+            seq, 2,
+            "the next append must not reuse the aborted append's seq"
+        );
+        assert_eq!(log.head(), 2);
+
+        let raw = rusqlite::Connection::open(&path).unwrap();
+        let seqs: Vec<i64> = raw
+            .prepare("SELECT seq FROM events ORDER BY seq")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            seqs,
+            [1, 2],
+            "both events are stored under distinct seqs, agreeing with memory"
+        );
     }
 }

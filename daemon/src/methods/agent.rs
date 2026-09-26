@@ -259,17 +259,20 @@ mod tests {
         // MiB in all, which a page counted by events alone would put in one oversized frame.
         let text = "x".repeat(250 * 1024);
         for _ in 0..60 {
-            daemon.log.append(
-                jiff::Timestamp::now(),
-                Some(project),
-                WispEvent::AgentOutput {
-                    run_id,
-                    items: vec![AgentOutputItem::Text {
-                        message_id: None,
-                        text: text.clone(),
-                    }],
-                },
-            );
+            daemon
+                .log
+                .append(
+                    jiff::Timestamp::now(),
+                    Some(project),
+                    WispEvent::AgentOutput {
+                        run_id,
+                        items: vec![AgentOutputItem::Text {
+                            message_id: None,
+                            text: text.clone(),
+                        }],
+                    },
+                )
+                .await;
         }
 
         let mut after = 0;
