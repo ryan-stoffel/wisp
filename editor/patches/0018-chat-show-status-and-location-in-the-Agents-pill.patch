@@ -1,0 +1,67 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ryan Stoffel <stoffel.thomas.ryan@gmail.com>
+Date: Fri, 25 Sep 2026 20:14:06 -0700
+Subject: [PATCH] chat: show status and location in the Agents pill
+
+
+diff --git a/src/vs/sessions/contrib/chat/browser/sessionBackgroundActivitiesControl.ts b/src/vs/sessions/contrib/chat/browser/sessionBackgroundActivitiesControl.ts
+index a0e1cac3bc56d42aade51d579d4708fdb811463e..1a912e395857a88f16fa3580f633f4e85d4828d7 100644
+--- a/src/vs/sessions/contrib/chat/browser/sessionBackgroundActivitiesControl.ts
++++ b/src/vs/sessions/contrib/chat/browser/sessionBackgroundActivitiesControl.ts
+@@ -3,6 +3,7 @@
+  *  Licensed under the MIT License. See License.txt in the project root for license information.
+  *--------------------------------------------------------------------------------------------*/
+ 
++import { renderAsPlaintext } from '../../../../base/browser/markdownRenderer.js';
+ import { Codicon } from '../../../../base/common/codicons.js';
+ import { Disposable } from '../../../../base/common/lifecycle.js';
+ import { derived, IObservable, IReader, observableValue } from '../../../../base/common/observable.js';
+@@ -10,7 +11,8 @@ import { isEqual } from '../../../../base/common/resources.js';
+ import { localize } from '../../../../nls.js';
+ import { getChatPillEntries, type IChatPillEntry, type IChatPillSection } from '../../../../workbench/browser/chatPills.js';
+ import { ISessionsService } from '../../../services/sessions/browser/sessionsService.js';
+-import { ChatOriginKind, IChat } from '../../../services/sessions/common/session.js';
++import { ThemeIcon } from '../../../../base/common/themables.js';
++import { ChatOriginKind, IChat, SessionStatus } from '../../../services/sessions/common/session.js';
+ import { IActiveSession } from '../../../services/sessions/common/sessionsManagement.js';
+ import type { ISessionChatPillsDebugData } from './sessionChatInputToolbarDebug.js';
+ 
+@@ -69,17 +71,20 @@ export class SessionBackgroundActivitiesControl extends Disposable {
+ 				chat.origin?.kind === ChatOriginKind.Tool &&
+ 				!!chat.origin.parentChat &&
+ 				isEqual(chat.origin.parentChat, parentChat.resource))
+-			.map(chat => this._entry(chat.title.read(reader), chat, session))
++			.map(chat => this._entry(chat.title.read(reader), chat, session, reader))
+ 			// Chats are appended as subagents start, so the newest is listed first.
+ 			.reverse();
+ 	}
+ 
+-	private _entry(title: string, chat: IChat | undefined, session: IActiveSession | undefined): IChatPillEntry {
++	private _entry(title: string, chat: IChat | undefined, session: IActiveSession | undefined, reader?: IReader): IChatPillEntry {
+ 		const name = title.trim() || localize('backgroundActivities.subagent', "Subagent");
++		const description = chat?.description?.read(reader);
++		const badge = description ? renderAsPlaintext(description) : undefined;
+ 		return {
+ 			id: chat?.resource.toString() ?? name,
+ 			label: name.length > SUBAGENT_LABEL_MAX_LENGTH ? `${name.slice(0, SUBAGENT_LABEL_MAX_LENGTH)}...` : name,
+-			icon: Codicon.agent,
++			icon: chat ? statusIcon(chat.status.read(reader)) : Codicon.agent,
++			...(badge ? { badge } : {}),
+ 			open: () => {
+ 				if (chat && session) {
+ 					this._sessionsService.openChat(session, chat.resource);
+@@ -88,3 +93,14 @@ export class SessionBackgroundActivitiesControl extends Disposable {
+ 		};
+ 	}
+ }
++
++/** The chat's status as a pill entry's icon, each with its own shape. */
++function statusIcon(status: SessionStatus): ThemeIcon {
++	switch (status) {
++		case SessionStatus.InProgress: return ThemeIcon.modify(Codicon.loading, 'spin');
++		case SessionStatus.NeedsInput: return Codicon.circleFilled;
++		case SessionStatus.Completed: return Codicon.pass;
++		case SessionStatus.Error: return Codicon.error;
++		default: return Codicon.agent;
++	}
++}
