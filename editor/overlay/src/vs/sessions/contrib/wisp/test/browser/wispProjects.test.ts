@@ -148,7 +148,7 @@ suite('wisp: projects', () => {
 			assert.strictEqual(projects.state.get().kind, 'loading');
 
 			await projects.create({ id: TWO, name: 'magic', repoPath: '/Users/ryan/src/magic' });
-			assert.ok(provider.getProjectSession(TWO), 'the new project has its session at once, so it can be opened');
+			assert.ok(provider.getSessions().some(s => projectIdOf(s.resource) === TWO), 'the new project has its session at once, so it can be opened');
 			answerList!();
 			await settle();
 			wispd.emit({ type: 'event', event: { seq: 6, time: '2026-09-25T00:00:00Z', event: { kind: 'project.created', project: project(TWO, 'magic', { repoPath: '/Users/ryan/src/magic' }) } } });
@@ -173,7 +173,7 @@ suite('wisp: projects', () => {
 			answerCreate!();
 			await created;
 			assert.deepStrictEqual(projects.projects.get().map(p => p.id), [ONE, TWO]);
-			assert.ok(provider.getProjectSession(TWO));
+			assert.ok(provider.getSessions().some(s => projectIdOf(s.resource) === TWO));
 		});
 	});
 

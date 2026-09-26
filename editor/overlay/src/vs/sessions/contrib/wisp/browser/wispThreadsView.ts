@@ -34,15 +34,12 @@ import { WISP_SHOW_HOST_MENU_COMMAND } from './wispHostMenu.js';
 import { IWispHostStatusService } from './wispHostStatusService.js';
 import { WISP_NEW_PROJECT_COMMAND } from './wispNewProject.js';
 import { projectSessions, WISP_SEARCH_COMMAND } from './wispSearch.js';
-import { WispThreadSections } from './wispThreadSections.js';
+import { AGE_REFRESH_MS, moveRowFocus, WispThreadSections } from './wispThreadSections.js';
 import { IWispThreadsService } from '../../providers/wisp/browser/wispThreadsService.js';
 import { NEW_SESSION_ACTION_ID } from '../../chat/common/constants.js';
 
 export const WISP_THREADS_CONTAINER_ID = 'wisp.threads';
 export const WISP_THREADS_VIEW_ID = 'wisp.threads.view';
-
-/** How often the rows' ages are refreshed. */
-const AGE_REFRESH_MS = 60_000;
 
 let instanceCount = 0;
 
@@ -51,7 +48,7 @@ let instanceCount = 0;
  * wisp): actions, then Projects, Repositories, and No Repo, then a footer with the user, the host,
  * and settings. Projects are read through `ISessionsManagementService` and opened through
  * `ISessionsService`. New Chat opens upstream's new-session composer for a normal thread, and
- * `WispThreadSections` lists threads under Repositories and No Repo (#110).
+ * `WispThreadSections` lists threads under Repositories and No Repo.
  */
 export class WispThreadsView extends ViewPane {
 
@@ -87,17 +84,17 @@ export class WispThreadsView extends ViewPane {
 		const root = this.root = append(container, $('.wisp-threads'));
 
 		const actions = append(root, $('.wisp-threads-actions', { role: 'group', 'aria-label': localize('wispThreads.actions', "Actions") }));
-		let setNewChatDisabled: ((reason: string | undefined) => void) | undefined;
-		this.firstAction = this.renderAction(actions, Codicon.edit, localize('wispThreads.newChat', "New Chat"), { run: () => this.commandService.executeCommand(NEW_SESSION_ACTION_ID), keybinding: NEW_SESSION_ACTION_ID, disabledReason: '', onEnabler: setter => setNewChatDisabled = setter });
+		const newChat = this.renderAction(actions, Codicon.edit, localize('wispThreads.newChat', "New Chat"), { run: () => this.commandService.executeCommand(NEW_SESSION_ACTION_ID), keybinding: NEW_SESSION_ACTION_ID, disabledReason: '' });
+		this.firstAction = newChat.button;
 		this.renderAction(actions, Codicon.search, localize('wispThreads.search', "Search"), { run: () => this.commandService.executeCommand(WISP_SEARCH_COMMAND), keybinding: WISP_SEARCH_COMMAND });
 		// Automations stays hidden until wisp decides on triggers (M6).
 		this.renderAction(actions, Codicon.settings, localize('wispThreads.customize', "Customize"), { run: () => this.commandService.executeCommand(WISP_SHOW_ACCOUNTS_COMMAND) });
 
 		const lists = append(root, $('.wisp-threads-lists'));
 		this.renderProjects(lists, `${idPrefix}-projects`);
-		// Repositories and No Repo render only once they have threads (#110).
+		// Repositories and No Repo render only once they have threads.
 		this._register(this.instantiationService.createInstance(WispThreadSections, lists, idPrefix));
-		this.renderNewChatState(setNewChatDisabled!);
+		this.renderNewChatState(newChat.setDisabledReason);
 
 		this.renderFooter(root);
 	}
@@ -129,21 +126,9 @@ export class WispThreadsView extends ViewPane {
 		this._register(addDisposableListener(list, EventType.KEY_DOWN, event => {
 			const rows = [...list.querySelectorAll<HTMLButtonElement>('button.wisp-threads-row')];
 			const current = rows.indexOf(event.target as HTMLButtonElement);
-			if (current === -1) {
-				return;
+			if (current !== -1) {
+				moveRowFocus(rows, current, event);
 			}
-			let next: number;
-			switch (event.key) {
-				case 'ArrowDown': next = Math.min(current + 1, rows.length - 1); break;
-				case 'ArrowUp': next = Math.max(current - 1, 0); break;
-				case 'Home': next = 0; break;
-				case 'End': next = rows.length - 1; break;
-				default: return;
-			}
-			event.preventDefault();
-			rows[current].tabIndex = -1;
-			rows[next].tabIndex = 0;
-			rows[next].focus();
 		}));
 
 		const sessionsChanged = observableSignalFromEvent(this, this.sessionsManagementService.onDidChangeSessions);
@@ -242,7 +227,7 @@ export class WispThreadsView extends ViewPane {
 		}
 	}
 
-	private renderAction(parent: HTMLElement, icon: ThemeIcon, label: string, options: { run?: () => void; disabledReason?: string; keybinding?: string; onEnabler?: (setDisabledReason: (reason: string | undefined) => void) => void }): HTMLButtonElement {
+	private renderAction(parent: HTMLElement, icon: ThemeIcon, label: string, options: { run: () => void; disabledReason?: string; keybinding?: string }): { button: HTMLButtonElement; setDisabledReason: (reason: string | undefined) => void } {
 		const button = append(parent, $<HTMLButtonElement>('button.wisp-threads-action', { type: 'button' }));
 		append(button, $(`span.wisp-threads-action-icon${ThemeIcon.asCSSSelector(icon)}`, { 'aria-hidden': 'true' }));
 		append(button, $('span.wisp-threads-action-label', undefined, label));
@@ -253,8 +238,7 @@ export class WispThreadsView extends ViewPane {
 		}
 		const setDisabledReason = this.enableable(button, label, options.run);
 		setDisabledReason(options.disabledReason);
-		options.onEnabler?.(setDisabledReason);
-		return button;
+		return { button, setDisabledReason };
 	}
 
 	/**
@@ -262,16 +246,14 @@ export class WispThreadsView extends ViewPane {
 	 * it). A disabled button keeps focus and names its reason, through aria-disabled rather than
 	 * the disabled attribute.
 	 */
-	private enableable(button: HTMLButtonElement, label: string, run: (() => unknown) | undefined): (disabledReason: string | undefined) => void {
+	private enableable(button: HTMLButtonElement, label: string, run: () => unknown): (disabledReason: string | undefined) => void {
 		const hover = this._register(new MutableDisposable());
 		let reason: string | undefined;
-		if (run) {
-			this._register(addDisposableListener(button, EventType.CLICK, () => {
-				if (reason === undefined) {
-					run();
-				}
-			}));
-		}
+		this._register(addDisposableListener(button, EventType.CLICK, () => {
+			if (reason === undefined) {
+				run();
+			}
+		}));
 		let first = true;
 		return disabledReason => {
 			if (!first && disabledReason === reason) {

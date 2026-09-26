@@ -11,16 +11,16 @@ import { IWispdService, WispdError } from './wispd.js';
 import type { AgentDiffFile, AgentDiffResult, AgentFileResult, AgentFileSide, RunId } from './wispProtocol.js';
 
 /**
- * The scheme of a file in an agent run's diff (#157): `wisp-agent://<runId>/<base|head>/<path>?<commit>`.
+ * The scheme of a file in an agent run's diff: `wisp-agent://<runId>/<base|head>/<path>?<commit>`.
  * Every byte comes from wispd's `agent/file`, so a review works the same for a run on this Mac and
- * on a remote host, where the editor can't open the worktree (#67).
+ * on a remote host, where the editor can't open the worktree.
  */
 export const WISP_AGENT_SCHEME = 'wisp-agent';
 
 /** The scheme of one run's review, the multi-diff editor's source: `wisp-agent-review://<runId>/<head>`. */
 export const WISP_AGENT_REVIEW_SCHEME = 'wisp-agent-review';
 
-export interface IAgentFileRef {
+interface IAgentFileRef {
 	readonly runId: RunId;
 	readonly side: AgentFileSide;
 	/** Relative to the repository root, as `agent/diff` lists it. */
@@ -80,7 +80,7 @@ export function reviewedCommit(run: { readonly id: RunId; readonly diff?: { read
 	return run.diff?.commit;
 }
 
-export interface IAgentReviewItem {
+interface IAgentReviewItem {
 	/** The base side; absent for an added file. */
 	readonly original: URI | undefined;
 	/** The head side; absent for a deleted file. */

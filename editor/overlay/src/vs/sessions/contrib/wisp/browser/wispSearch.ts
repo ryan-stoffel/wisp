@@ -33,7 +33,7 @@ export function projectSessions(sessionsManagementService: ISessionsManagementSe
 		.sort((a, b) => b.updatedAt.get().getTime() - a.updatedAt.get().getTime());
 }
 
-/** The Quick Pick's items: every project, newest activity first. Threads join them with #110. */
+/** The Quick Pick's items: every project, newest activity first. */
 export function searchPicks(sessions: readonly ISession[], now: number): ISessionPick[] {
 	return sessions.map(session => ({
 		label: session.title.get(),

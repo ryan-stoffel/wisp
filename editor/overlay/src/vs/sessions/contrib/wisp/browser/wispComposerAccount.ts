@@ -17,15 +17,14 @@ import { IInstantiationService, ServicesAccessor } from '../../../../platform/in
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IQuickInputService, IQuickPickItem, IQuickPickSeparator } from '../../../../platform/quickinput/common/quickInput.js';
 import { IActionViewItemService } from '../../../../platform/actions/browser/actionViewItemService.js';
-import { WispdError } from '../../../../platform/wisp/common/wispd.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ChatContextKeys } from '../../../../workbench/contrib/chat/common/actions/chatContextKeys.js';
 import { WISP_PROJECT_SESSION_TYPE } from '../../providers/wisp/common/wispProjects.js';
 import { cliAccountLabel, IWispAccountsService, keyAccountLabel, resolveAccountLabel, WispAccountChoice } from './wispAccounts.js';
 import { WISP_SHOW_ACCOUNTS_COMMAND } from './wispAccountsEditor.js';
 
-export const WISP_COMPOSER_ACCOUNT_ACTION = 'wisp.composer.account';
-export const WISP_PICK_ACCOUNT_COMMAND = 'wisp.accounts.pick';
+const WISP_COMPOSER_ACCOUNT_ACTION = 'wisp.composer.account';
+const WISP_PICK_ACCOUNT_COMMAND = 'wisp.accounts.pick';
 
 const category = localize2('wisp', "Wisp");
 const inProject = ChatContextKeys.chatSessionType.isEqualTo(WISP_PROJECT_SESSION_TYPE);
@@ -101,9 +100,6 @@ async function pickAccount(accessor: ServicesAccessor): Promise<void> {
 }
 
 function describeSetAccountError(error: unknown): string {
-	if (error instanceof WispdError) {
-		return error.message;
-	}
 	return error instanceof Error ? error.message : String(error);
 }
 
@@ -123,7 +119,7 @@ registerAction2(class PickAccountAction extends Action2 {
 });
 
 /** The composer's account chip: the current account's label, and a chevron hinting it opens a picker. */
-export class WispComposerAccountItem extends BaseActionViewItem {
+class WispComposerAccountItem extends BaseActionViewItem {
 
 	constructor(
 		action: IAction,

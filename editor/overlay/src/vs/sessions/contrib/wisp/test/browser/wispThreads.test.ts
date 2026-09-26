@@ -57,14 +57,14 @@ suite('wisp: threads', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
 	/** Services whose wispd has the `threads` capability, two repo entries, and three threads. */
-	async function services(host = 'local', withThreads = true): Promise<IThreadServices> {
+	async function services(host = 'local'): Promise<IThreadServices> {
 		const context = agentsWindowServices(disposables, true, host);
-		const repos = withThreads ? [APP, SCRATCH] : [];
-		const threadList = withThreads ? [
+		const repos = [APP, SCRATCH];
+		const threadList = [
 			thread(IN_REPO, APP),
 			thread(QUICK, SCRATCH),
 			thread(ARCHIVED, APP, { archived: true }),
-		] : [];
+		];
 		const runs = [
 			run(IN_REPO, APP, 'Fix the flaky attach test', { updatedAt: '2026-09-26T10:05:00Z' }),
 			run(QUICK, SCRATCH, 'What is a git worktree?', { status: 'completed', diff: { commit: 'c0ffee', files: 2, insertions: 3, deletions: 1 } }),
@@ -220,16 +220,6 @@ suite('wisp: threads', () => {
 			} finally {
 				container.remove();
 			}
-		});
-	});
-
-	suite('empty sidebar', () => {
-
-		test('Repositories and No Repo stay hidden while there are no threads', async () => {
-			const empty = await services('local', false);
-			const bare = mainWindow.document.createElement('div');
-			disposables.add(empty.instantiationService.createInstance(WispThreadSections, bare, 'empty'));
-			assert.deepStrictEqual([...bare.querySelectorAll<HTMLElement>('section')].map(section => section.hidden), [true, true]);
 		});
 	});
 

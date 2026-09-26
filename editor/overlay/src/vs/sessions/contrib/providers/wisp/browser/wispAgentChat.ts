@@ -6,10 +6,30 @@ import { IMarkdownString, MarkdownString } from '../../../../../base/common/html
 import { constObservable, derived, IObservable } from '../../../../../base/common/observable.js';
 import { URI } from '../../../../../base/common/uri.js';
 import type { AgentRun } from '../../../../../platform/wisp/common/wispProtocol.js';
-import { ChatInteractivity, ChatModelSource, ChatOriginKind, IChat, IChatCapabilities, IChatCheckpoints, IChatOrigin, ISessionFileChange, SessionStatus } from '../../../../services/sessions/common/session.js';
+import { ChatInteractivity, ChatModelSource, ChatOriginKind, IChat, IChatCapabilities, IChatCheckpoints, IChatOrigin, ISessionChangeset, ISessionFileChange, SessionStatus } from '../../../../services/sessions/common/session.js';
 import { agentChatResource, agentLocation, agentState, agentTitle, IWispAgentState, isRunActive } from '../common/wispAgentRuns.js';
 
-const AGENT_CHAT_CAPABILITIES: IChatCapabilities = { canRename: false, canDelete: false };
+/** What every wisp chat shares: no checkpoints, models, or modes, always read and interactive, and never renamed or deleted on its own. */
+export abstract class WispChatBase {
+	readonly checkpoints = constObservable<IChatCheckpoints | undefined>(undefined);
+	readonly modelId = constObservable<string | undefined>(undefined);
+	readonly modelSource = constObservable<ChatModelSource | undefined>(undefined);
+	readonly mode = constObservable<{ readonly id: string; readonly kind: string } | undefined>(undefined);
+	readonly isRead = constObservable(true);
+	readonly interactivity = constObservable(ChatInteractivity.Full);
+	readonly capabilities = constObservable<IChatCapabilities>({ canRename: false, canDelete: false });
+}
+
+/** What every wisp session shares: no automation, changesets, models, or modes, and always read and loaded. */
+export abstract class WispSessionBase {
+	readonly isAutomation = constObservable(false);
+	readonly isExternal = constObservable(false);
+	readonly changesets = constObservable<readonly ISessionChangeset[] | undefined>(undefined);
+	readonly modelId = constObservable<string | undefined>(undefined);
+	readonly mode = constObservable<{ readonly id: string; readonly kind: string } | undefined>(undefined);
+	readonly loading = constObservable(false);
+	readonly isRead = constObservable(true);
+}
 
 /** Where the project's agents run, as its session sees the host. */
 export interface IWispAgentLocation {
@@ -26,9 +46,8 @@ export interface IWispAgentLocation {
  * - `status` and `state` follow the run and its current checklist step.
  * - `description` says where it runs: this Mac, or the host's name. The Agents pill shows it as
  *   the entry's badge.
- * - `changes` stays empty until the review lands (#157), which knows the worktree's files.
  */
-export class WispAgentChat implements IChat {
+export class WispAgentChat extends WispChatBase implements IChat {
 	readonly resource: URI;
 	readonly createdAt: Date;
 	readonly title: IObservable<string>;
@@ -36,18 +55,11 @@ export class WispAgentChat implements IChat {
 	readonly status: IObservable<SessionStatus>;
 	readonly state: IObservable<IWispAgentState>;
 	readonly changes = constObservable<readonly ISessionFileChange[]>([]);
-	readonly checkpoints = constObservable<IChatCheckpoints | undefined>(undefined);
-	readonly modelId = constObservable<string | undefined>(undefined);
-	readonly modelSource = constObservable<ChatModelSource | undefined>(undefined);
-	readonly mode = constObservable<{ readonly id: string; readonly kind: string } | undefined>(undefined);
 	readonly isArchived = constObservable(false);
-	readonly isRead = constObservable(true);
-	readonly interactivity = constObservable(ChatInteractivity.Full);
 	readonly description: IObservable<IMarkdownString | undefined>;
 	readonly location: IObservable<string>;
 	readonly lastTurnEnd: IObservable<Date | undefined>;
 	readonly origin: IChatOrigin;
-	readonly capabilities = constObservable(AGENT_CHAT_CAPABILITIES);
 
 	constructor(
 		initial: AgentRun,
@@ -56,6 +68,7 @@ export class WispAgentChat implements IChat {
 		step: IObservable<string | undefined>,
 		where: IObservable<IWispAgentLocation>,
 	) {
+		super();
 		this.resource = agentChatResource(initial.project, initial.id);
 		this.createdAt = new Date(initial.createdAt);
 		this.origin = { kind: ChatOriginKind.Tool, parentChat };

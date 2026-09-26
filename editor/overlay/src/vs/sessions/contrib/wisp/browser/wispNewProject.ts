@@ -37,17 +37,55 @@ interface IAskOptions {
 	readonly title: string;
 	readonly prompt: string;
 	readonly placeholder?: string;
-	readonly value: string;
+	readonly value?: string;
+	/** Hides the text, and keeps it as typed instead of trimmed. */
+	readonly password?: boolean;
 	/** Shown until the text changes, such as wispd's reason for refusing a path. */
 	readonly problem?: string;
 	readonly validate: (text: string) => string | undefined;
+}
+
+/** An input box that shows `problem` until the text changes, and accepts only valid text. */
+export function askText(quickInputService: IQuickInputService, options: IAskOptions): Promise<string | undefined> {
+	const store = new DisposableStore();
+	const box = store.add(quickInputService.createInputBox());
+	box.title = options.title;
+	box.prompt = options.prompt;
+	box.placeholder = options.placeholder;
+	box.value = options.value ?? '';
+	box.password = options.password ?? false;
+	box.ignoreFocusOut = true;
+	const setProblem = (message: string | undefined) => {
+		box.validationMessage = message;
+		box.severity = message ? Severity.Error : Severity.Ignore;
+	};
+	setProblem(options.problem);
+	return new Promise<string | undefined>(resolve => {
+		let accepted: string | undefined;
+		store.add(box.onDidChangeValue(() => setProblem(undefined)));
+		store.add(box.onDidAccept(() => {
+			const text = options.password ? box.value : box.value.trim();
+			const problem = options.validate(text);
+			if (problem) {
+				setProblem(problem);
+				return;
+			}
+			accepted = text;
+			box.hide();
+		}));
+		store.add(box.onDidHide(() => {
+			store.dispose();
+			resolve(accepted);
+		}));
+		box.show();
+	});
 }
 
 /**
  * Creates a project: the repository folder on the host, then a name, then `project/create`.
  *
  * On this Mac the folder comes from the native folder picker. On another host it is typed as a
- * path, since v1 can't browse a host's folders (#67). Either way wispd decides whether the folder
+ * path, since v1 can't browse a host's folders. Either way wispd decides whether the folder
  * is a repository, and when it says no, the path step opens again with its reason.
  *
  * The id is made once per run, so a request resent after a reconnect never makes a second
@@ -145,7 +183,7 @@ export class WispNewProjectFlow {
 	}
 
 	private askPath(host: string, value: string, problem: string | undefined): Promise<string | undefined> {
-		return this.ask({
+		return askText(this.quickInputService, {
 			title: localize('wispNewProject.pathTitle', "New Project on {0}", host),
 			prompt: localize('wispNewProject.pathPrompt', "The repository's folder on {0}, as an absolute path", host),
 			placeholder: '/Users/you/src/app',
@@ -167,7 +205,7 @@ export class WispNewProjectFlow {
 	}
 
 	private askName(value: string): Promise<string | undefined> {
-		return this.ask({
+		return askText(this.quickInputService, {
 			title: localize('wispNewProject.nameTitle', "New Project: Name"),
 			prompt: localize('wispNewProject.namePrompt', "The project's name, as the sidebar shows it"),
 			value,
@@ -180,41 +218,6 @@ export class WispNewProjectFlow {
 				}
 				return undefined;
 			},
-		});
-	}
-
-	/** An input box that shows `problem` until the text changes, and accepts only valid text, trimmed. */
-	private ask(options: IAskOptions): Promise<string | undefined> {
-		const store = new DisposableStore();
-		const box = store.add(this.quickInputService.createInputBox());
-		box.title = options.title;
-		box.prompt = options.prompt;
-		box.placeholder = options.placeholder;
-		box.value = options.value;
-		box.ignoreFocusOut = true;
-		const setProblem = (message: string | undefined) => {
-			box.validationMessage = message;
-			box.severity = message ? Severity.Error : Severity.Ignore;
-		};
-		setProblem(options.problem);
-		return new Promise<string | undefined>(resolve => {
-			let accepted: string | undefined;
-			store.add(box.onDidChangeValue(() => setProblem(undefined)));
-			store.add(box.onDidAccept(() => {
-				const text = box.value.trim();
-				const problem = options.validate(text);
-				if (problem) {
-					setProblem(problem);
-					return;
-				}
-				accepted = text;
-				box.hide();
-			}));
-			store.add(box.onDidHide(() => {
-				store.dispose();
-				resolve(accepted);
-			}));
-			box.show();
 		});
 	}
 }

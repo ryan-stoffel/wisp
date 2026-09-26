@@ -24,7 +24,23 @@ import { compactAge } from '../../providers/wisp/common/wispProjects.js';
 import { placeThreadSessions } from '../../providers/wisp/common/wispThreads.js';
 
 /** How often the rows' ages are refreshed. */
-const AGE_REFRESH_MS = 60_000;
+export const AGE_REFRESH_MS = 60_000;
+
+/** Moves focus between rows with Up, Down, Home, and End, keeping one tab stop. */
+export function moveRowFocus(rows: readonly HTMLButtonElement[], current: number, event: KeyboardEvent): void {
+	const last = rows.length - 1;
+	const next = event.key === 'ArrowDown' ? Math.min(current + 1, last)
+		: event.key === 'ArrowUp' ? Math.max(current - 1, 0)
+			: event.key === 'Home' ? 0
+				: event.key === 'End' ? last
+					: undefined;
+	if (next !== undefined) {
+		event.preventDefault();
+		rows[current].tabIndex = -1;
+		rows[next].tabIndex = 0;
+		rows[next].focus();
+	}
+}
 
 /**
  * The Repositories and No Repo sections of wisp's sidebar (decision record 0011,
@@ -167,18 +183,7 @@ export class WispThreadSections extends Disposable {
 			}
 			return;
 		}
-		let next: number;
-		switch (event.keyCode) {
-			case KeyCode.DownArrow: next = Math.min(current + 1, rows.length - 1); break;
-			case KeyCode.UpArrow: next = Math.max(current - 1, 0); break;
-			case KeyCode.Home: next = 0; break;
-			case KeyCode.End: next = rows.length - 1; break;
-			default: return;
-		}
-		event.preventDefault();
-		rows[current].tabIndex = -1;
-		rows[next].tabIndex = 0;
-		rows[next].focus();
+		moveRowFocus(rows, current, browserEvent);
 	}
 
 	private showMenu(row: HTMLElement, session: ISession, anchor: HTMLElement | { x: number; y: number }): void {

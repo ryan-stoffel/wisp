@@ -16,20 +16,20 @@ import { INativeHostService } from '../../native/common/native.js';
 import { IProductService } from '../../product/common/productService.js';
 import { IWispdService, IWispdSubscribeOptions, WispdMethod, WispdState, WispdSubscriptionMessage } from '../common/wispd.js';
 import { IWispdTransportFactory } from '../common/wispdClient.js';
-import { affectsWispdTarget, WISP_HOST_LOCAL, WISP_HOST_SETTING, WISP_REMOTE_WISPD_PATH_SETTING, wispdTarget } from '../common/wispdConfiguration.js';
+import { affectsWispdTarget, isLocalHost, validateSshDestination, WISP_HOST_SETTING, WISP_REMOTE_WISPD_PATH_SETTING, wispdTarget } from '../common/wispdConfiguration.js';
 import { WispdHostConnection } from '../common/wispdHostConnection.js';
 import { WispRequests } from '../common/wispProtocol.js';
-import { DEFAULT_REMOTE_WISPD_CANDIDATES, WispdInvalidHostTransportFactory, WispdSshTransportFactory, validateRemoteWispdPath, validateSshDestination } from './wispdSshTransport.js';
+import { DEFAULT_REMOTE_WISPD_CANDIDATES, WispdInvalidHostTransportFactory, WispdSshTransportFactory, validateRemoteWispdPath } from './wispdSshTransport.js';
 import { WispdProcessTransportFactory } from './wispdTransport.js';
 
 /** Overrides which `wispd` binary the editor runs. */
-export const WISPD_PATH_ENV = 'WISP_WISPD_PATH';
+const WISPD_PATH_ENV = 'WISP_WISPD_PATH';
 
 /**
  * The `wispd` the editor runs, first match wins:
  *
  * 1. `WISP_WISPD_PATH`.
- * 2. The bundled binary, `<appRoot>/bin/wispd`, next to the `wisp` launcher (#62).
+ * 2. The bundled binary, `<appRoot>/bin/wispd`, next to the `wisp` launcher.
  * 3. In a development build, the wisp repo's `target/debug/wispd` from `cargo build -p wispd`.
  *    The Code - OSS tree is `editor/vscode` in that repo.
  * 4. `wispd` on `PATH`.
@@ -66,10 +66,10 @@ export function createWispdTransportFactory(
 	localExecutable: string,
 	logger: ILogger,
 ): IWispdTransportFactory {
-	const trimmedHost = (typeof host === 'string' ? host : WISP_HOST_LOCAL).trim();
-	if (trimmedHost.length === 0 || trimmedHost === WISP_HOST_LOCAL) {
+	if (isLocalHost(host)) {
 		return new WispdProcessTransportFactory({ executable: localExecutable, args: ['attach'] }, logger);
 	}
+	const trimmedHost = (host as string).trim();
 	const invalidHost = validateSshDestination(trimmedHost);
 	if (invalidHost) {
 		return new WispdInvalidHostTransportFactory(
@@ -119,7 +119,7 @@ export class WispdService extends Disposable implements IWispdService {
 					target: wispdTarget(host, remoteWispdPath),
 				};
 			},
-			// This process sees settings.json change only through a file watcher, after the window that wrote it (#219).
+			// This process sees settings.json change only through a file watcher, after the window that wrote it.
 			() => configurationService.reloadConfiguration(),
 			{ client: { name: 'wisp', version: productService.version } },
 			logger,

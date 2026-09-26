@@ -3,11 +3,11 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Emitter, Event } from '../../../../../base/common/event.js';
-import { Disposable, DisposableMap, IDisposable, toDisposable } from '../../../../../base/common/lifecycle.js';
-import { autorun, IObservable, observableValue, transaction } from '../../../../../base/common/observable.js';
+import { Disposable, DisposableMap, IDisposable, MutableDisposable, toDisposable } from '../../../../../base/common/lifecycle.js';
+import { autorun, IObservable, observableValue } from '../../../../../base/common/observable.js';
 import { createDecorator } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
-import { IWispdService, WispdState, WispdSubscriptionMessage } from '../../../../../platform/wisp/common/wispd.js';
+import { followWispdState, IWispdService, WispdState, WispdSubscriptionMessage } from '../../../../../platform/wisp/common/wispd.js';
 import type { AccountChoice, AgentRun, AgentTodoItem, LoggedEvent, LogId, ProjectId, RunId, TurnId } from '../../../../../platform/wisp/common/wispProtocol.js';
 import { generateUuidV7 } from '../../../../../platform/wisp/common/uuidv7.js';
 import { applyRunState, currentStep } from '../common/wispAgentRuns.js';
@@ -16,10 +16,10 @@ import { IWispProjectsService } from './wispProjectsService.js';
 export const IWispAgentsService = createDecorator<IWispAgentsService>('wispAgentsService');
 
 /** The capability that gates every `agent/*` method and `agent.*` event (decision record 0014). */
-export const AGENTS_CAPABILITY = 'agents';
+const AGENTS_CAPABILITY = 'agents';
 
 /** One event of a run, as the log numbers it. */
-export interface IWispRunEvent {
+interface IWispRunEvent {
 	readonly runId: RunId;
 	readonly event: LoggedEvent;
 }
@@ -101,19 +101,11 @@ interface IRunEntry {
 /** One project's runs and its event subscription. */
 class ProjectRuns extends Disposable {
 	readonly runs = observableValue<readonly AgentRun[]>(this, []);
-	private readonly subscription = this._register(new DisposableMap<'events', IDisposable>());
+	readonly subscription = this._register(new MutableDisposable());
 	/** Bumped on every list, so a stale answer or event is dropped. */
 	generation = 0;
 	/** `idle` until listed, and again after a list or subscription fails, so the next connect retries. */
 	status: 'idle' | 'listing' | 'ready' = 'idle';
-
-	setSubscription(subscription: IDisposable | undefined): void {
-		if (subscription) {
-			this.subscription.set('events', subscription);
-		} else {
-			this.subscription.deleteAndDispose('events');
-		}
-	}
 }
 
 export class WispAgentsService extends Disposable implements IWispAgentsService {
@@ -131,7 +123,6 @@ export class WispAgentsService extends Disposable implements IWispAgentsService 
 	private readonly empty = observableValue<readonly AgentRun[]>(this, []);
 	private readonly extraScopes = observableValue<readonly IObservable<readonly string[]>[]>(this, []);
 	private connection: WispdState | undefined;
-	private receivedState = false;
 	/** Bumped when the host changes, so answers from the old one are dropped. */
 	private hostGeneration = 0;
 
@@ -141,15 +132,7 @@ export class WispAgentsService extends Disposable implements IWispAgentsService 
 		@ILogService private readonly logService: ILogService,
 	) {
 		super();
-		this._register(wispdService.onDidChangeState(state => {
-			this.receivedState = true;
-			this.onState(state);
-		}));
-		wispdService.getState().then(state => {
-			if (!this.receivedState && !this._store.isDisposed) {
-				this.onState(state);
-			}
-		}, () => { /* The shared process is gone; the window is closing. */ });
+		this._register(followWispdState(wispdService, state => this.onState(state)));
 		this._register(autorun(reader => {
 			const projects = projectsService.projects.read(reader);
 			const extra = this.extraScopes.read(reader).flatMap(scopes => scopes.read(reader));
@@ -197,28 +180,23 @@ export class WispAgentsService extends Disposable implements IWispAgentsService 
 		return sortedEvents(entry);
 	}
 
-	async start(projectId: ProjectId, prompt: string, account?: AccountChoice): Promise<AgentRun> {
-		const generation = this.hostGeneration;
-		const { run } = await this.wispdService.request('agent/start', { runId: generateUuidV7(), project: projectId, prompt, policy: 'workspaceWrite', ...(account ? { account } : {}) });
-		if (generation === this.hostGeneration) {
-			this.upsert(run);
-		}
-		return run;
+	start(projectId: ProjectId, prompt: string, account?: AccountChoice): Promise<AgentRun> {
+		return this.upsertAnswer(this.wispdService.request('agent/start', { runId: generateUuidV7(), project: projectId, prompt, policy: 'workspaceWrite', ...(account ? { account } : {}) }));
 	}
 
-	async send(runId: RunId, turnId: TurnId, text: string): Promise<AgentRun> {
+	send(runId: RunId, turnId: TurnId, text: string): Promise<AgentRun> {
 		this.texts.set(turnId, text);
-		const generation = this.hostGeneration;
-		const { run } = await this.wispdService.request('agent/send', { runId, turnId, text });
-		if (generation === this.hostGeneration) {
-			this.upsert(run);
-		}
-		return run;
+		return this.upsertAnswer(this.wispdService.request('agent/send', { runId, turnId, text }));
 	}
 
-	async cancel(runId: RunId): Promise<AgentRun> {
+	cancel(runId: RunId): Promise<AgentRun> {
+		return this.upsertAnswer(this.wispdService.request('agent/cancel', { runId }));
+	}
+
+	/** Adds the run a request answers with, unless the host changed while it was on its way. */
+	private async upsertAnswer(request: Promise<{ readonly run: AgentRun }>): Promise<AgentRun> {
 		const generation = this.hostGeneration;
-		const { run } = await this.wispdService.request('agent/cancel', { runId });
+		const { run } = await request;
 		if (generation === this.hostGeneration) {
 			this.upsert(run);
 		}
@@ -255,13 +233,7 @@ export class WispAgentsService extends Disposable implements IWispAgentsService 
 			this._available.set(available, undefined);
 			if (available) {
 				// A reconnect keeps a listed project's subscription, which replays what it missed.
-				const scopes = [...this.projectsService.projects.get().map(project => project.id), ...this.extraScopes.get().flatMap(extra => extra.get())];
-				for (const scope of new Set(scopes)) {
-					const tracked = this.track(scope);
-					if (tracked.status === 'idle') {
-						this.list(tracked, scope, state.logId);
-					}
-				}
+				this.listIdle(new Set([...this.projectsService.projects.get().map(project => project.id), ...this.extraScopes.get().flatMap(extra => extra.get())]), state.logId);
 			}
 		}
 	}
@@ -274,13 +246,16 @@ export class WispAgentsService extends Disposable implements IWispAgentsService 
 			}
 		}
 		const state = this.connection;
-		if (state?.kind !== 'connected' || !this._available.get()) {
-			return;
+		if (state?.kind === 'connected' && this._available.get()) {
+			this.listIdle(ids, state.logId);
 		}
+	}
+
+	private listIdle(ids: Iterable<ProjectId>, logId: LogId): void {
 		for (const id of ids) {
 			const tracked = this.track(id);
 			if (tracked.status === 'idle') {
-				this.list(tracked, id, state.logId);
+				this.list(tracked, id, logId);
 			}
 		}
 	}
@@ -296,7 +271,7 @@ export class WispAgentsService extends Disposable implements IWispAgentsService 
 
 	private async list(project: ProjectRuns, projectId: ProjectId, logId: LogId): Promise<void> {
 		const generation = ++project.generation;
-		project.setSubscription(undefined);
+		project.subscription.clear();
 		project.status = 'listing';
 		let listed;
 		try {
@@ -319,11 +294,11 @@ export class WispAgentsService extends Disposable implements IWispAgentsService 
 		}
 		project.runs.set(listed.runs, undefined);
 		project.status = 'ready';
-		project.setSubscription(this.wispdService.subscribe({ after: listed.seq, project: projectId, logId })(message => {
+		project.subscription.value = this.wispdService.subscribe({ after: listed.seq, project: projectId, logId })(message => {
 			if (generation === project.generation) {
 				this.onMessage(project, projectId, message);
 			}
-		}));
+		});
 	}
 
 	private onMessage(project: ProjectRuns, projectId: ProjectId, message: WispdSubscriptionMessage): void {
@@ -334,7 +309,7 @@ export class WispAgentsService extends Disposable implements IWispAgentsService 
 			case 'resync':
 				this.logService.info(`[wisp] agent runs of ${projectId} need a resync (${message.reason}); listing again`);
 				project.generation++;
-				project.setSubscription(undefined);
+				project.subscription.clear();
 				if (this.connection?.kind === 'connected') {
 					this.list(project, projectId, this.connection.logId);
 				}
@@ -343,7 +318,7 @@ export class WispAgentsService extends Disposable implements IWispAgentsService 
 				this.logService.error(`[wisp] the agent event subscription of ${projectId} failed: ${message.message}`);
 				project.generation++;
 				project.status = 'idle';
-				project.setSubscription(undefined);
+				project.subscription.clear();
 				return;
 		}
 	}
@@ -436,7 +411,7 @@ export class WispAgentsService extends Disposable implements IWispAgentsService 
 		}
 		const next = [...runs];
 		next[index] = update(runs[index]);
-		transaction(tx => project.runs.set(next, tx));
+		project.runs.set(next, undefined);
 	}
 }
 

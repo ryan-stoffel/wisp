@@ -9,17 +9,13 @@ import { Disposable, DisposableStore } from '../../../base/common/lifecycle.js';
 import { sanitizeProcessEnvironment } from '../../../base/common/processes.js';
 import { ILogger } from '../../log/common/log.js';
 import { IWispdTransport, IWispdTransportClose, IWispdTransportFactory } from '../common/wispdClient.js';
-import { validateSshDestination } from '../common/wispdConfiguration.js';
 import { ATTACH_EXIT_UNREACHABLE, IWispdProcessStreams, WispdCloseClassifier, WispdProcessTransport } from './wispdTransport.js';
 
 /** ssh's own exit code for a connection-level failure: no route, a timeout, auth, or a host key (`ssh(1)`). */
-export const SSH_CONNECTION_FAILURE_EXIT_CODE = 255;
+const SSH_CONNECTION_FAILURE_EXIT_CODE = 255;
 
 /** The remote shell's exit code when the command it was asked to run isn't on its `PATH`. */
-export const REMOTE_COMMAND_NOT_FOUND_EXIT_CODE = 127;
-
-// Moved to common so the UI validates with it too; re-exported for existing imports.
-export { validateSshDestination };
+const REMOTE_COMMAND_NOT_FOUND_EXIT_CODE = 127;
 
 /** ssh isn't found on the editor's own `PATH`, so it never ran at all. */
 const SSH_NOT_FOUND_HINT = 'Install ssh, or make sure it is on PATH.';
@@ -178,11 +174,6 @@ export class WispdSshTransport extends Disposable implements IWispdTransport {
 		this.spawnNext();
 	}
 
-	/** The current attempt's process id, for tests that stop it from outside. */
-	get pid(): number | undefined {
-		return this.transport?.pid;
-	}
-
 	send(line: string): void {
 		if (!this.settled) {
 			this.sent.push(line);
@@ -224,15 +215,11 @@ export class WispdSshTransport extends Disposable implements IWispdTransport {
 	}
 }
 
-export interface IWispdSshLaunch {
+interface IWispdSshLaunch {
 	readonly destination: string;
 	/** Tried in order; the first that doesn't answer 127 wins. */
 	readonly remoteWispdCandidates: readonly string[];
-	/** Defaults to `ssh` on `PATH`. */
-	readonly sshExecutable?: string;
 	readonly env?: NodeJS.ProcessEnv;
-	readonly cwd?: string;
-	readonly maxFrameBytes?: number;
 }
 
 export class WispdSshTransportFactory implements IWispdTransportFactory {
@@ -240,24 +227,22 @@ export class WispdSshTransportFactory implements IWispdTransportFactory {
 	readonly command: string;
 
 	constructor(private readonly launch: IWispdSshLaunch, private readonly logger: ILogger) {
-		const firstCandidate = launch.remoteWispdCandidates[0] ?? 'wispd';
-		this.command = `${launch.sshExecutable ?? 'ssh'} -T -o BatchMode=yes -o ConnectTimeout=10 -o ControlPath=none -- ${launch.destination} ${firstCandidate} attach`;
+		this.command = ['ssh', ...buildSshArgs(launch.destination, launch.remoteWispdCandidates[0] ?? 'wispd')].join(' ');
 	}
 
 	create(): IWispdTransport {
-		const sshExecutable = this.launch.sshExecutable ?? 'ssh';
 		const spawn = (args: readonly string[]) => {
 			// A serve that attach starts on the host outlives this ssh session, so it should not
 			// inherit the editor's own VSCODE_* and ELECTRON_* variables (decision record 0010).
 			const env = { ...(this.launch.env ?? process.env) };
 			sanitizeProcessEnvironment(env);
-			return cp.spawn(sshExecutable, [...args], {
+			return cp.spawn('ssh', [...args], {
 				stdio: ['pipe', 'pipe', 'pipe'],
 				env,
-				cwd: this.launch.cwd ?? homedir(),
+				cwd: homedir(),
 			}) as cp.ChildProcess & IWispdProcessStreams;
 		};
-		return new WispdSshTransport(this.launch.destination, this.launch.remoteWispdCandidates, spawn, this.command, this.logger, this.launch.maxFrameBytes, makeSshClassifier(this.launch.destination));
+		return new WispdSshTransport(this.launch.destination, this.launch.remoteWispdCandidates, spawn, this.command, this.logger, undefined, makeSshClassifier(this.launch.destination));
 	}
 }
 

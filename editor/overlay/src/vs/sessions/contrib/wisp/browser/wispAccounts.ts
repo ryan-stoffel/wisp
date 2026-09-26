@@ -5,7 +5,7 @@
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { fromNow } from '../../../../base/common/date.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { IObservable, observableValue, transaction } from '../../../../base/common/observable.js';
+import { IObservable, ISettableObservable, observableValue, transaction } from '../../../../base/common/observable.js';
 import { localize } from '../../../../nls.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -16,7 +16,7 @@ import type { AccountChoice, AccountId, AccountUsage, CliKind, DetectedCli, KeyA
 export const IWispAccountsService = createDecorator<IWispAccountsService>('wispAccountsService');
 
 /** `accounts/list` and `accounts/refresh` answer only when wispd reports this capability. */
-export const AGENT_CLIS_CAPABILITY = 'agentClis';
+const AGENT_CLIS_CAPABILITY = 'agentClis';
 
 /** A detected CLI's subscription, or a key account: the composer's account picker chooses one. */
 export type WispAccountChoice =
@@ -45,25 +45,25 @@ export type WispAccountsLoadState =
  * The Accounts view's data, read from the editor's wispd connection on demand (there are no
  * account or usage events yet, decision record 0007's `events/event` covers only projects): the
  * view calls {@link IWispAccountsService.reload} when it opens, and a reconnect while it is open
- * reloads automatically. wispd's account registry (#114, #117, #118) is still forming, so a key
+ * reloads automatically. wispd's account registry is still forming, so a key
  * account and a detected CLI are unrelated lists; {@link matchUsageAccount} is what ties a
  * `usage/get` entry back to one of them.
  */
 export interface IWispAccountsService {
 	readonly _serviceBrand: undefined;
 
-	/** The vendor CLIs wispd detects (#114). Empty, and {@link clisState} stays `idle`, when
+	/** The vendor CLIs wispd detects. Empty, and {@link clisState} stays `idle`, when
 	 * {@link clisSupported} is `false`. */
 	readonly clis: IObservable<readonly DetectedCli[]>;
 	readonly clisState: IObservable<WispAccountsLoadState>;
 	/** Whether the connected wispd reports the `agentClis` capability. */
 	readonly clisSupported: IObservable<boolean>;
 
-	/** API key accounts (0004's fallback), oldest first, with their keys masked (#117). */
+	/** API key accounts (0004's fallback), oldest first, with their keys masked. */
 	readonly keyAccounts: IObservable<readonly KeyAccount[]>;
 	readonly keyAccountsState: IObservable<WispAccountsLoadState>;
 
-	/** Every account wispd has recorded usage or limits for (#120). */
+	/** Every account wispd has recorded usage or limits for. */
 	readonly usage: IObservable<readonly AccountUsage[]>;
 	readonly usageState: IObservable<WispAccountsLoadState>;
 
@@ -159,30 +159,21 @@ export class WispAccountsService extends Disposable implements IWispAccountsServ
 		}
 		this._clisSupported.set(AGENT_CLIS_CAPABILITY in this.connection.capabilities, undefined);
 		if (this.clisSupported.get()) {
-			this.listClis();
+			this.load(this._clisState, 'accounts/list', () => this.wispdService.request('accounts/list', {}), ({ clis }) => this._clis.set(clis, undefined));
 		} else {
 			transaction(tx => {
 				this._clis.set([], tx);
 				this._clisState.set({ kind: 'idle' }, tx);
 			});
 		}
-		this.listKeyAccounts();
-		this.listUsage();
+		this.load(this._keyAccountsState, 'accounts/keys/list', () => this.wispdService.request('accounts/keys/list', {}), ({ accounts }) => this._keyAccounts.set(accounts, undefined));
+		this.load(this._usageState, 'usage/get', () => this.wispdService.request('usage/get', {}), ({ accounts }) => this._usage.set(accounts, undefined));
 		this.loadCoordinatorChoice();
 	}
 
 	async refreshClis(): Promise<void> {
-		if (this.connection?.kind !== 'connected' || !this.clisSupported.get()) {
-			return;
-		}
-		this._clisState.set({ kind: 'loading' }, undefined);
-		try {
-			const { clis } = await this.wispdService.request('accounts/refresh', {});
-			this._clis.set(clis, undefined);
-			this._clisState.set({ kind: 'ready' }, undefined);
-		} catch (error) {
-			this.logService.error('[wisp] accounts/refresh failed', error);
-			this._clisState.set({ kind: 'failed', message: describeFailure(error) }, undefined);
+		if (this.connection?.kind === 'connected' && this.clisSupported.get()) {
+			await this.load(this._clisState, 'accounts/refresh', () => this.wispdService.request('accounts/refresh', {}), ({ clis }) => this._clis.set(clis, undefined));
 		}
 	}
 
@@ -208,39 +199,15 @@ export class WispAccountsService extends Disposable implements IWispAccountsServ
 		}
 	}
 
-	private async listClis(): Promise<void> {
-		this._clisState.set({ kind: 'loading' }, undefined);
+	/** Sends `method` through `send`, with `state` following it, and hands its answer to `apply`. */
+	private async load<T>(state: ISettableObservable<WispAccountsLoadState>, method: string, send: () => Promise<T>, apply: (result: T) => void): Promise<void> {
+		state.set({ kind: 'loading' }, undefined);
 		try {
-			const { clis } = await this.wispdService.request('accounts/list', {});
-			this._clis.set(clis, undefined);
-			this._clisState.set({ kind: 'ready' }, undefined);
+			apply(await send());
+			state.set({ kind: 'ready' }, undefined);
 		} catch (error) {
-			this.logService.error('[wisp] accounts/list failed', error);
-			this._clisState.set({ kind: 'failed', message: describeFailure(error) }, undefined);
-		}
-	}
-
-	private async listKeyAccounts(): Promise<void> {
-		this._keyAccountsState.set({ kind: 'loading' }, undefined);
-		try {
-			const { accounts } = await this.wispdService.request('accounts/keys/list', {});
-			this._keyAccounts.set(accounts, undefined);
-			this._keyAccountsState.set({ kind: 'ready' }, undefined);
-		} catch (error) {
-			this.logService.error('[wisp] accounts/keys/list failed', error);
-			this._keyAccountsState.set({ kind: 'failed', message: describeFailure(error) }, undefined);
-		}
-	}
-
-	private async listUsage(): Promise<void> {
-		this._usageState.set({ kind: 'loading' }, undefined);
-		try {
-			const { accounts } = await this.wispdService.request('usage/get', {});
-			this._usage.set(accounts, undefined);
-			this._usageState.set({ kind: 'ready' }, undefined);
-		} catch (error) {
-			this.logService.error('[wisp] usage/get failed', error);
-			this._usageState.set({ kind: 'failed', message: describeFailure(error) }, undefined);
+			this.logService.error(`[wisp] ${method} failed`, error);
+			state.set({ kind: 'failed', message: describeFailure(error) }, undefined);
 		}
 	}
 
@@ -332,11 +299,9 @@ function isAccountChoice(value: unknown): value is WispAccountChoice {
 		|| (candidate.kind === 'key' && typeof candidate.id === 'string');
 }
 
-function describeFailure(error: unknown): string {
-	if (error instanceof WispdError) {
-		return error.message;
-	}
-	return toErrorMessage(error);
+/** wispd's own message for its error, or any other error's. */
+export function describeFailure(error: unknown): string {
+	return error instanceof WispdError ? error.message : toErrorMessage(error);
 }
 
 /** A detected CLI's vendor name, as the Accounts view and the composer's account picker show it. */
@@ -369,7 +334,7 @@ export function keyAccountLabel(account: KeyAccount): string {
 	return localize('wispAccounts.keyLabel', "{0}: {1}", providerLabel(account.provider), account.label);
 }
 
-export type MatchedUsageAccount =
+type MatchedUsageAccount =
 	| { readonly kind: 'cli'; readonly cli: DetectedCli }
 	| { readonly kind: 'key'; readonly account: KeyAccount }
 	| { readonly kind: 'unknown'; readonly accountId: string };
@@ -392,12 +357,6 @@ export function matchUsageAccount(usage: AccountUsage, clis: readonly DetectedCl
 }
 
 const NOT_REPORTED = localize('wispAccounts.notReported', "Not reported");
-
-/** A period's token total, formatted with grouping, such as "12,345". */
-export function formatTokenTotal(period: { readonly inputTokens: number; readonly outputTokens: number; readonly cacheReadTokens: number; readonly cacheWriteTokens: number }): string {
-	const total = period.inputTokens + period.outputTokens + period.cacheReadTokens + period.cacheWriteTokens;
-	return total.toLocaleString();
-}
 
 /** A period's cost, or "Not reported" when the vendor never sends one (0004: Codex and Cursor). */
 export function formatCost(costUsdMicros: number | null | undefined): string {
@@ -429,7 +388,8 @@ export function formatResetTime(resetsAt: string | null | undefined): string {
 
 /** A usage period's row in the Accounts view, such as "12,345 tokens · $0.42" or "0 tokens · Not reported". */
 export function formatPeriodValue(period: { readonly inputTokens: number; readonly outputTokens: number; readonly cacheReadTokens: number; readonly cacheWriteTokens: number; readonly costUsdMicros?: number | null }): string {
-	return localize('wispAccounts.periodValue', "{0} tokens · {1}", formatTokenTotal(period), formatCost(period.costUsdMicros));
+	const tokens = period.inputTokens + period.outputTokens + period.cacheReadTokens + period.cacheWriteTokens;
+	return localize('wispAccounts.periodValue', "{0} tokens · {1}", tokens.toLocaleString(), formatCost(period.costUsdMicros));
 }
 
 /** A limit window's detail line, such as "38% used · Resets in 2 hr". */

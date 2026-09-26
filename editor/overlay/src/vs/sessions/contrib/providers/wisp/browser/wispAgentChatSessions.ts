@@ -23,9 +23,9 @@ import { agentRunOf, agentTitle, isRunActive, WISP_AGENT_CHAT_TYPE } from '../co
 import { IWispAgentsService } from './wispAgentsService.js';
 import { droppedWarning, IWispTranscriptTurn, WISP_REVIEW_AGENT_CHANGES_COMMAND, WispAgentTranscript, WispTranscriptChange } from './wispAgentTranscript.js';
 
-export const WISP_AGENT_NAME = 'wisp-agent';
+const WISP_AGENT_NAME = 'wisp-agent';
 
-export const AGENT_PLACEHOLDER = localize('wispAgent.placeholder', "Message this agent");
+const AGENT_PLACEHOLDER = localize('wispAgent.placeholder', "Message this agent");
 
 /** A message this window sent, whose turn streams into the request that sent it. */
 interface IExpectedTurn {
@@ -294,6 +294,21 @@ export class WispAgentChatSessions extends Disposable implements IChatSessionCon
 	}
 }
 
+/** A wisp chat takes text only. */
+export const NO_ATTACHMENTS: IChatSessionsExtensionPoint['capabilities'] = {
+	supportsFileAttachments: false,
+	supportsToolAttachments: false,
+	supportsMCPAttachments: false,
+	supportsImageAttachments: false,
+	supportsSearchResultAttachments: false,
+	supportsInstructionAttachments: false,
+	supportsSourceControlAttachments: false,
+	supportsProblemAttachments: false,
+	supportsSymbolAttachments: false,
+	supportsTerminalAttachments: false,
+	supportsPromptAttachments: false,
+};
+
 function contribution(): IChatSessionsExtensionPoint {
 	return {
 		type: WISP_AGENT_CHAT_TYPE,
@@ -307,19 +322,7 @@ function contribution(): IChatSessionsExtensionPoint {
 		supportsAutoModel: true,
 		requiresCopilotSignIn: false,
 		autoAttachReferences: false,
-		capabilities: {
-			supportsFileAttachments: false,
-			supportsToolAttachments: false,
-			supportsMCPAttachments: false,
-			supportsImageAttachments: false,
-			supportsSearchResultAttachments: false,
-			supportsInstructionAttachments: false,
-			supportsSourceControlAttachments: false,
-			supportsProblemAttachments: false,
-			supportsSymbolAttachments: false,
-			supportsTerminalAttachments: false,
-			supportsPromptAttachments: false,
-		},
+		capabilities: NO_ATTACHMENTS,
 	};
 }
 

@@ -9,7 +9,7 @@ import type { AgentOutcome, AgentOutputItem, AgentRun, DiffSummary, JsonValue, L
 import { IChatProgress, IChatToolInvocationSerialized, ToolConfirmKind } from '../../../../../workbench/contrib/chat/common/chatService/chatService.js';
 import { ToolDataSource } from '../../../../../workbench/contrib/chat/common/tools/languageModelToolsService.js';
 
-/** The command #157 registers to open a run's changes in the diff review. */
+/** The command workbench/contrib/wisp/browser/wispAgentReview.ts registers to open a run's changes in the diff review. */
 export const WISP_REVIEW_AGENT_CHANGES_COMMAND = 'wisp.reviewAgentChanges';
 /** Starts a new run with a finished run's task. */
 export const WISP_RETRY_AGENT_COMMAND = 'wisp.retryAgent';
@@ -38,10 +38,10 @@ export type WispTranscriptChange =
 	/** A message never reached the agent, so its turn never starts. */
 	| { readonly kind: 'dropped'; readonly turnId: TurnId };
 
-export interface IWispTranscriptOptions {
+interface IWispTranscriptOptions {
 	/** The text of a message this window sent, by its turn id. */
 	readonly sentText: (turnId: TurnId) => string | undefined;
-	/** Whether #157's review command exists, so the card offers Review changes. */
+	/** Whether the review command exists, so the card offers Review changes. */
 	readonly canReview: () => boolean;
 }
 
@@ -124,7 +124,7 @@ export class WispAgentTranscript {
 				// wispd commits the worktree after the CLI ends, then reports the commit and the
 				// run's new status, so the closing card waits for that status.
 				this.outcome = event.outcome;
-				return this.closeTools(time);
+				return this.closeTools();
 			case 'agent.updated':
 				return event.state.status === 'starting' || event.state.status === 'running' ? [] : this.completeAll(time);
 			default:
@@ -206,8 +206,8 @@ export class WispAgentTranscript {
 		if (turnId !== undefined && this.turns.some(turn => turn.turnId === turnId)) {
 			return [];
 		}
-		const changes = this.flushOutcome(time);
-		changes.push(...this.closeTools(time));
+		const changes = this.flushOutcome();
+		changes.push(...this.closeTools());
 		const previous = this.current;
 		if (!previous.complete) {
 			changes.push(...this.complete(previous, time));
@@ -228,13 +228,13 @@ export class WispAgentTranscript {
 	}
 
 	/** Shows the closing card of the CLI that just ended, if one hasn't been shown. */
-	private flushOutcome(time: number | undefined): WispTranscriptChange[] {
+	private flushOutcome(): WispTranscriptChange[] {
 		const outcome = this.outcome;
 		if (!outcome) {
 			return [];
 		}
 		this.outcome = undefined;
-		return [...this.closeTools(time), ...this.append(this.card(outcome))];
+		return [...this.closeTools(), ...this.append(this.card(outcome))];
 	}
 
 	/**
@@ -243,7 +243,7 @@ export class WispAgentTranscript {
 	 * a run wispd found interrupted after a crash.
 	 */
 	completeAll(time: number | undefined): WispTranscriptChange[] {
-		const changes: WispTranscriptChange[] = this.flushOutcome(time);
+		const changes: WispTranscriptChange[] = this.flushOutcome();
 		for (const turn of this.turns) {
 			if (!turn.complete) {
 				changes.push(...this.complete(turn, time));
@@ -256,6 +256,7 @@ export class WispAgentTranscript {
 		const retry = { id: WISP_RETRY_AGENT_COMMAND, title: localize('wispAgent.retry', "Retry"), arguments: [this.run.id] };
 		const review = { id: WISP_REVIEW_AGENT_CHANGES_COMMAND, title: localize('wispAgent.review', "Review changes"), arguments: [this.run.id] };
 		const changed = this.diff && this.diff.files > 0;
+		const reviewable = changed && this.options.canReview();
 		const summary = !changed
 			? localize('wispAgent.unchanged', "No files changed.")
 			: this.diff!.files === 1
@@ -264,7 +265,7 @@ export class WispAgentTranscript {
 		switch (outcome.status) {
 			case 'completed': {
 				const parts: IChatProgress[] = [{ kind: 'info', content: new MarkdownString().appendText(localize('wispAgent.finished', "Finished. {0}", summary)) }];
-				if (changed && this.options.canReview()) {
+				if (reviewable) {
 					parts.push({ kind: 'command', command: review });
 				}
 				return parts;
@@ -272,12 +273,12 @@ export class WispAgentTranscript {
 			case 'failed':
 				return [
 					{ kind: 'warning', content: new MarkdownString().appendText(localize('wispAgent.failedCard', "Failed: {0}", outcome.message)) },
-					{ kind: 'command', command: retry, ...(changed && this.options.canReview() ? { additionalCommands: [review] } : {}) },
+					{ kind: 'command', command: retry, ...(reviewable ? { additionalCommands: [review] } : {}) },
 				];
 			case 'cancelled':
 				return [
 					{ kind: 'info', content: new MarkdownString().appendText(localize('wispAgent.cancelledCard', "Stopped. {0}", summary)) },
-					{ kind: 'command', command: retry, ...(changed && this.options.canReview() ? { additionalCommands: [review] } : {}) },
+					{ kind: 'command', command: retry, ...(reviewable ? { additionalCommands: [review] } : {}) },
 				];
 			case 'interrupted':
 				return [
@@ -290,7 +291,7 @@ export class WispAgentTranscript {
 	}
 
 	/** Tool calls whose turn ended without a result show as they are. */
-	private closeTools(_time: number | undefined): WispTranscriptChange[] {
+	private closeTools(): WispTranscriptChange[] {
 		const parts: IChatProgress[] = [];
 		for (const [callId, call] of this.pendingTools) {
 			parts.push(toolPart(callId, call.name, call.input, undefined, undefined));
@@ -303,7 +304,7 @@ export class WispAgentTranscript {
 		if (turn.complete) {
 			return [];
 		}
-		const changes = turn === this.current ? this.closeTools(time) : [];
+		const changes = turn === this.current ? this.closeTools() : [];
 		turn.complete = true;
 		turn.completedAt = turn.finishedAt ?? time;
 		changes.push({ kind: 'turnCompleted', turn });
@@ -317,7 +318,7 @@ export class WispAgentTranscript {
 	}
 }
 
-export function taskTurnId(runId: RunId): string {
+function taskTurnId(runId: RunId): string {
 	return `task-${runId}`;
 }
 
@@ -359,7 +360,7 @@ function toolPart(callId: string, name: string, input: JsonValue, status: 'ok' |
 }
 
 /** What a tool call is about, for its one-line summary: a file's name, a command, or a pattern. */
-export function toolSubject(input: JsonValue): string | undefined {
+function toolSubject(input: JsonValue): string | undefined {
 	if (!input || typeof input !== 'object' || Array.isArray(input)) {
 		return undefined;
 	}

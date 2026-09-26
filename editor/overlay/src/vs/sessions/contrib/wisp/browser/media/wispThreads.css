@@ -336,7 +336,7 @@
 	text-decoration: underline;
 }
 
-/* Repositories and No Repo (#110): threads under their repository's name, and quick chats. */
+/* Repositories and No Repo: threads under their repository's name, and quick chats. */
 .wisp-threads-repo {
 	list-style: none;
 }

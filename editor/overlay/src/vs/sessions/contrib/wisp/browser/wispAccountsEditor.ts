@@ -5,7 +5,6 @@
 import './media/wispAccounts.css';
 import { $, append, clearNode, addDisposableListener, Dimension, EventType } from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
-import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { autorun } from '../../../../base/common/observable.js';
 import Severity from '../../../../base/common/severity.js';
@@ -24,7 +23,6 @@ import { IStorageService } from '../../../../platform/storage/common/storage.js'
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { generateUuidV7 } from '../../../../platform/wisp/common/uuidv7.js';
-import { WispdError } from '../../../../platform/wisp/common/wispd.js';
 import type { AccountId, AccountUsage, DetectedCli, KeyAccount, Provider } from '../../../../platform/wisp/common/wispProtocol.js';
 import { EditorExtensions, IEditorFactoryRegistry, IEditorSerializer, IUntypedEditorInput } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
@@ -32,17 +30,18 @@ import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPan
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import {
-	cliAccountLabel, cliLabel, formatLimitDetail, formatPeriodValue, formatUsedPercent,
-	IWispAccountsService, keyAccountLabel, matchUsageAccount, providerLabel, windowLabel,
+	cliAccountLabel, cliLabel, describeFailure, formatLimitDetail, formatPeriodValue, formatUsedPercent,
+	IWispAccountsService, keyAccountLabel, matchUsageAccount, providerLabel, windowLabel, WispAccountsLoadState,
 } from './wispAccounts.js';
 import { IWispHostStatusService } from './wispHostStatusService.js';
+import { askText } from './wispNewProject.js';
 import { WispSignInFlow } from './wispSignIn.js';
 
 export const WISP_SHOW_ACCOUNTS_COMMAND = 'wisp.accounts.show';
 
 const category = localize2('wisp', "Wisp");
 
-export class WispAccountsEditorInput extends EditorInput {
+class WispAccountsEditorInput extends EditorInput {
 
 	static readonly ID = 'workbench.editors.wisp.accounts';
 	static readonly EDITOR_ID = 'workbench.editor.wisp.accounts';
@@ -83,11 +82,11 @@ class WispAccountsEditorInputSerializer implements IEditorSerializer {
 }
 
 /**
- * Customize > Accounts (docs/design/agents-window.md, issue #121): the CLIs wispd detects
- * (#114), key accounts (#117), and per-account usage (#120), as a plain editor pane opened next
+ * Customize > Accounts (docs/design/agents-window.md): the CLIs wispd detects
+ *, key accounts, and per-account usage, as a plain editor pane opened next
  * to the coordinator, the way upstream opens Settings and Keyboard Shortcuts.
  */
-export class WispAccountsEditor extends EditorPane {
+class WispAccountsEditor extends EditorPane {
 
 	static readonly ID = WispAccountsEditorInput.EDITOR_ID;
 
@@ -148,25 +147,14 @@ export class WispAccountsEditor extends EditorPane {
 			this.clisRowStore.clear();
 			clearNode(list);
 			if (!connected) {
-				append(list, $('li.wisp-accounts-empty', undefined, localize('wispAccounts.clisNoHost', "Connect to a host to see its detected CLIs.")));
+				emptyLine(list, localize('wispAccounts.clisNoHost', "Connect to a host to see its detected CLIs."));
 				return;
 			}
 			if (!supported) {
-				append(list, $('li.wisp-accounts-empty', undefined, localize('wispAccounts.clisUnsupported', "This wispd doesn't report detected CLIs yet. Update it to see them here.")));
+				emptyLine(list, localize('wispAccounts.clisUnsupported', "This wispd doesn't report detected CLIs yet. Update it to see them here."));
 				return;
 			}
-			if (state.kind === 'loading' && clis.length === 0) {
-				list.setAttribute('aria-busy', 'true');
-				append(list, $('li.wisp-accounts-empty', undefined, localize('wispAccounts.loading', "Loading...")));
-				return;
-			}
-			list.removeAttribute('aria-busy');
-			if (state.kind === 'failed') {
-				append(list, $('li.wisp-accounts-empty', undefined, state.message));
-				return;
-			}
-			if (clis.length === 0) {
-				append(list, $('li.wisp-accounts-empty', undefined, localize('wispAccounts.noClis', "wisp didn't detect any agent CLIs on this host.")));
+			if (!renderListState(list, state, clis.length, localize('wispAccounts.noClis', "wisp didn't detect any agent CLIs on this host."))) {
 				return;
 			}
 			for (const cli of clis) {
@@ -224,21 +212,10 @@ export class WispAccountsEditor extends EditorPane {
 			this.keysRowStore.clear();
 			clearNode(list);
 			if (!connected) {
-				append(list, $('li.wisp-accounts-empty', undefined, localize('wispAccounts.keysNoHost', "Connect to a host to manage its API keys.")));
+				emptyLine(list, localize('wispAccounts.keysNoHost', "Connect to a host to manage its API keys."));
 				return;
 			}
-			if (state.kind === 'loading' && accounts.length === 0) {
-				list.setAttribute('aria-busy', 'true');
-				append(list, $('li.wisp-accounts-empty', undefined, localize('wispAccounts.loading', "Loading...")));
-				return;
-			}
-			list.removeAttribute('aria-busy');
-			if (state.kind === 'failed') {
-				append(list, $('li.wisp-accounts-empty', undefined, state.message));
-				return;
-			}
-			if (accounts.length === 0) {
-				append(list, $('li.wisp-accounts-empty', undefined, localize('wispAccounts.noKeys', "No API keys added yet.")));
+			if (!renderListState(list, state, accounts.length, localize('wispAccounts.noKeys', "No API keys added yet."))) {
 				return;
 			}
 			for (const account of accounts) {
@@ -278,7 +255,7 @@ export class WispAccountsEditor extends EditorPane {
 		try {
 			await this.accountsService.removeKey(account.id);
 		} catch (error) {
-			this.notificationService.error(localize('wispAccounts.removeFailed', "Couldn't remove {0}: {1}", keyAccountLabel(account), describeError(error)));
+			this.notificationService.error(localize('wispAccounts.removeFailed', "Couldn't remove {0}: {1}", keyAccountLabel(account), describeFailure(error)));
 		}
 	}
 
@@ -294,21 +271,10 @@ export class WispAccountsEditor extends EditorPane {
 
 			clearNode(list);
 			if (!connected) {
-				append(list, $('li.wisp-accounts-empty', undefined, localize('wispAccounts.usageNoHost', "Connect to a host to see account usage.")));
+				emptyLine(list, localize('wispAccounts.usageNoHost', "Connect to a host to see account usage."));
 				return;
 			}
-			if (state.kind === 'loading' && usage.length === 0) {
-				list.setAttribute('aria-busy', 'true');
-				append(list, $('li.wisp-accounts-empty', undefined, localize('wispAccounts.loading', "Loading...")));
-				return;
-			}
-			list.removeAttribute('aria-busy');
-			if (state.kind === 'failed') {
-				append(list, $('li.wisp-accounts-empty', undefined, state.message));
-				return;
-			}
-			if (usage.length === 0) {
-				append(list, $('li.wisp-accounts-empty', undefined, localize('wispAccounts.noUsage', "No usage recorded yet.")));
+			if (!renderListState(list, state, usage.length, localize('wispAccounts.noUsage', "No usage recorded yet."))) {
 				return;
 			}
 			for (const entry of usage) {
@@ -376,6 +342,26 @@ export class WispAccountsEditor extends EditorPane {
 	}
 }
 
+function emptyLine(list: HTMLElement, text: string): void {
+	append(list, $('li.wisp-accounts-empty', undefined, text));
+}
+
+/** Shows a list's loading, failure, or empty line, and returns whether its rows should follow. */
+function renderListState(list: HTMLElement, state: WispAccountsLoadState, count: number, empty: string): boolean {
+	if (state.kind === 'loading' && count === 0) {
+		list.setAttribute('aria-busy', 'true');
+		emptyLine(list, localize('wispAccounts.loading', "Loading..."));
+		return false;
+	}
+	list.removeAttribute('aria-busy');
+	const message = state.kind === 'failed' ? state.message : count === 0 ? empty : undefined;
+	if (message !== undefined) {
+		emptyLine(list, message);
+		return false;
+	}
+	return true;
+}
+
 /** Toggles a button's disabled state through `aria-disabled`, not the `disabled` attribute, so it keeps focus and can name why. */
 export function setDisabled(button: HTMLButtonElement, disabled: boolean, reason?: string): void {
 	button.classList.toggle('disabled', disabled);
@@ -400,28 +386,9 @@ export function describeCliState(cli: DetectedCli): string {
 	return cli.signedIn ? localize('wispAccounts.signedIn', "Signed in") : localize('wispAccounts.notSignedIn', "Not signed in");
 }
 
-function describeError(error: unknown): string {
-	if (error instanceof WispdError) {
-		return error.message;
-	}
-	return toErrorMessage(error);
-}
+const PROVIDERS: readonly Provider[] = ['anthropic', 'openai', 'cursor'];
 
-interface IAskOptions {
-	readonly title: string;
-	readonly prompt: string;
-	readonly placeholder?: string;
-	readonly password?: boolean;
-	readonly validate: (text: string) => string | undefined;
-}
-
-const PROVIDERS: ReadonlyArray<{ readonly provider: Provider; readonly label: string }> = [
-	{ provider: 'anthropic', label: providerLabel('anthropic') },
-	{ provider: 'openai', label: providerLabel('openai') },
-	{ provider: 'cursor', label: providerLabel('cursor') },
-];
-
-/** Adds a key account: a provider, a label, then the key itself, sent once (0004, #117). */
+/** Adds a key account: a provider, a label, then the key itself, sent once (0004). */
 class WispAddKeyFlow {
 
 	constructor(
@@ -435,7 +402,7 @@ class WispAddKeyFlow {
 		if (!provider) {
 			return undefined;
 		}
-		const label = await this.ask({
+		const label = await askText(this.quickInputService, {
 			title: localize('wispAccounts.keyLabelTitle', "Add {0} Key: Label", providerLabel(provider)),
 			prompt: localize('wispAccounts.keyLabelPrompt', "A label to tell this key apart, shown in wisp"),
 			validate: text => text.length === 0 ? localize('wispAccounts.keyLabelEmpty', "Enter a label.") : undefined,
@@ -443,7 +410,7 @@ class WispAddKeyFlow {
 		if (label === undefined) {
 			return undefined;
 		}
-		const key = await this.ask({
+		const key = await askText(this.quickInputService, {
 			title: localize('wispAccounts.keyValueTitle', "Add {0} Key: Key", providerLabel(provider)),
 			prompt: localize('wispAccounts.keyValuePrompt', "The key. wisp sends it once and never shows it again."),
 			password: true,
@@ -456,47 +423,17 @@ class WispAddKeyFlow {
 		try {
 			return await this.accountsService.addKey({ id, provider, label, key });
 		} catch (error) {
-			this.notificationService.error(localize('wispAccounts.addKeyFailed', "Couldn't add the key: {0}", describeError(error)));
+			this.notificationService.error(localize('wispAccounts.addKeyFailed', "Couldn't add the key: {0}", describeFailure(error)));
 			return undefined;
 		}
 	}
 
 	private async pickProvider(): Promise<Provider | undefined> {
 		const picked = await this.quickInputService.pick(
-			PROVIDERS.map((entry): IQuickPickItem & { provider: Provider } => ({ id: entry.provider, label: entry.label, provider: entry.provider })),
+			PROVIDERS.map((provider): IQuickPickItem & { provider: Provider } => ({ id: provider, label: providerLabel(provider), provider })),
 			{ title: localize('wispAccounts.pickProviderTitle', "Add Key: Choose a Vendor"), placeHolder: localize('wispAccounts.pickProviderPlaceholder', "Who is this key for?") },
 		);
 		return picked?.provider;
-	}
-
-	private ask(options: IAskOptions): Promise<string | undefined> {
-		const store = new DisposableStore();
-		const box = store.add(this.quickInputService.createInputBox());
-		box.title = options.title;
-		box.prompt = options.prompt;
-		box.placeholder = options.placeholder;
-		box.password = options.password ?? false;
-		box.ignoreFocusOut = true;
-		return new Promise<string | undefined>(resolve => {
-			let accepted: string | undefined;
-			store.add(box.onDidChangeValue(() => { box.validationMessage = undefined; box.severity = Severity.Ignore; }));
-			store.add(box.onDidAccept(() => {
-				const text = options.password ? box.value : box.value.trim();
-				const problem = options.validate(text);
-				if (problem) {
-					box.validationMessage = problem;
-					box.severity = Severity.Error;
-					return;
-				}
-				accepted = text;
-				box.hide();
-			}));
-			store.add(box.onDidHide(() => {
-				store.dispose();
-				resolve(accepted);
-			}));
-			box.show();
-		});
 	}
 }
 

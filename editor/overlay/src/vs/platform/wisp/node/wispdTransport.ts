@@ -22,13 +22,13 @@ export const ATTACH_EXIT_UNREACHABLE = 4;
 /**
  * Turns a closed process's exit code, signal, recent stderr, and whether any line was ever
  * received into a close reason. The default, `classifyLocalExit`, is what a bundled `wispd attach`
- * needs; the ssh transport (#64) supplies its own, since ssh's own exit codes (127, 255) mean
+ * needs; the ssh transport supplies its own, since ssh's own exit codes (127, 255) mean
  * something different from `attach`'s, and since stderr from early in a long session (an auth
  * prompt ssh never got to show, say) shouldn't be blamed for a later, unrelated disconnect.
  */
 export type WispdCloseClassifier = (exitCode: number | undefined, signal: NodeJS.Signals | null, stderrTail: string, receivedLine: boolean) => Omit<IWispdTransportClose, 'stderr'>;
 
-export const classifyLocalExit: WispdCloseClassifier = (exitCode, signal) => {
+const classifyLocalExit: WispdCloseClassifier = (exitCode, signal) => {
 	const unreachable = exitCode === ATTACH_EXIT_UNREACHABLE;
 	return {
 		reason: unreachable ? 'unreachable' : 'exited',
@@ -217,15 +217,13 @@ export class WispdProcessTransport extends Disposable implements IWispdTransport
 	}
 }
 
-export interface IWispdLaunch {
+interface IWispdLaunch {
 	/** The `wispd` executable. */
 	readonly executable: string;
 	/** Usually `['attach']`. */
 	readonly args: readonly string[];
 	/** The environment before the editor's own variables are removed. Defaults to this process's. */
 	readonly env?: NodeJS.ProcessEnv;
-	/** Defaults to the home folder, so a `serve` that `attach` starts keeps no workspace busy. */
-	readonly cwd?: string;
 	readonly maxFrameBytes?: number;
 }
 
@@ -245,7 +243,7 @@ export class WispdProcessTransportFactory implements IWispdTransportFactory {
 		const child = cp.spawn(this.launch.executable, [...this.launch.args], {
 			stdio: ['pipe', 'pipe', 'pipe'],
 			env,
-			cwd: this.launch.cwd ?? homedir(),
+			cwd: homedir(),
 		});
 		return new WispdProcessTransport(child, this.command, this.logger, this.launch.maxFrameBytes);
 	}

@@ -10,7 +10,7 @@ export function project(id: string, name = id, options: Partial<Project> = {}): 
 	return { id, name, repoPath: `/Users/ryan/src/${name}`, branch: 'main', createdAt: '2026-09-24T12:00:00Z', updatedAt: '2026-09-24T12:00:00Z', ...options };
 }
 
-export const LOCAL_COMMAND = '/Applications/Wisp.app/Contents/Resources/app/bin/wispd attach';
+const LOCAL_COMMAND = '/Applications/Wisp.app/Contents/Resources/app/bin/wispd attach';
 export const SSH_COMMAND = 'ssh -T -o BatchMode=yes -- mac-mini wispd attach';
 
 export function connected(command = LOCAL_COMMAND): WispdState {

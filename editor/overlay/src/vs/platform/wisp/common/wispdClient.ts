@@ -9,7 +9,7 @@ import { IJsonRpcNotification, JsonRpcError, JsonRpcMessage, JsonRpcProtocol } f
 import { Disposable, DisposableStore, IDisposable, toDisposable } from '../../../base/common/lifecycle.js';
 import { ILogger } from '../../log/common/log.js';
 import { IWispdSubscribeOptions, WispdDisconnectReason, WispdError, WispdMethod, WispdState, WispdSubscriptionMessage, WispdUnavailableError, describeIncompatible } from './wispd.js';
-import { Capabilities, ClientInfo, ErrorCodes, EventsEventParams, IncompatibleProtocolDetail, InitializeResult, JsonValue, LogId, PROTOCOL_VERSION, ProjectId, ProtocolRange, SubscriptionId, WispRequests } from './wispProtocol.js';
+import { ClientInfo, ErrorCodes, EventsEventParams, IncompatibleProtocolDetail, InitializeResult, JsonValue, LogId, PROTOCOL_VERSION, ProjectId, ProtocolRange, SubscriptionId, WispRequests } from './wispProtocol.js';
 
 /** Why a transport closed, for the `disconnected` state. */
 export interface IWispdTransportClose {
@@ -42,7 +42,7 @@ export interface IWispdTimers {
 	setTimeout(callback: () => void, ms: number): IDisposable;
 }
 
-export const realWispdTimers: IWispdTimers = {
+const realWispdTimers: IWispdTimers = {
 	now: () => Date.now(),
 	setTimeout: (callback, ms) => {
 		const handle = setTimeout(callback, ms);
@@ -52,24 +52,24 @@ export const realWispdTimers: IWispdTimers = {
 
 export interface IWispdClientOptions {
 	readonly client: ClientInfo;
-	readonly capabilities?: Capabilities;
 	readonly timers?: IWispdTimers;
-	/** How often `host/health` goes out while connected. */
-	readonly heartbeatMs?: number;
-	/** How long an outstanding request may go without any bytes from wispd. */
-	readonly livenessMs?: number;
-	/** The same for `initialize`, which also waits for `attach` to reach or start wispd. */
-	readonly handshakeMs?: number;
 	readonly minBackoffMs?: number;
-	readonly maxBackoffMs?: number;
-	/** How long a request waits for a connection before it fails. */
-	readonly connectWaitMs?: number;
-	/** How often a request lost to a disconnect is sent again. */
-	readonly maxResends?: number;
 }
 
+/** How often `host/health` goes out while connected. */
+const HEARTBEAT_MS = 30_000;
+/** How long an outstanding request may go without any bytes from wispd. */
+const LIVENESS_MS = 10_000;
+/** The same for `initialize`, which also waits for `attach` to reach or start wispd. */
+const HANDSHAKE_MS = 20_000;
+const MAX_BACKOFF_MS = 10_000;
+/** How long a request waits for a connection before it fails. */
+const CONNECT_WAIT_MS = 30_000;
+/** How often a request lost to a disconnect is sent again. */
+const MAX_RESENDS = 3;
+
 /** The protocol versions this editor speaks. */
-export const SUPPORTED_PROTOCOL: ProtocolRange = { min: 1, max: PROTOCOL_VERSION };
+const SUPPORTED_PROTOCOL: ProtocolRange = { min: 1, max: PROTOCOL_VERSION };
 
 class Connection extends Disposable {
 	readonly protocol: JsonRpcProtocol;
@@ -131,13 +131,7 @@ export class WispdClient extends Disposable {
 	readonly onDidChangeState = this._onDidChangeState.event;
 
 	private readonly timers: IWispdTimers;
-	private readonly heartbeatMs: number;
-	private readonly livenessMs: number;
-	private readonly handshakeMs: number;
 	private readonly minBackoffMs: number;
-	private readonly maxBackoffMs: number;
-	private readonly connectWaitMs: number;
-	private readonly maxResends: number;
 
 	private _state: WispdState;
 	private started = false;
@@ -156,13 +150,7 @@ export class WispdClient extends Disposable {
 	) {
 		super();
 		this.timers = options.timers ?? realWispdTimers;
-		this.heartbeatMs = options.heartbeatMs ?? 30_000;
-		this.livenessMs = options.livenessMs ?? 10_000;
-		this.handshakeMs = options.handshakeMs ?? 20_000;
 		this.minBackoffMs = options.minBackoffMs ?? 1_000;
-		this.maxBackoffMs = options.maxBackoffMs ?? 10_000;
-		this.connectWaitMs = options.connectWaitMs ?? 30_000;
-		this.maxResends = options.maxResends ?? 3;
 		this._state = { kind: 'disconnected', command: factory.command, reason: 'notStarted', message: 'Not connected yet.' };
 
 		this._register(toDisposable(() => {
@@ -229,7 +217,7 @@ export class WispdClient extends Disposable {
 				if (!isCancellationError(error) || token.isCancellationRequested) {
 					throw error;
 				}
-				if (resends >= this.maxResends) {
+				if (resends >= MAX_RESENDS) {
 					throw new WispdUnavailableError(`The connection to wispd was lost ${resends + 1} times while sending ${method}.`);
 				}
 				this.logger.info(`wispd: resending ${method} after a lost connection`);
@@ -287,7 +275,7 @@ export class WispdClient extends Disposable {
 			result = await this.send<InitializeResult>(connection, 'initialize', {
 				protocol: SUPPORTED_PROTOCOL,
 				client: this.options.client,
-				capabilities: this.options.capabilities ?? {},
+				capabilities: {},
 			});
 		} catch (error) {
 			if (connection !== this.connection) {
@@ -356,7 +344,7 @@ export class WispdClient extends Disposable {
 		if (this._store.isDisposed) {
 			return;
 		}
-		const delay = Math.min(this.maxBackoffMs, this.minBackoffMs * 2 ** Math.min(this.failures, 20));
+		const delay = Math.min(MAX_BACKOFF_MS, this.minBackoffMs * 2 ** Math.min(this.failures, 20));
 		this.failures++;
 		this.setState({
 			kind: 'disconnected',
@@ -418,7 +406,7 @@ export class WispdClient extends Disposable {
 				const state = this._state;
 				const why = state.kind === 'disconnected' ? `: ${state.message}` : '';
 				settle(() => reject(new WispdUnavailableError(`wispd is not reachable through ${this.factory.command}${why}`)));
-			}, this.connectWaitMs));
+			}, CONNECT_WAIT_MS));
 			store.add(token.onCancellationRequested(cancel));
 		});
 	}
@@ -446,7 +434,7 @@ export class WispdClient extends Disposable {
 		if (connection !== this.connection || connection.outstanding === 0) {
 			return;
 		}
-		const ms = connection.initialized ? this.livenessMs : this.handshakeMs;
+		const ms = connection.initialized ? LIVENESS_MS : HANDSHAKE_MS;
 		connection.liveness = this.timers.setTimeout(() => {
 			this.drop(connection, { reason: 'timedOut', message: `wispd sent nothing for ${ms / 1000} s while a request was outstanding.` });
 		}, ms);
@@ -454,7 +442,7 @@ export class WispdClient extends Disposable {
 
 	private scheduleHeartbeat(connection: Connection): void {
 		connection.heartbeat?.dispose();
-		connection.heartbeat = this.timers.setTimeout(() => this.sendHeartbeat(connection), this.heartbeatMs);
+		connection.heartbeat = this.timers.setTimeout(() => this.sendHeartbeat(connection), HEARTBEAT_MS);
 	}
 
 	private sendHeartbeat(connection: Connection): void {
@@ -608,7 +596,7 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-export function describeState(state: WispdState): string {
+function describeState(state: WispdState): string {
 	switch (state.kind) {
 		case 'connecting':
 			return `connecting through ${state.command} (attempt ${state.attempt})`;

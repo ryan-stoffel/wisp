@@ -7,7 +7,7 @@ import { IObservable, observableValue } from '../../../../base/common/observable
 import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
-import { IWispdService, WispdState } from '../../../../platform/wisp/common/wispd.js';
+import { followWispdState, IWispdService, WispdState } from '../../../../platform/wisp/common/wispd.js';
 import { hostLabel, isLocalHost, WISP_HOST_SETTING } from '../../../../platform/wisp/common/wispdConfiguration.js';
 import { describeHostStatus, IWispHostStatus, WispHostProblem } from './wispHostStatus.js';
 
@@ -48,8 +48,6 @@ export class WispHostStatusService extends Disposable implements IWispHostStatus
 	private command = '';
 	private wasConnected = false;
 	private lastProblem: WispHostProblem | undefined;
-	/** The state arrives from the shared process; a slow first answer must not overwrite a newer event. */
-	private receivedEvent = false;
 
 	constructor(
 		@IWispdService private readonly wispdService: IWispdService,
@@ -65,15 +63,7 @@ export class WispHostStatusService extends Disposable implements IWispHostStatus
 				this.update(this._state.get());
 			}
 		}));
-		this._register(wispdService.onDidChangeState(state => {
-			this.receivedEvent = true;
-			this.update(state);
-		}));
-		wispdService.getState().then(state => {
-			if (!this.receivedEvent && !this._store.isDisposed) {
-				this.update(state);
-			}
-		}, () => { /* The shared process is gone; the window is closing. */ });
+		this._register(followWispdState(wispdService, state => this.update(state)));
 	}
 
 	retry(): Promise<void> {

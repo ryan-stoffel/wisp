@@ -26,10 +26,10 @@ export function projectIdOf(resource: URI): string | undefined {
 }
 
 /** The theme colors a project's glyph takes, picked by its id so a project keeps its color. */
-export const PROJECT_GLYPH_COLORS = ['blue', 'green', 'yellow', 'purple', 'orange', 'red'] as const;
-export type ProjectGlyphColor = typeof PROJECT_GLYPH_COLORS[number];
+const PROJECT_GLYPH_COLORS = ['blue', 'green', 'yellow', 'purple', 'orange', 'red'] as const;
+type ProjectGlyphColor = typeof PROJECT_GLYPH_COLORS[number];
 
-export interface IProjectGlyph {
+interface IProjectGlyph {
 	readonly letter: string;
 	readonly color: ProjectGlyphColor;
 }

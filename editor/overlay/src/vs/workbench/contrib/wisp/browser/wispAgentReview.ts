@@ -2,9 +2,9 @@
  *  wisp: not part of Code - OSS. Edit editor/overlay in the wisp repo, not this copy.
  *--------------------------------------------------------------------------------------------*/
 
-// Reviewing an agent run's changes (#157): the `wisp-agent:` file system over `agent/file`, the
+// Reviewing an agent run's changes: the `wisp-agent:` file system over `agent/file`, the
 // multi-diff editor's source over `agent/diff`, and commands to review, accept, and request
-// changes. The Agents window's review bar and Changes tab (#105) call the same commands.
+// changes. The Agents window's review bar and Changes tab call the same commands.
 
 import { ValueWithChangeEvent } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
@@ -26,17 +26,17 @@ import { IEditorService } from '../../../services/editor/common/editorService.js
 import { MultiDiffEditorInput } from '../../multiDiffEditor/browser/multiDiffEditorInput.js';
 import { IMultiDiffSourceResolver, IMultiDiffSourceResolverService, IResolvedMultiDiffSource, MultiDiffEditorItem } from '../../multiDiffEditor/browser/multiDiffSourceResolverService.js';
 
-export const WISP_REVIEW_AGENT_CHANGES = 'wisp.reviewAgentChanges';
-export const WISP_ACCEPT_AGENT_CHANGES = 'wisp.acceptAgentChanges';
-export const WISP_REQUEST_AGENT_CHANGES = 'wisp.requestAgentChanges';
+const WISP_REVIEW_AGENT_CHANGES = 'wisp.reviewAgentChanges';
+const WISP_ACCEPT_AGENT_CHANGES = 'wisp.acceptAgentChanges';
+const WISP_REQUEST_AGENT_CHANGES = 'wisp.requestAgentChanges';
 
 /** Whether the connected wispd reviews runs: it advertises the `agentReview` capability. */
-export const WispAgentReviewContext = new RawContextKey<boolean>('wisp.agentReview', false, localize('wisp.agentReview', "Whether the connected wispd can review and accept agent runs"));
+const WispAgentReviewContext = new RawContextKey<boolean>('wisp.agentReview', false, localize('wisp.agentReview', "Whether the connected wispd can review and accept agent runs"));
 
 const category = localize2('wisp', "Wisp");
 
 /** A run's task as a short title: its first line, cut to 60 characters. */
-export function taskTitle(prompt: string): string {
+function taskTitle(prompt: string): string {
 	const first = prompt.split('\n').map(line => line.trim()).find(line => line.length > 0) ?? '';
 	return first.length > 60 ? `${first.slice(0, 57)}...` : first;
 }
@@ -192,7 +192,7 @@ registerAction2(class AcceptAgentChangesAction extends Action2 {
 		});
 	}
 
-	/** `commit` is the head the caller's review showed; the review bar (#105) passes it. */
+	/** `commit` is the head the caller's review showed; the review bar passes it. */
 	async run(accessor: ServicesAccessor, runId?: unknown, commit?: unknown): Promise<void> {
 		const wispdService = accessor.get(IWispdService);
 		const dialogService = accessor.get(IDialogService);

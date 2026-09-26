@@ -14,7 +14,7 @@ import { agentChatResource } from './wispAgentRuns.js';
 export const WISP_THREAD_SESSION_TYPE = 'wisp.thread';
 
 /**
- * The scheme of a repository on a host other than this Mac. v1 can't open a host's folders (#67),
+ * The scheme of a repository on a host other than this Mac. v1 can't open a host's folders,
  * so such a workspace only names the repository; on this Mac a thread's workspace is a file URI.
  */
 export const WISP_REPO_SCHEME = 'wisp-repo';
@@ -59,7 +59,7 @@ export function repoPathOf(uri: URI, isLocal: boolean): string | undefined {
 }
 
 /** One repository's threads, as the sidebar's Repositories section lists them. */
-export interface IWispRepoThreads {
+interface IWispRepoThreads {
 	/** The workspace URI, which identifies the repository. */
 	readonly key: string;
 	readonly label: string;
@@ -67,7 +67,7 @@ export interface IWispRepoThreads {
 }
 
 /** Where the sidebar lists threads: under their repository, or under No Repo. */
-export interface IWispThreadPlacement {
+interface IWispThreadPlacement {
 	readonly repositories: readonly IWispRepoThreads[];
 	readonly noRepo: readonly ISession[];
 }

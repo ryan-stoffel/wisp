@@ -57,7 +57,7 @@ export async function settle(): Promise<void> {
 	}
 }
 
-export class FakeTransport implements IWispdTransport {
+class FakeTransport implements IWispdTransport {
 	private readonly _onDidReceiveLine = new Emitter<string>();
 	readonly onDidReceiveLine = this._onDidReceiveLine.event;
 	private readonly _onDidReceiveData = new Emitter<void>();

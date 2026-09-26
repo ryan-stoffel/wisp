@@ -155,11 +155,6 @@ export class WispSessionsProvider extends Disposable implements ISessionsProvide
 		};
 	}
 
-	/** The session of a project on the connected host. */
-	getProjectSession(projectId: string): WispProjectSession | undefined {
-		return this.sessions.get(projectId);
-	}
-
 	getSessions(): ISession[] {
 		return [...this.sessions.values(), ...this.threads.getSessions()];
 	}
@@ -211,17 +206,11 @@ export class WispSessionsProvider extends Disposable implements ISessionsProvide
 	}
 
 	async archiveSession(sessionId: string): Promise<void> {
-		if (!this.threads.getSession(sessionId)) {
-			throw notSupported();
-		}
-		await this.threads.setArchived(sessionId, true);
+		await this.threads.setArchived(this.threadSessionId(sessionId), true);
 	}
 
 	async unarchiveSession(sessionId: string): Promise<void> {
-		if (!this.threads.getSession(sessionId)) {
-			throw notSupported();
-		}
-		await this.threads.setArchived(sessionId, false);
+		await this.threads.setArchived(this.threadSessionId(sessionId), false);
 	}
 
 	async setSessionReadState(_sessionId: string, _isRead: boolean): Promise<void> {
@@ -229,10 +218,15 @@ export class WispSessionsProvider extends Disposable implements ISessionsProvide
 	}
 
 	async deleteSession(sessionId: string): Promise<void> {
+		await this.threads.delete(this.threadSessionId(sessionId));
+	}
+
+	/** Only a thread can be archived or deleted. */
+	private threadSessionId(sessionId: string): string {
 		if (!this.threads.getSession(sessionId)) {
 			throw notSupported();
 		}
-		await this.threads.delete(sessionId);
+		return sessionId;
 	}
 
 	async deleteSessions(sessionIds: readonly string[]): Promise<void> {
@@ -271,7 +265,7 @@ export class WispSessionsProvider extends Disposable implements ISessionsProvide
 }
 
 /** The connection as upstream's sessions see their host's. */
-export function sessionConnectionStatus(state: WispdState): SessionRemoteConnectionStatus {
+function sessionConnectionStatus(state: WispdState): SessionRemoteConnectionStatus {
 	switch (state.kind) {
 		case 'connected':
 			return { kind: 'connected' };

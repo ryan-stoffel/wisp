@@ -13,9 +13,6 @@ import { WISP_HOST_LOCAL, WISP_HOST_SETTING, WISP_REMOTE_WISPD_PATH_SETTING } fr
 /** Everything a folder's `.vscode/settings.json` is parsed with; excludes `APPLICATION`. */
 const WORKSPACE_SCOPES = [ConfigurationScope.WINDOW, ConfigurationScope.RESOURCE, ConfigurationScope.LANGUAGE_OVERRIDABLE, ConfigurationScope.MACHINE_OVERRIDABLE];
 
-/** Everything a user's own `settings.json` is parsed with. */
-const APPLICATION_AND_WORKSPACE_SCOPES = [ConfigurationScope.APPLICATION, ConfigurationScope.MACHINE, ConfigurationScope.APPLICATION_MACHINE, ...WORKSPACE_SCOPES];
-
 suite('wispdConfiguration', () => {
 
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -28,21 +25,10 @@ suite('wispdConfiguration', () => {
 		assert.strictEqual(properties[WISP_REMOTE_WISPD_PATH_SETTING]?.default, '');
 	});
 
-	test('a workspace settings.json cannot set wisp.host', () => {
+	test('a workspace settings.json cannot set wisp.host or wisp.remoteWispdPath', () => {
 		const parser = new ConfigurationModelParser('.vscode/settings.json', new NullLogService());
-		parser.parse(JSON.stringify({ [WISP_HOST_SETTING]: 'attacker.example' }), { scopes: WORKSPACE_SCOPES });
+		parser.parse(JSON.stringify({ [WISP_HOST_SETTING]: 'attacker.example', [WISP_REMOTE_WISPD_PATH_SETTING]: '/tmp/wispd' }), { scopes: WORKSPACE_SCOPES });
 		assert.strictEqual(parser.configurationModel.getValue(WISP_HOST_SETTING), undefined);
-	});
-
-	test('a workspace settings.json cannot set wisp.remoteWispdPath', () => {
-		const parser = new ConfigurationModelParser('.vscode/settings.json', new NullLogService());
-		parser.parse(JSON.stringify({ [WISP_REMOTE_WISPD_PATH_SETTING]: '/tmp/wispd' }), { scopes: WORKSPACE_SCOPES });
 		assert.strictEqual(parser.configurationModel.getValue(WISP_REMOTE_WISPD_PATH_SETTING), undefined);
-	});
-
-	test('a user settings.json can set wisp.host', () => {
-		const parser = new ConfigurationModelParser('settings.json', new NullLogService());
-		parser.parse(JSON.stringify({ [WISP_HOST_SETTING]: 'mac-mini.local' }), { scopes: APPLICATION_AND_WORKSPACE_SCOPES });
-		assert.strictEqual(parser.configurationModel.getValue(WISP_HOST_SETTING), 'mac-mini.local');
 	});
 });

@@ -75,7 +75,7 @@ type FooterKind = 'branch' | 'host';
  * One footer item: an icon and a short text. The branch is information only, so it is not in the
  * tab order; the host is a button, like the sidebar's host chip.
  */
-export class WispComposerFooterItem extends BaseActionViewItem {
+class WispComposerFooterItem extends BaseActionViewItem {
 
 	private readonly sessionResource = observableValue<URI | undefined>(this, undefined);
 	private readonly widgetListener = this._register(new MutableDisposable());
@@ -152,7 +152,7 @@ export class WispComposerFooterItem extends BaseActionViewItem {
 	}
 }
 
-export class WispComposerFooterContribution extends Disposable implements IWorkbenchContribution {
+class WispComposerFooterContribution extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'sessions.contrib.wispComposerFooter';
 

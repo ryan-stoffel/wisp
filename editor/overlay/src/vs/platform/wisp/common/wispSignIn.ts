@@ -6,11 +6,11 @@ import type { CliKind } from './wispProtocol.js';
 import { isLocalHost, validateSshDestination } from './wispdConfiguration.js';
 
 /**
- * A vendor CLI's login command (decision record 0004, #115): run directly on `local`, or on a
+ * A vendor CLI's login command (decision record 0004): run directly on `local`, or on a
  * remote host's shell over ssh. wisp never runs it itself and never reads what it prints; it only
  * opens the terminal that runs it.
  */
-export interface SignInCommand {
+interface SignInCommand {
 	readonly executable: string;
 	readonly args: readonly string[];
 	readonly env?: Readonly<Record<string, string>>;
@@ -21,7 +21,7 @@ export interface SignInCommand {
  * interactive OAuth flow can't reach a browser there: Codex adds `--device-auth`, and Cursor sets
  * `NO_OPEN_BROWSER=1`.
  */
-export function loginCommandForCli(cli: CliKind, remote: boolean): SignInCommand {
+function loginCommandForCli(cli: CliKind, remote: boolean): SignInCommand {
 	switch (cli) {
 		case 'claude':
 			return { executable: 'claude', args: ['auth', 'login'] };
@@ -40,16 +40,16 @@ export function loginCommandForCli(cli: CliKind, remote: boolean): SignInCommand
 	}
 }
 
-export type SignInLaunchResult =
+type SignInLaunchResult =
 	| { readonly kind: 'ok'; readonly launch: SignInCommand }
 	| { readonly kind: 'error'; readonly message: string };
 
 /**
- * Builds the command an integrated terminal should run to sign a detected CLI in (#115), on
+ * Builds the command an integrated terminal should run to sign a detected CLI in, on
  * `host` as it reads from `wisp.host`: `local`, or an ssh destination.
  *
  * On `local` this is just the CLI's own login command. On a remote host it is
- * `ssh -t -- <destination> <cli> <login args>`, reusing #64's own `validateSshDestination` so a
+ * `ssh -t -- <destination> <cli> <login args>`, reusing the ssh transport's `validateSshDestination` so a
  * destination that could be misread as an ssh option, or that could inject a second shell command
  * once it reaches the host's login shell, is rejected before ssh ever runs. Every part is a
  * separate argv entry: wisp never assembles `destination` or the remote command into one string
@@ -71,20 +71,4 @@ export function buildSignInLaunch(cli: CliKind, host: string): SignInLaunchResul
 		? ['env', ...Object.entries(command.env).map(([name, value]) => `${name}=${value}`), command.executable, ...command.args]
 		: [command.executable, ...command.args];
 	return { kind: 'ok', launch: { executable: 'ssh', args: ['-t', '--', destination, ...remoteArgs] } };
-}
-
-/** Plain letters, digits, and a handful of punctuation marks that never need quoting in a POSIX shell. */
-const UNQUOTED_SAFE = /^[A-Za-z0-9_.\-/=:@]+$/;
-
-/** One argument, quoted the way a POSIX shell would need it. Used only to render a command for display; wisp never hands this string to a shell. */
-export function quotePosixArg(value: string): string {
-	if (value.length > 0 && UNQUOTED_SAFE.test(value)) {
-		return value;
-	}
-	return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-/** {@link buildSignInLaunch}'s command as one line, for a notification or a log; never executed as a shell command. */
-export function formatSignInCommand(launch: SignInCommand): string {
-	return [launch.executable, ...launch.args].map(quotePosixArg).join(' ');
 }

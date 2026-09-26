@@ -8,17 +8,17 @@ import { constObservable, derived, IObservable, ISettableObservable, observableV
 import { basename } from '../../../../../base/common/path.js';
 import { ThemeIcon } from '../../../../../base/common/themables.js';
 import { URI } from '../../../../../base/common/uri.js';
-import type { AgentRun, Repo, RunId, Thread } from '../../../../../platform/wisp/common/wispProtocol.js';
-import { ChatInteractivity, ChatModelSource, getUntitledSessionTitle, IChat, IChatCapabilities, IChatCheckpoints, ISession, ISessionCapabilities, ISessionChangeset, ISessionFileChange, ISessionWorkspace, SessionRemoteConnectionStatus, SessionStatus, toSessionId } from '../../../../services/sessions/common/session.js';
+import type { AgentRun, RunId, Thread } from '../../../../../platform/wisp/common/wispProtocol.js';
+import { getUntitledSessionTitle, IChat, ISession, ISessionCapabilities, ISessionFileChange, ISessionWorkspace, SessionRemoteConnectionStatus, SessionStatus, toSessionId } from '../../../../services/sessions/common/session.js';
 import { agentLocation, agentState, agentTitle, IWispAgentState, isRunActive } from '../common/wispAgentRuns.js';
 import { repoUri, threadChatResource, threadResource, WISP_REPO_SCHEME, WISP_THREAD_SESSION_TYPE } from '../common/wispThreads.js';
-import { IWispAgentLocation } from './wispAgentChat.js';
+import { IWispAgentLocation, WispChatBase, WispSessionBase } from './wispAgentChat.js';
 
 /**
  * What wisp supports on a thread: one chat, archive, and delete. Renaming comes when wispd stores
  * a title (the prompt's first line is the title today).
  */
-export const WISP_THREAD_CAPABILITIES: ISessionCapabilities = {
+const WISP_THREAD_CAPABILITIES: ISessionCapabilities = {
 	supportsMultipleChats: false,
 	supportsFork: false,
 	supportsSideChat: false,
@@ -26,8 +26,6 @@ export const WISP_THREAD_CAPABILITIES: ISessionCapabilities = {
 	supportsDelete: true,
 	supportsRemoveArtifacts: false,
 };
-
-const THREAD_CHAT_CAPABILITIES: IChatCapabilities = { canRename: false, canDelete: false };
 
 /** Where a thread runs, and what it needs from `IWispAgentsService`. */
 export interface IWispThreadContext {
@@ -47,25 +45,19 @@ export interface IWispThreadContext {
  * composer, and Stop serve it (0015). Before the thread starts it is an untitled draft. Its
  * `changes` are the files its latest commit changed, which the Changes tab lists.
  */
-class WispThreadChat implements IChat {
+class WispThreadChat extends WispChatBase implements IChat {
 	readonly resource: URI;
 	readonly createdAt: Date;
 	readonly title: IObservable<string>;
 	readonly updatedAt: IObservable<Date>;
 	readonly status: IObservable<SessionStatus>;
 	readonly state: IObservable<IWispAgentState | undefined>;
-	readonly checkpoints = constObservable<IChatCheckpoints | undefined>(undefined);
-	readonly modelId = constObservable<string | undefined>(undefined);
-	readonly modelSource = constObservable<ChatModelSource | undefined>(undefined);
-	readonly mode = constObservable<{ readonly id: string; readonly kind: string } | undefined>(undefined);
 	readonly isArchived: IObservable<boolean>;
-	readonly isRead = constObservable(true);
-	readonly interactivity = constObservable(ChatInteractivity.Full);
 	readonly description: IObservable<IMarkdownString | undefined>;
 	readonly lastTurnEnd: IObservable<Date | undefined>;
-	readonly capabilities = constObservable(THREAD_CHAT_CAPABILITIES);
 
 	constructor(runId: RunId, createdAt: Date, run: IObservable<AgentRun | undefined>, step: IObservable<string | undefined>, where: IObservable<IWispAgentLocation>, untitled: IObservable<string>, archived: IObservable<boolean>, readonly changes: IObservable<readonly ISessionFileChange[]>) {
+		super();
 		this.resource = threadChatResource(runId);
 		this.createdAt = createdAt;
 		this.isArchived = archived;
@@ -103,7 +95,7 @@ class WispThreadChat implements IChat {
  * thread: its id comes from the run id the draft generated, so the session keeps its identity
  * when it graduates into the list.
  */
-export class WispThreadSession implements ISession {
+export class WispThreadSession extends WispSessionBase implements ISession {
 	readonly sessionId: string;
 	readonly resource: URI;
 	readonly providerId: string;
@@ -112,19 +104,12 @@ export class WispThreadSession implements ISession {
 	readonly createdAt: Date;
 	readonly workspace: IObservable<ISessionWorkspace | undefined>;
 	readonly isQuickChat: IObservable<boolean>;
-	readonly isAutomation = constObservable(false);
-	readonly isExternal = constObservable(false);
 	readonly remoteConnectionStatus: IObservable<SessionRemoteConnectionStatus>;
 	readonly title: IObservable<string>;
 	readonly updatedAt: IObservable<Date>;
 	readonly status: IObservable<SessionStatus>;
 	readonly changes: IObservable<readonly ISessionFileChange[]>;
-	readonly changesets = constObservable<readonly ISessionChangeset[] | undefined>(undefined);
-	readonly modelId = constObservable<string | undefined>(undefined);
-	readonly mode = constObservable<{ readonly id: string; readonly kind: string } | undefined>(undefined);
-	readonly loading = constObservable(false);
 	readonly isArchived: IObservable<boolean>;
-	readonly isRead = constObservable(true);
 	readonly description: IObservable<IMarkdownString | undefined>;
 	readonly lastTurnEnd: IObservable<Date | undefined>;
 	readonly chats: IObservable<readonly IChat[]>;
@@ -146,6 +131,7 @@ export class WispThreadSession implements ISession {
 		providerId: string,
 		context: IWispThreadContext,
 	) {
+		super();
 		this.resource = threadResource(runId);
 		this.sessionId = toSessionId(providerId, this.resource);
 		this.providerId = providerId;
@@ -155,7 +141,7 @@ export class WispThreadSession implements ISession {
 		this.remoteConnectionStatus = context.connectionStatus;
 		const quickChat = !repo || !!repo.scratch;
 		this.isQuickChat = constObservable(quickChat);
-		this.workspace = constObservable(quickChat ? undefined : repoWorkspace(repo.path, repo.name, context.isLocal));
+		this.workspace = constObservable(quickChat ? undefined : repoWorkspace(repo, context.isLocal));
 		this.isArchived = derived(this, reader => this._thread.read(reader)?.archived ?? false);
 		const run = context.run(runId);
 		const started = derived(this, reader => this._started.read(reader) ? run.read(reader) : undefined);
@@ -190,7 +176,8 @@ export class WispThreadSession implements ISession {
 	}
 }
 
-function repoWorkspace(path: string, name: string | undefined, isLocal: boolean): ISessionWorkspace {
+/** A repo entry's workspace: a folder on this Mac, or a `wisp-repo:` path on another host. */
+export function repoWorkspace({ path, name }: { readonly path: string; readonly name?: string }, isLocal: boolean): ISessionWorkspace {
 	const uri = repoUri(path, isLocal);
 	const label = name || basename(path) || path;
 	return {
@@ -202,9 +189,4 @@ function repoWorkspace(path: string, name: string | undefined, isLocal: boolean)
 		requiresWorkspaceTrust: false,
 		isVirtualWorkspace: uri.scheme === WISP_REPO_SCHEME,
 	};
-}
-
-/** A repo entry's workspace, as the provider resolves it for the new-session composer. */
-export function workspaceOfRepo(repo: Pick<Repo, 'path' | 'name'>, isLocal: boolean): ISessionWorkspace {
-	return repoWorkspace(repo.path, repo.name, isLocal);
 }

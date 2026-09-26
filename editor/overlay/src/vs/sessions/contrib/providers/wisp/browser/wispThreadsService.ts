@@ -7,10 +7,11 @@ import { derived, IObservable, observableValue, transaction } from '../../../../
 import { createDecorator } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { generateUuidV7 } from '../../../../../platform/wisp/common/uuidv7.js';
-import { IWispdService, WispdState, WispdSubscriptionMessage } from '../../../../../platform/wisp/common/wispd.js';
+import { followWispdState, IWispdService, WispdState, WispdSubscriptionMessage } from '../../../../../platform/wisp/common/wispd.js';
 import type { AccountChoice, AgentRun, LogId, Repo, RepoId, RunId, Thread } from '../../../../../platform/wisp/common/wispProtocol.js';
 import { THREADS_CAPABILITY } from '../common/wispThreads.js';
 import { IWispAgentsService } from './wispAgentsService.js';
+import { upsert } from './wispProjectsService.js';
 
 export const IWispThreadsService = createDecorator<IWispThreadsService>('wispThreadsService');
 
@@ -31,8 +32,6 @@ export interface IWispThreadsService {
 
 	/** Every thread, oldest first. */
 	readonly threads: IObservable<readonly Thread[]>;
-
-	getRepo(id: RepoId): Repo | undefined;
 
 	/** Registers the repository at a host path, or returns the entry it already has. */
 	addRepo(path: string): Promise<Repo>;
@@ -64,7 +63,6 @@ export class WispThreadsService extends Disposable implements IWispThreadsServic
 	private status: 'idle' | 'listing' | 'ready' = 'idle';
 	/** Bumped on every list and every host change, so a stale answer or event is dropped. */
 	private generation = 0;
-	private receivedState = false;
 
 	constructor(
 		@IWispdService private readonly wispdService: IWispdService,
@@ -77,19 +75,7 @@ export class WispThreadsService extends Disposable implements IWispThreadsServic
 			...this._repos.read(reader).map(repo => repo.id),
 			...this._threads.read(reader).map(thread => thread.repo),
 		])])));
-		this._register(wispdService.onDidChangeState(state => {
-			this.receivedState = true;
-			this.onState(state);
-		}));
-		wispdService.getState().then(state => {
-			if (!this.receivedState && !this._store.isDisposed) {
-				this.onState(state);
-			}
-		}, () => { /* The shared process is gone; the window is closing. */ });
-	}
-
-	getRepo(id: RepoId): Repo | undefined {
-		return this._repos.get().find(repo => repo.id === id);
+		this._register(followWispdState(wispdService, state => this.onState(state)));
 	}
 
 	async addRepo(path: string): Promise<Repo> {
@@ -231,17 +217,4 @@ export class WispThreadsService extends Disposable implements IWispThreadsServic
 			this._threads.set(threads.filter(thread => thread.id !== runId), undefined);
 		}
 	}
-}
-
-function upsert<T extends { readonly id: string }>(list: readonly T[], item: T): readonly T[] {
-	const index = list.findIndex(existing => existing.id === item.id);
-	if (index === -1) {
-		return [...list, item];
-	}
-	if (JSON.stringify(list[index]) === JSON.stringify(item)) {
-		return list;
-	}
-	const next = [...list];
-	next[index] = item;
-	return next;
 }

@@ -60,7 +60,7 @@ export const WISP_REMOTE_WISPD_PATH_SETTING = 'wisp.remoteWispdPath';
 /**
  * A key for the wispd that `wisp.host` and `wisp.remoteWispdPath` name: `local`, or the trimmed
  * destination and path. A window and the shared process each read these settings on their own
- * schedule, so they compare keys before acting on each other's connection (#219).
+ * schedule, so they compare keys before acting on each other's connection.
  */
 export function wispdTarget(host: unknown, remoteWispdPath: unknown): string {
 	if (isLocalHost(host)) {

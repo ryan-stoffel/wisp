@@ -10,11 +10,12 @@ import { localize } from '../../../../../nls.js';
 import { IChatSession, IChatSessionContentProvider, IChatSessionsExtensionPoint, IChatSessionsService } from '../../../../../workbench/contrib/chat/common/chatSessionsService.js';
 import { IWispHostStatusService } from '../../../wisp/browser/wispHostStatusService.js';
 import { projectIdOf, WISP_PROJECT_SESSION_TYPE } from '../common/wispProjects.js';
+import { NO_ATTACHMENTS } from './wispAgentChatSessions.js';
 import { IWispProjectsService } from './wispProjectsService.js';
 
-export const WISP_COORDINATOR_AGENT_NAME = 'wisp-coordinator';
+const WISP_COORDINATOR_AGENT_NAME = 'wisp-coordinator';
 
-export const COORDINATOR_PLACEHOLDER = localize('wispCoordinator.placeholder', "The coordinator can't take messages yet");
+const COORDINATOR_PLACEHOLDER = localize('wispCoordinator.placeholder', "The coordinator can't take messages yet");
 
 /**
  * Registers each project's coordinator thread with upstream's chat, in process (decision record
@@ -56,19 +57,7 @@ export class WispCoordinatorChat extends Disposable implements IChatSessionConte
 			supportsAutoModel: false,
 			requiresCopilotSignIn: false,
 			autoAttachReferences: false,
-			capabilities: {
-				supportsFileAttachments: false,
-				supportsToolAttachments: false,
-				supportsMCPAttachments: false,
-				supportsImageAttachments: false,
-				supportsSearchResultAttachments: false,
-				supportsInstructionAttachments: false,
-				supportsSourceControlAttachments: false,
-				supportsProblemAttachments: false,
-				supportsSymbolAttachments: false,
-				supportsTerminalAttachments: false,
-				supportsPromptAttachments: false,
-			},
+			capabilities: NO_ATTACHMENTS,
 		};
 	}
 

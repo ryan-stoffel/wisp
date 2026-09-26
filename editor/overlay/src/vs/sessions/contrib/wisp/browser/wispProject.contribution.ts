@@ -24,7 +24,7 @@ import { WISP_PROJECT_CONTAINER_ID, WISP_PROJECT_VIEW_ID, WispProjectView } from
 const projectIcon = registerIcon('wisp-project-view-icon', Codicon.project, localize('wispProjectViewIcon', "Icon for wisp's Project tab."));
 const projectTitle = localize2('wispProject.title', "Project");
 
-export const WISP_PROJECT_CONTAINER = Registry.as<IViewContainersRegistry>(ViewExtensions.ViewContainersRegistry).registerViewContainer({
+const WISP_PROJECT_CONTAINER = Registry.as<IViewContainersRegistry>(ViewExtensions.ViewContainersRegistry).registerViewContainer({
 	id: WISP_PROJECT_CONTAINER_ID,
 	title: projectTitle,
 	icon: projectIcon,
@@ -53,7 +53,7 @@ Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry).registerViews([{
  * time a project becomes active in this window its Project tab is opened, after that controller
  * has run. From then on the controller remembers what the user leaves open for that project.
  */
-export class WispProjectTabContribution extends Disposable implements IWorkbenchContribution {
+class WispProjectTabContribution extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'sessions.contrib.wispProjectTab';
 

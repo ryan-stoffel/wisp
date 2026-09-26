@@ -41,7 +41,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		// instead of docking inside the editor with no tabs of its own.
 		'sessions.layout.singlePaneDetailPanel': false,
 		// The new-session composer's picker with a "No workspace" choice, which starts a normal
-		// thread with no repo (#110). Upstream turns it on only for Insiders.
+		// thread with no repo. Upstream turns it on only for Insiders.
 		'sessions.chat.unifiedWorkspacePicker.enabled': true,
 	},
 }]);

@@ -2,7 +2,7 @@
  *  wisp: not part of Code - OSS. Edit editor/overlay in the wisp repo, not this copy.
  *--------------------------------------------------------------------------------------------*/
 
-/* The Accounts editor pane (Customize > Accounts, issue #121): theme and size tokens only. */
+/* The Accounts editor pane (Customize > Accounts): theme and size tokens only. */
 
 .wisp-accounts {
 	box-sizing: border-box;
@@ -53,8 +53,8 @@
 	color: var(--vscode-icon-foreground);
 }
 
-.wisp-accounts-icon-button:hover,
-.wisp-accounts-link-button:hover {
+.wisp-accounts-icon-button:not(.disabled):hover,
+.wisp-accounts-link-button:not(.disabled):hover {
 	background-color: var(--vscode-toolbar-hoverBackground);
 }
 
@@ -68,11 +68,6 @@
 .wisp-accounts-link-button.disabled {
 	color: var(--vscode-disabledForeground);
 	cursor: default;
-}
-
-.wisp-accounts-icon-button.disabled:hover,
-.wisp-accounts-link-button.disabled:hover {
-	background-color: transparent;
 }
 
 .wisp-accounts-list {
@@ -179,7 +174,6 @@
 	inset: 0;
 	border-radius: var(--vscode-cornerRadius-small);
 	background-color: var(--vscode-charts-blue);
-	opacity: 1;
 }
 
 .wisp-accounts-limit-detail {

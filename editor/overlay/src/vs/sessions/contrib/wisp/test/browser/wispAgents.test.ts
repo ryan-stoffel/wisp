@@ -301,11 +301,11 @@ suite('wisp: agents', () => {
 			context.wispd.setState(connectedWithAgents(SSH_COMMAND));
 			await settle();
 			const session = context.provider.getSessions()[0] as WispProjectSession;
-			const chat = session.getAgentChat(RUN) as WispAgentChat;
+			const chat = session.chats.get()[1] as WispAgentChat;
 			assert.strictEqual(renderAsPlaintext(chat.description.get()!), 'mac-mini');
 			context.emit(logged(30, { kind: 'agent.updated', runId: RUN, state: { status: 'completed', accountId: 'claude', diff: { commit: 'a', files: 1, insertions: 1, deletions: 0 }, updatedAt: '2026-09-25T10:09:00Z' } }));
 			assert.deepStrictEqual([chat.status.get(), chat.state.get().label], [SessionStatus.NeedsInput, 'Needs review']);
-			assert.strictEqual(session.getAgentChat(RUN), chat);
+			assert.strictEqual(session.chats.get()[1], chat);
 		});
 	});
 

@@ -9,9 +9,9 @@ import { basename } from '../../../../../base/common/path.js';
 import { ThemeIcon } from '../../../../../base/common/themables.js';
 import { URI } from '../../../../../base/common/uri.js';
 import type { AgentRun, Project, RunId } from '../../../../../platform/wisp/common/wispProtocol.js';
-import { ChatInteractivity, ChatModelSource, IChat, IChatCapabilities, IChatCheckpoints, ISession, ISessionCapabilities, ISessionChangeset, ISessionFileChange, ISessionWorkspace, SessionRemoteConnectionStatus, SessionStatus, toSessionId } from '../../../../services/sessions/common/session.js';
+import { IChat, ISession, ISessionCapabilities, ISessionFileChange, ISessionWorkspace, SessionRemoteConnectionStatus, SessionStatus, toSessionId } from '../../../../services/sessions/common/session.js';
 import { projectResource, WISP_PROJECT_SESSION_TYPE } from '../common/wispProjects.js';
-import { IWispAgentLocation, WispAgentChat } from './wispAgentChat.js';
+import { IWispAgentLocation, WispAgentChat, WispChatBase, WispSessionBase } from './wispAgentChat.js';
 
 /**
  * What wisp supports on a project today: the coordinator, the subagents wispd runs for it (M3), and
@@ -27,8 +27,6 @@ export const WISP_PROJECT_CAPABILITIES: ISessionCapabilities = {
 	supportsDelete: false,
 	supportsRemoveArtifacts: false,
 };
-
-const COORDINATOR_CHAT_CAPABILITIES: IChatCapabilities = { canRename: false, canDelete: false };
 
 /** The host the provider's projects are on, as the sessions report it. */
 export interface IWispProjectHost {
@@ -48,25 +46,19 @@ export interface IWispProjectAgents {
  * A project's coordinator thread. It has no turns until the coordinator runs (M4), and it can't
  * be renamed or deleted apart from its project.
  */
-class WispCoordinatorChat implements IChat {
+class WispCoordinatorChat extends WispChatBase implements IChat {
 	readonly resource: URI;
 	readonly createdAt: Date;
 	readonly title: IObservable<string>;
 	readonly updatedAt: IObservable<Date>;
 	readonly status = constObservable(SessionStatus.Completed);
 	readonly changes = constObservable<readonly ISessionFileChange[]>([]);
-	readonly checkpoints = constObservable<IChatCheckpoints | undefined>(undefined);
-	readonly modelId = constObservable<string | undefined>(undefined);
-	readonly modelSource = constObservable<ChatModelSource | undefined>(undefined);
-	readonly mode = constObservable<{ readonly id: string; readonly kind: string } | undefined>(undefined);
 	readonly isArchived = constObservable(false);
-	readonly isRead = constObservable(true);
-	readonly interactivity = constObservable(ChatInteractivity.Full);
 	readonly description = constObservable<IMarkdownString | undefined>(undefined);
 	readonly lastTurnEnd = constObservable<Date | undefined>(undefined);
-	readonly capabilities = constObservable(COORDINATOR_CHAT_CAPABILITIES);
 
 	constructor(resource: URI, createdAt: Date, project: IObservable<Project>) {
+		super();
 		this.resource = resource;
 		this.createdAt = createdAt;
 		this.title = derived(this, reader => project.read(reader).name);
@@ -79,9 +71,9 @@ class WispCoordinatorChat implements IChat {
  * the coordinator, and each agent run is a tool-origin chat after it (0015), which upstream lists
  * in the Agents pill and opens as a tab. A project on this Mac has its repository as its
  * workspace, so Files and **IDE** work; one on another host has none, since v1 can't open a
- * host's folders (#67).
+ * host's folders.
  */
-export class WispProjectSession implements ISession {
+export class WispProjectSession extends WispSessionBase implements ISession {
 	readonly sessionId: string;
 	readonly resource: URI;
 	readonly providerId: string;
@@ -90,19 +82,12 @@ export class WispProjectSession implements ISession {
 	readonly createdAt: Date;
 	readonly workspace: IObservable<ISessionWorkspace | undefined>;
 	readonly isQuickChat = constObservable(false);
-	readonly isAutomation = constObservable(false);
-	readonly isExternal = constObservable(false);
 	readonly remoteConnectionStatus: IObservable<SessionRemoteConnectionStatus>;
 	readonly title: IObservable<string>;
 	readonly updatedAt: IObservable<Date>;
 	readonly status = constObservable(SessionStatus.Completed);
 	readonly changes = constObservable<readonly ISessionFileChange[]>([]);
-	readonly changesets = constObservable<readonly ISessionChangeset[] | undefined>(undefined);
-	readonly modelId = constObservable<string | undefined>(undefined);
-	readonly mode = constObservable<{ readonly id: string; readonly kind: string } | undefined>(undefined);
-	readonly loading = constObservable(false);
 	readonly isArchived = constObservable(false);
-	readonly isRead = constObservable(true);
 	readonly description = constObservable<IMarkdownString | undefined>(undefined);
 	readonly lastTurnEnd = constObservable<Date | undefined>(undefined);
 	readonly chats: IObservable<readonly IChat[]>;
@@ -113,7 +98,8 @@ export class WispProjectSession implements ISession {
 	/** One chat per run, kept so a chat's identity survives each update of the list. */
 	private readonly agentChats = new Map<RunId, WispAgentChat>();
 
-	constructor(project: Project, providerId: string, host: IWispProjectHost, agents?: IWispProjectAgents) {
+	constructor(project: Project, providerId: string, host: IWispProjectHost, agents: IWispProjectAgents) {
+		super();
 		this._project = observableValue<Project>(this, project);
 		this.resource = projectResource(project.id);
 		this.sessionId = toSessionId(providerId, this.resource);
@@ -127,9 +113,7 @@ export class WispProjectSession implements ISession {
 		const coordinator = new WispCoordinatorChat(this.resource, this.createdAt, this._project);
 		this.mainChat = constObservable<IChat>(coordinator);
 		// Subagents follow the coordinator in the order they started, which the Agents pill reverses.
-		this.chats = agents
-			? derived(this, reader => [coordinator, ...agents.runs.read(reader).map(run => this.agentChat(run, coordinator.resource, agents))])
-			: constObservable<readonly IChat[]>([coordinator]);
+		this.chats = derived(this, reader => [coordinator, ...agents.runs.read(reader).map(run => this.agentChat(run, coordinator.resource, agents))]);
 	}
 
 	private agentChat(run: AgentRun, parent: URI, agents: IWispProjectAgents): WispAgentChat {
@@ -144,12 +128,6 @@ export class WispProjectSession implements ISession {
 			this.agentChats.set(run.id, chat);
 		}
 		return chat;
-	}
-
-	/** The chat of one of this project's runs, once its run is listed. */
-	getAgentChat(runId: RunId): WispAgentChat | undefined {
-		this.chats.get();
-		return this.agentChats.get(runId);
 	}
 
 	get project(): Project {

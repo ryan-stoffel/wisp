@@ -124,20 +124,11 @@ suite('resolveWispdExecutable', () => {
 	const bundled = join(appRoot, 'bin', 'wispd');
 	const repoBuild = join('/', 'repo', 'target', 'debug', 'wispd');
 
-	test('prefers the environment override', () => {
+	test('prefers the environment override, then the bundled binary, then the repo build in development only, then PATH', () => {
 		assert.strictEqual(resolveWispdExecutable({ WISP_WISPD_PATH: '/custom/wispd' }, appRoot, true, () => true), '/custom/wispd');
-	});
-
-	test('then the bundled binary', () => {
 		assert.strictEqual(resolveWispdExecutable({}, appRoot, false, path => path === bundled || path === repoBuild), bundled);
-	});
-
-	test('then the repo build, only in development', () => {
 		assert.strictEqual(resolveWispdExecutable({}, appRoot, false, path => path === repoBuild), repoBuild);
 		assert.strictEqual(resolveWispdExecutable({}, appRoot, true, path => path === repoBuild), 'wispd');
-	});
-
-	test('then PATH', () => {
 		assert.strictEqual(resolveWispdExecutable({}, appRoot, false, () => false), 'wispd');
 	});
 });

@@ -25,7 +25,7 @@ import { IWispAgentLocation } from './wispAgentChat.js';
 import { IWispAgentsService } from './wispAgentsService.js';
 import { IWispProjectsService } from './wispProjectsService.js';
 import { IWispThreadsService } from './wispThreadsService.js';
-import { IWispThreadContext, WispThreadSession, workspaceOfRepo } from './wispThreadSession.js';
+import { IWispThreadContext, repoWorkspace, WispThreadSession } from './wispThreadSession.js';
 
 /** The `wisp.thread` session type, as the new-session composer offers it. */
 export const WISP_THREAD_TYPE: ISessionType = {
@@ -38,7 +38,7 @@ export const WISP_THREAD_TYPE: ISessionType = {
 };
 
 /** The host the provider's sessions are on, as the thread sessions need it. */
-export interface IWispThreadsHost {
+interface IWispThreadsHost {
 	readonly isLocal: IObservable<boolean>;
 	readonly connectionStatus: IObservable<SessionRemoteConnectionStatus>;
 	readonly location: IObservable<IWispAgentLocation>;
@@ -105,11 +105,6 @@ export class WispThreadSessions extends Disposable {
 		return this.drafts.get(sessionId) ?? [...this.sessions.values()].find(session => session.sessionId === sessionId);
 	}
 
-	/** The session of a thread, once it is listed. */
-	getThreadSession(runId: RunId): WispThreadSession | undefined {
-		return this.sessions.get(runId);
-	}
-
 	private context(): IWispThreadContext {
 		return {
 			isLocal: this.host.isLocal.get(),
@@ -142,7 +137,7 @@ export class WispThreadSessions extends Disposable {
 	}
 
 	/**
-	 * Lists the files of a run's commit with `agent/diff` (#157), each with a `wisp-agent:` URI on
+	 * Lists the files of a run's commit with `agent/diff`, each with a `wisp-agent:` URI on
 	 * both sides, which the review's file system serves. A host without `agentReview` has none.
 	 */
 	private async fetchChanges(runId: RunId, commit: string, entry: IDiffEntry): Promise<void> {
@@ -218,7 +213,7 @@ export class WispThreadSessions extends Disposable {
 			return undefined;
 		}
 		const known = this.threadsService.repos.get().find(repo => !repo.scratch && repo.path === path);
-		return workspaceOfRepo(known ?? { path, name: '' }, isLocal);
+		return repoWorkspace(known ?? { path, name: '' }, isLocal);
 	}
 
 	createDraft(workspaceUri: URI | undefined): ISession {
@@ -332,7 +327,7 @@ export class WispThreadSessions extends Disposable {
 			return undefined;
 		}
 		const repo = await this.threadsService.addRepo(path);
-		return workspaceOfRepo(repo, isLocal);
+		return repoWorkspace(repo, isLocal);
 	}
 }
 

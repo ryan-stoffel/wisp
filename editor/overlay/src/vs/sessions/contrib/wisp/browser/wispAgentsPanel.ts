@@ -22,13 +22,13 @@ import { IWispAgentsService } from '../../providers/wisp/browser/wispAgentsServi
 import { IWispHostStatusService } from './wispHostStatusService.js';
 
 /** The widget id of upstream's subagents pill (`sessionSubagentsPillOptions`). */
-export const SUBAGENTS_PILL_WIDGET_ID = 'sessionSubagents';
+const SUBAGENTS_PILL_WIDGET_ID = 'sessionSubagents';
 
 /** Rows the panel shows before **More**. */
 export const AGENTS_PANEL_ROWS = 5;
 
 /** One row of the Agents panel. */
-export interface IWispAgentRow {
+interface IWispAgentRow {
 	readonly entry: IChatPillEntry;
 	readonly title: string;
 	readonly state: IWispAgentState | undefined;
@@ -38,7 +38,7 @@ export interface IWispAgentRow {
 }
 
 /** The pill's summary: its label, count, and running mark. */
-export interface IWispAgentsSummary {
+interface IWispAgentsSummary {
 	readonly count: number;
 	readonly running: number;
 	readonly ariaLabel: string;
@@ -54,7 +54,7 @@ export function agentsSummary(rows: readonly Pick<IWispAgentRow, 'state'>[]): IW
 }
 
 /**
- * Wisp's presentation of upstream's subagents pill (decision record 0011, #105): the pill reads
+ * Wisp's presentation of upstream's subagents pill (decision record 0011): the pill reads
  * **Agents**, its count, and a running mark, and opens a card over the bottom of the transcript
  * instead of a menu. The card lists the coordinator's subagents newest first: a status mark, the
  * task, where it runs, and the state as text; five rows, then **More**. A row opens its subagent
@@ -317,7 +317,7 @@ function parseRun(id: string): ReturnType<typeof agentRunOf> {
  * Registers the panel for the subagents pill, and announces a subagent's state politely when it
  * changes, so a screen reader hears "Fix rounding: Failed" without opening the panel.
  */
-export class WispAgentsPanelContribution extends Disposable implements IWorkbenchContribution {
+class WispAgentsPanelContribution extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'sessions.contrib.wispAgentsPanel';
 

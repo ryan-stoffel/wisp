@@ -20,7 +20,7 @@ import { agentChatResource } from '../../providers/wisp/common/wispAgentRuns.js'
 import { projectIdOf, projectResource } from '../../providers/wisp/common/wispProjects.js';
 import { cliLabel } from './wispAccounts.js';
 
-export const WISP_START_SUBAGENT_COMMAND = 'wisp.startSubagent';
+const WISP_START_SUBAGENT_COMMAND = 'wisp.startSubagent';
 
 const category = localize2('wisp.category', "Wisp");
 const hasAgents = ContextKeyExpr.and(IsSessionsWindowContext, ContextKeyExpr.deserialize(`'agents' in wisp.wispdCapabilities`));

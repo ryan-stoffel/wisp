@@ -11,7 +11,7 @@ import { ViewPaneContainer } from '../../../../workbench/browser/parts/views/vie
 import { Extensions as ViewExtensions, IViewContainersRegistry, IViewsRegistry, ViewContainerLocation, WindowEnablement } from '../../../../workbench/common/views.js';
 import { WISP_THREADS_CONTAINER_ID, WISP_THREADS_VIEW_ID, WispThreadsView } from './wispThreadsView.js';
 
-// Replaces upstream's Sessions container, which the exclusion list leaves out (#103). It is the
+// Replaces upstream's Sessions container, which the exclusion list leaves out. It is the
 // sidebar's default in the Agents window and is never registered in the editor window.
 
 const threadsIcon = registerIcon('wisp-threads-view-icon', Codicon.commentDiscussion, localize('wispThreadsViewIcon', "Icon for wisp's projects and threads view."));

@@ -4,7 +4,7 @@
 
 import { CancellationToken } from '../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../base/common/event.js';
-import { Disposable } from '../../../base/common/lifecycle.js';
+import { Disposable, IDisposable, toDisposable } from '../../../base/common/lifecycle.js';
 import { IChannel, IServerChannel } from '../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../configuration/common/configuration.js';
 import { createDecorator } from '../../instantiation/common/instantiation.js';
@@ -162,7 +162,7 @@ export interface IWispdService {
 	 * `WispdUnavailableError` when there is no connection to send it on.
 	 *
 	 * `target` is for the window's channel client, which passes its own settings' `wispdTarget`: the
-	 * request then goes only to that host's wispd, or fails unsent (#219). Other callers leave it out.
+	 * request then goes only to that host's wispd, or fails unsent. Other callers leave it out.
 	 */
 	request<M extends WispdMethod>(method: M, params: WispRequests[M]['params'], token?: CancellationToken, target?: string): Promise<WispRequests[M]['result']>;
 
@@ -238,7 +238,7 @@ export class WispdChannel implements IServerChannel {
 
 /**
  * A window's `IWispdService`. The window and the shared process each read `wisp.host` on their own
- * schedule, so right after a host switch one of them is behind (#219). This client keeps the
+ * schedule, so right after a host switch one of them is behind. This client keeps the
  * window to the host its own settings name: it sends their target with every request, which the
  * shared process refuses to send anywhere else, and it shows a state for another target as
  * `connecting` to its own.
@@ -344,4 +344,27 @@ export function describeIncompatible(state: Extract<WispdState, { kind: 'incompa
 
 function formatRange(range: ProtocolRange): string {
 	return range.min === range.max ? `${range.min}` : `${range.min} to ${range.max}`;
+}
+
+/**
+ * Calls `onState` on every state change and, unless a change came first, with the state
+ * `getState` answers: that answer comes from the shared process, and a slow one must not replace
+ * a newer event.
+ */
+export function followWispdState(wispdService: IWispdService, onState: (state: WispdState) => void): IDisposable {
+	let received = false;
+	let disposed = false;
+	const listener = wispdService.onDidChangeState(state => {
+		received = true;
+		onState(state);
+	});
+	wispdService.getState().then(state => {
+		if (!received && !disposed) {
+			onState(state);
+		}
+	}, () => { /* The shared process is gone; the window is closing. */ });
+	return toDisposable(() => {
+		disposed = true;
+		listener.dispose();
+	});
 }

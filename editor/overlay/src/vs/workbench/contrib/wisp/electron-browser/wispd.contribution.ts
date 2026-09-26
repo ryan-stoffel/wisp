@@ -20,13 +20,13 @@ import { IWispdService, WispdState, describeIncompatible } from '../../../../pla
 import { IWorkbenchContribution, WorkbenchPhase, registerWorkbenchContribution2 } from '../../../common/contributions.js';
 
 /** The connection state's kind: `connecting`, `connected`, `disconnected`, or `incompatible`. */
-export const WispdStateContext = new RawContextKey<string>('wisp.wispdState', 'disconnected', localize('wisp.wispdState', "The state of the connection to wispd"));
+const WispdStateContext = new RawContextKey<string>('wisp.wispdState', 'disconnected', localize('wisp.wispdState', "The state of the connection to wispd"));
 
 /**
  * The capabilities the connected wispd advertises. Gate a feature on its capability with
  * `'agents' in wisp.wispdCapabilities`, so it is hidden when wispd lacks it.
  */
-export const WispdCapabilitiesContext = new RawContextKey<string[]>('wisp.wispdCapabilities', [], localize('wisp.wispdCapabilities', "The capabilities the connected wispd advertises"));
+const WispdCapabilitiesContext = new RawContextKey<string[]>('wisp.wispdCapabilities', [], localize('wisp.wispdCapabilities', "The capabilities the connected wispd advertises"));
 
 const category = localize2('wisp', "Wisp");
 

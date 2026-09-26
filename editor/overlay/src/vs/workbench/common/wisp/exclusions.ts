@@ -15,7 +15,7 @@ const excludedViewContainers: ReadonlySet<string> = new Set([
 	// Ports: local port forwarding goes through Microsoft dev tunnels.
 	'~remote.forwardedPortsContainer',
 	// Agents window: upstream's Sessions list, with Automations, Chats, and AI Customizations.
-	// wisp's own sidebar view replaces it (#12).
+	// wisp's own sidebar view replaces it.
 	'agentic.workbench.view.sessionsContainer',
 ]);
 
@@ -38,7 +38,7 @@ const excludedWorkbenchContributions: ReadonlySet<string> = new Set([
 	'sessions.contrib.automationTools',
 	'workbench.contrib.chatAutomationsEnabledContext',
 	'sessions.contrib.automationsCustomView',
-	// Agents window: the Copilot Chat sessions provider and its pickers. wisp registers its own provider (#12).
+	// Agents window: the Copilot Chat sessions provider and its pickers. wisp registers its own provider.
 	'sessions.defaultSessionsProvider',
 	'workbench.contrib.copilotPickerActionViewItems',
 	'workbench.contrib.copilotPermissionPickerWeb',

@@ -24,7 +24,7 @@ export interface IWispdHost {
  * had been started.
  *
  * Every state carries the `target` it is for. A window sends its own target with each request, and
- * a request is only ever sent to that target's wispd (#219).
+ * a request is only ever sent to that target's wispd.
  */
 export class WispdHostConnection extends Disposable {
 

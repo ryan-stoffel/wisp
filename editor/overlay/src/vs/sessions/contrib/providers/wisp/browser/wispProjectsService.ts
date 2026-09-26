@@ -8,7 +8,7 @@ import { IObservable, observableValue, transaction } from '../../../../../base/c
 import { localize } from '../../../../../nls.js';
 import { createDecorator } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
-import { IWispdService, WispdError, WispdState, WispdSubscriptionMessage } from '../../../../../platform/wisp/common/wispd.js';
+import { followWispdState, IWispdService, WispdError, WispdState, WispdSubscriptionMessage } from '../../../../../platform/wisp/common/wispd.js';
 import type { LogId, Project, ProjectCreateParams } from '../../../../../platform/wisp/common/wispProtocol.js';
 
 export const IWispProjectsService = createDecorator<IWispProjectsService>('wispProjectsService');
@@ -21,7 +21,7 @@ export const IWispProjectsService = createDecorator<IWispProjectsService>('wispP
  * - `ready`: the list is the host's, and events keep it current.
  * - `failed`: wispd couldn't list its projects, for example because its store is unavailable.
  */
-export type WispProjectsState =
+type WispProjectsState =
 	| { readonly kind: 'idle' }
 	| { readonly kind: 'loading' }
 	| { readonly kind: 'ready' }
@@ -70,22 +70,13 @@ export class WispProjectsService extends Disposable implements IWispProjectsServ
 	private generation = 0;
 	/** Bumped on every host change only, so a list or resync doesn't drop the answer to a create. */
 	private hostGeneration = 0;
-	private receivedState = false;
 
 	constructor(
 		@IWispdService private readonly wispdService: IWispdService,
 		@ILogService private readonly logService: ILogService,
 	) {
 		super();
-		this._register(wispdService.onDidChangeState(state => {
-			this.receivedState = true;
-			this.onState(state);
-		}));
-		wispdService.getState().then(state => {
-			if (!this.receivedState && !this._store.isDisposed) {
-				this.onState(state);
-			}
-		}, () => { /* The shared process is gone; the window is closing. */ });
+		this._register(followWispdState(wispdService, state => this.onState(state)));
 	}
 
 	getProject(id: string): Project | undefined {
@@ -147,7 +138,7 @@ export class WispProjectsService extends Disposable implements IWispProjectsServ
 			return;
 		}
 		// wispd can answer a project/create sent after this list before the list itself, so the
-		// list is older than a project that create added meanwhile (#183). wispd never removes a
+		// list is older than a project that create added meanwhile. wispd never removes a
 		// project, so that one stays, after the listed ones; its project.created event, later
 		// than the list's seq, finds it already there.
 		const listedIds = new Set(listed.projects.map(project => project.id));
@@ -192,21 +183,24 @@ export class WispProjectsService extends Disposable implements IWispProjectsServ
 	}
 
 	private add(project: Project): void {
-		const projects = this._projects.get();
-		const index = projects.findIndex(existing => existing.id === project.id);
-		if (index === -1) {
-			this._projects.set([...projects, project], undefined);
-		} else if (JSON.stringify(projects[index]) !== JSON.stringify(project)) {
-			const next = [...projects];
-			next[index] = project;
-			this._projects.set(next, undefined);
-		}
+		this._projects.set(upsert(this._projects.get(), project), undefined);
 	}
 }
 
-function describeFailure(error: unknown): string {
-	if (error instanceof WispdError) {
-		return localize('wispProjects.listFailed', "wispd couldn't list its projects: {0}", error.message);
+/** Adds `item`, or replaces the one with its id when it differs; returns `list` itself when nothing changed. */
+export function upsert<T extends { readonly id: string }>(list: readonly T[], item: T): readonly T[] {
+	const index = list.findIndex(existing => existing.id === item.id);
+	if (index === -1) {
+		return [...list, item];
 	}
-	return toErrorMessage(error);
+	if (JSON.stringify(list[index]) === JSON.stringify(item)) {
+		return list;
+	}
+	const next = [...list];
+	next[index] = item;
+	return next;
+}
+
+function describeFailure(error: unknown): string {
+	return error instanceof WispdError ? localize('wispProjects.listFailed', "wispd couldn't list its projects: {0}", error.message) : toErrorMessage(error);
 }

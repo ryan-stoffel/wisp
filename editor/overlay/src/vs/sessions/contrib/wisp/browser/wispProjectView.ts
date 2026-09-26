@@ -31,7 +31,7 @@ export const WISP_PROJECT_CONTAINER_ID = 'wisp.project';
 export const WISP_PROJECT_VIEW_ID = 'wisp.project.view';
 
 /** One line of the project's checklist: done facts get a check, pending ones a hollow circle. */
-export interface IWispProjectFact {
+interface IWispProjectFact {
 	readonly id: 'repo' | 'plan' | 'context' | 'account';
 	readonly label: string;
 	readonly detail: string;
