@@ -117,7 +117,7 @@ fn events_append_and_read_back_by_head_tail_and_run() {
     let (_dir, store) = open();
     store.relax_sync().unwrap();
     assert_eq!(store.event_head().unwrap(), 0);
-    assert!(store.latest_events(10).unwrap().is_empty());
+    assert!(store.latest_events(10, usize::MAX).unwrap().is_empty());
 
     let run = Uuid::now_v7();
     let events: Vec<StoredEvent> = (1..=5)
@@ -131,8 +131,24 @@ fn events_append_and_read_back_by_head_tail_and_run() {
         "a seq is used once"
     );
     assert_eq!(store.event_head().unwrap(), 5);
-    assert_eq!(store.latest_events(2).unwrap(), events[3..]);
-    assert_eq!(store.latest_events(100).unwrap(), events);
+    assert_eq!(store.latest_events(2, usize::MAX).unwrap(), events[3..]);
+    assert_eq!(store.latest_events(100, usize::MAX).unwrap(), events);
+
+    // The byte bound applies the same way: always at least one, and it stops before a row that
+    // would put it over budget rather than after.
+    let one = events[4].payload.len();
+    assert_eq!(
+        store.latest_events(100, one).unwrap(),
+        events[4..],
+        "the byte bound alone keeps just the newest event"
+    );
+    assert_eq!(
+        store
+            .latest_events(100, one + events[3].payload.len())
+            .unwrap(),
+        events[3..],
+        "raising it by exactly the next event's size admits that one too"
+    );
 
     let page = |after, limit, bytes| {
         let (events, more) = store.run_events(run, after, limit, bytes).unwrap();
@@ -269,7 +285,7 @@ fn a_version_6_database_gains_runs_events_and_worktree_git_dirs() {
         conn.execute_batch(
             "DROP TABLE runs; DROP TABLE log_meta; DROP TABLE events;
              ALTER TABLE worktrees DROP COLUMN git_dir;
-             DELETE FROM schema_version WHERE version = 7;",
+             DELETE FROM schema_version WHERE version >= 7;",
         )
         .unwrap();
     }
