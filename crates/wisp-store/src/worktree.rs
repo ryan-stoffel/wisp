@@ -195,3 +195,33 @@ impl Store {
         Ok(changed > 0)
     }
 }
+
+/// Inserts a new worktree row for run `id`, failing with [`StoreError::IdConflict`] if one
+/// exists. For a caller that creates the row inside its own transaction.
+pub(crate) fn insert_worktree(
+    conn: &Connection,
+    id: Uuid,
+    fields: &WorktreeFields,
+) -> Result<Worktree, StoreError> {
+    let id_text = id.to_string();
+    let inserted = conn.execute(
+        "INSERT INTO worktrees (id, repo_path, path, branch, base, git_dir, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT (id) DO NOTHING",
+        params![
+            id_text,
+            fields.repo_path,
+            fields.path,
+            fields.branch,
+            fields.base,
+            fields.git_dir,
+            timestamp::now()
+        ],
+    )?;
+    if inserted == 0 {
+        return Err(StoreError::IdConflict { id });
+    }
+    fetch_raw(conn, &id_text)?
+        .ok_or(StoreError::NotFound { id })?
+        .into_worktree()
+}

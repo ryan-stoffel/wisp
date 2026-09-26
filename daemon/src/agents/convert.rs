@@ -5,8 +5,8 @@ use serde_json::{Value, json};
 use tracing::error;
 use wisp_protocol::jsonrpc::ErrorObject;
 use wisp_protocol::{
-    AgentFailureKind, AgentOutcome, AgentOutputItem, AgentPolicy, AgentRun, AgentStatus,
-    AgentTodoItem, AgentTodoStatus, AgentToolStatus, DiffSummary, ProjectId, RunId,
+    AgentFailureKind, AgentOutcome, AgentOutputItem, AgentPolicy, AgentRun, AgentRunState,
+    AgentStatus, AgentTodoItem, AgentTodoStatus, AgentToolStatus, DiffSummary, ProjectId, RunId,
 };
 
 use crate::backend::{Event, FailureKind, Outcome, TodoStatus, ToolStatus};
@@ -56,20 +56,6 @@ pub(crate) fn agent_run(
     let id = RunId::try_from(row.id).map_err(|_| corrupt("id"))?;
     let project = ProjectId::try_from(row.fields.project_id).map_err(|_| corrupt("project id"))?;
     let state = &row.state;
-    let diff = match (
-        &state.commit_sha,
-        state.files_changed,
-        state.insertions,
-        state.deletions,
-    ) {
-        (Some(commit), Some(files), Some(insertions), Some(deletions)) => Some(DiffSummary {
-            commit: commit.clone(),
-            files,
-            insertions,
-            deletions,
-        }),
-        _ => None,
-    };
     Ok(AgentRun {
         id,
         project,
@@ -86,10 +72,40 @@ pub(crate) fn agent_run(
         worktree_path: worktree.map(|worktree| worktree.path.clone()),
         session_id: state.session_id.clone(),
         error: state.error.clone(),
-        diff,
+        diff: diff(state),
         created_at: row.created_at,
         updated_at: row.updated_at,
     })
+}
+
+/// The part of a stored run that `agent.updated` reports.
+pub(super) fn run_state(row: &wisp_store::Run) -> AgentRunState {
+    let state = &row.state;
+    AgentRunState {
+        status: status(&state.status),
+        account_id: state.account_id.clone(),
+        session_id: state.session_id.clone(),
+        error: state.error.clone(),
+        diff: diff(state),
+        updated_at: row.updated_at,
+    }
+}
+
+fn diff(state: &wisp_store::RunState) -> Option<DiffSummary> {
+    match (
+        &state.commit_sha,
+        state.files_changed,
+        state.insertions,
+        state.deletions,
+    ) {
+        (Some(commit), Some(files), Some(insertions), Some(deletions)) => Some(DiffSummary {
+            commit: commit.clone(),
+            files,
+            insertions,
+            deletions,
+        }),
+        _ => None,
+    }
 }
 
 pub(super) fn failure_kind(kind: FailureKind) -> AgentFailureKind {

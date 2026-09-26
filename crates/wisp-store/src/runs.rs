@@ -1,10 +1,10 @@
 use jiff::Timestamp;
-use rusqlite::{Connection, OptionalExtension, Row, params};
+use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 use uuid::Uuid;
 
-use crate::Store;
 use crate::error::StoreError;
-use crate::timestamp;
+use crate::worktree::insert_worktree;
+use crate::{Store, Worktree, WorktreeFields, timestamp};
 
 /// What an `agent/start` asked for, plus the backend routing resolved it to (#156). None of it
 /// changes after the run is created.
@@ -142,35 +142,30 @@ impl Store {
         fields: &RunFields,
         state: &RunState,
     ) -> Result<Run, StoreError> {
-        let now = timestamp::now();
-        let inserted = self.conn.execute(
-            "INSERT INTO runs (id, project_id, prompt, requested_account, policy, backend,
-                               account_id, status, session_id, error, commit_sha,
-                               files_changed, insertions, deletions, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)
-             ON CONFLICT (id) DO NOTHING",
-            params![
-                id.to_string(),
-                fields.project_id.to_string(),
-                fields.prompt,
-                fields.requested_account,
-                fields.policy,
-                fields.backend,
-                state.account_id,
-                state.status,
-                state.session_id,
-                state.error,
-                state.commit_sha,
-                state.files_changed,
-                state.insertions,
-                state.deletions,
-                now,
-            ],
-        )?;
-        if inserted == 0 {
-            return Err(StoreError::IdConflict { id });
-        }
-        fetch(&self.conn, id)?.ok_or(StoreError::NotFound { id })
+        insert_run(&self.conn, id, fields, state)
+    }
+
+    /// Records a new run `id` and its worktree together, in one transaction, so neither exists
+    /// without the other.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::IdConflict`] if a run or a worktree with `id` exists, in which case
+    /// nothing is written, or a database error.
+    pub fn create_run_with_worktree(
+        &mut self,
+        id: Uuid,
+        fields: &RunFields,
+        state: &RunState,
+        worktree: &WorktreeFields,
+    ) -> Result<(Run, Worktree), StoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let worktree = insert_worktree(&tx, id, worktree)?;
+        let run = insert_run(&tx, id, fields, state)?;
+        tx.commit()?;
+        Ok((run, worktree))
     }
 
     /// Reads a run.
@@ -230,4 +225,41 @@ impl Store {
         }
         fetch(&self.conn, id)?.ok_or(StoreError::NotFound { id })
     }
+}
+
+fn insert_run(
+    conn: &Connection,
+    id: Uuid,
+    fields: &RunFields,
+    state: &RunState,
+) -> Result<Run, StoreError> {
+    let now = timestamp::now();
+    let inserted = conn.execute(
+        "INSERT INTO runs (id, project_id, prompt, requested_account, policy, backend,
+                           account_id, status, session_id, error, commit_sha,
+                           files_changed, insertions, deletions, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)
+         ON CONFLICT (id) DO NOTHING",
+        params![
+            id.to_string(),
+            fields.project_id.to_string(),
+            fields.prompt,
+            fields.requested_account,
+            fields.policy,
+            fields.backend,
+            state.account_id,
+            state.status,
+            state.session_id,
+            state.error,
+            state.commit_sha,
+            state.files_changed,
+            state.insertions,
+            state.deletions,
+            now,
+        ],
+    )?;
+    if inserted == 0 {
+        return Err(StoreError::IdConflict { id });
+    }
+    fetch(conn, id)?.ok_or(StoreError::NotFound { id })
 }

@@ -57,7 +57,7 @@ pub use account::{
 pub use agent::{
     AgentCancelParams, AgentEventsParams, AgentEventsResult, AgentFailureKind, AgentListParams,
     AgentListResult, AgentOutcome, AgentOutputItem, AgentPolicy, AgentRun, AgentRunResult,
-    AgentSendParams, AgentStartParams, AgentStatus, AgentTodoItem, AgentTodoStatus,
+    AgentRunState, AgentSendParams, AgentStartParams, AgentStatus, AgentTodoItem, AgentTodoStatus,
     AgentToolStatus, DiffSummary, LoggedEvent, RunId, TurnId,
 };
 pub use cli_account::{

@@ -30,8 +30,8 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 use wisp_protocol::jsonrpc::ErrorObject;
 use wisp_protocol::{
-    AccountChoice, AgentOutcome, AgentRun, AgentSendParams, AgentStartParams, ErrorKind, ProjectId,
-    Role, RunId, WispEvent,
+    AccountChoice, AgentOutcome, AgentRun, AgentRunState, AgentSendParams, AgentStartParams,
+    ErrorKind, ProjectId, Role, RunId, WispEvent,
 };
 use wisp_store::{RunFields, RunState, StoreError, WorktreeFields};
 
@@ -373,13 +373,8 @@ pub(crate) async fn start(
         git_dir: created.git_dir.to_string_lossy().into_owned(),
     };
     let recorded = store(&daemon, move |db| {
-        let worktree = db
-            .create_worktree(run_id.into(), &worktree_fields)
-            .map_err(|e| store_error(&e))?;
-        let row = db
-            .create_run(run_id.into(), &fields, &state)
-            .map_err(|e| store_error(&e))?;
-        Ok((row, worktree))
+        db.create_run_with_worktree(run_id.into(), &fields, &state, &worktree_fields)
+            .map_err(|e| store_error(&e))
     })
     .await;
     let (row, worktree) = match recorded {
@@ -417,9 +412,10 @@ pub(crate) async fn start(
             Some((worktree_path, git_common_dir)),
         )
         .await;
-    let run = actor.snapshot()?;
+    // The actor owns a live CLI from here on, so it is spawned whatever the snapshot says.
+    let run = actor.snapshot();
     agents.spawn(actor);
-    Ok(run)
+    run
 }
 
 /// The command channel of `id`'s actor, spawning one for a run created before this wispd
@@ -523,7 +519,14 @@ pub(crate) async fn recover(daemon: &Arc<Daemon>) {
                     Some(run.project),
                     WispEvent::AgentUpdated {
                         run_id: run.id,
-                        run,
+                        state: AgentRunState {
+                            status: run.status,
+                            account_id: run.account_id,
+                            session_id: run.session_id,
+                            error: run.error,
+                            diff: run.diff,
+                            updated_at: run.updated_at,
+                        },
                     },
                 );
             }

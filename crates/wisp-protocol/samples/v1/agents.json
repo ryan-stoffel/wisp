@@ -81,18 +81,10 @@
       "event": {
         "kind": "agent.updated",
         "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
-        "run": {
-          "id": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
-          "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
-          "prompt": "Add a README that explains how to build the app.",
-          "policy": "workspaceWrite",
+        "state": {
           "status": "running",
-          "backend": "claude",
           "accountId": "claude",
-          "createdAt": "2026-09-25T12:00:00Z",
-          "updatedAt": "2026-09-25T12:00:01Z",
-          "branch": "wisp/1a2b3c4d",
-          "worktreePath": "/Users/me/Library/Application Support/wisp/worktrees/app-5e6f7a8b/01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01"
+          "updatedAt": "2026-09-25T12:00:01Z"
         }
       }
     }
@@ -226,19 +218,11 @@
       "event": {
         "kind": "agent.updated",
         "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
-        "run": {
-          "id": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
-          "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
-          "prompt": "Add a README that explains how to build the app.",
-          "policy": "workspaceWrite",
+        "state": {
           "status": "running",
-          "backend": "claude",
           "accountId": "claude",
-          "createdAt": "2026-09-25T12:00:00Z",
-          "updatedAt": "2026-09-25T12:00:02Z",
           "sessionId": "session-7f3a",
-          "branch": "wisp/1a2b3c4d",
-          "worktreePath": "/Users/me/Library/Application Support/wisp/worktrees/app-5e6f7a8b/01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01"
+          "updatedAt": "2026-09-25T12:00:02Z"
         }
       }
     }
@@ -351,16 +335,9 @@
       "event": {
         "kind": "agent.updated",
         "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
-        "run": {
-          "id": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
-          "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
-          "prompt": "Add a README that explains how to build the app.",
-          "policy": "workspaceWrite",
+        "state": {
           "status": "completed",
-          "backend": "claude",
           "accountId": "claude",
-          "createdAt": "2026-09-25T12:00:00Z",
-          "updatedAt": "2026-09-25T12:03:10Z",
           "sessionId": "session-7f3a",
           "diff": {
             "commit": "9b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c",
@@ -368,8 +345,7 @@
             "insertions": 41,
             "deletions": 3
           },
-          "branch": "wisp/1a2b3c4d",
-          "worktreePath": "/Users/me/Library/Application Support/wisp/worktrees/app-5e6f7a8b/01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01"
+          "updatedAt": "2026-09-25T12:03:10Z"
         }
       }
     }
@@ -551,18 +527,10 @@
           "event": {
             "kind": "agent.updated",
             "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
-            "run": {
-              "id": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
-              "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
-              "prompt": "Add a README that explains how to build the app.",
-              "policy": "workspaceWrite",
+            "state": {
               "status": "running",
-              "backend": "claude",
               "accountId": "claude",
-              "createdAt": "2026-09-25T12:00:00Z",
-              "updatedAt": "2026-09-25T12:00:01Z",
-              "branch": "wisp/1a2b3c4d",
-              "worktreePath": "/Users/me/Library/Application Support/wisp/worktrees/app-5e6f7a8b/01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01"
+              "updatedAt": "2026-09-25T12:00:01Z"
             }
           }
         }
@@ -790,19 +758,11 @@
       "event": {
         "kind": "agent.updated",
         "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
-        "run": {
-          "id": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
-          "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
-          "prompt": "Add a README that explains how to build the app.",
-          "policy": "workspaceWrite",
+        "state": {
           "status": "interrupted",
-          "backend": "claude",
           "accountId": "claude",
-          "createdAt": "2026-09-25T12:00:00Z",
-          "updatedAt": "2026-09-25T12:00:00Z",
           "sessionId": "session-7f3a",
-          "branch": "wisp/1a2b3c4d",
-          "worktreePath": "/Users/me/Library/Application Support/wisp/worktrees/app-5e6f7a8b/01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01"
+          "updatedAt": "2026-09-25T12:00:00Z"
         }
       }
     }
@@ -818,19 +778,11 @@
       "event": {
         "kind": "agent.updated",
         "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
-        "run": {
-          "id": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
-          "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
-          "prompt": "Add a README that explains how to build the app.",
-          "policy": "workspaceWrite",
+        "state": {
           "status": "failed",
-          "backend": "claude",
           "accountId": "claude",
-          "createdAt": "2026-09-25T12:00:00Z",
-          "updatedAt": "2026-09-25T12:00:00Z",
           "error": "the CLI exited with code 1",
-          "branch": "wisp/1a2b3c4d",
-          "worktreePath": "/Users/me/Library/Application Support/wisp/worktrees/app-5e6f7a8b/01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01"
+          "updatedAt": "2026-09-25T12:00:00Z"
         }
       }
     }
@@ -846,18 +798,10 @@
       "event": {
         "kind": "agent.updated",
         "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
-        "run": {
-          "id": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
-          "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
-          "prompt": "Add a README that explains how to build the app.",
-          "policy": "workspaceWrite",
+        "state": {
           "status": "cancelled",
-          "backend": "claude",
           "accountId": "claude",
-          "createdAt": "2026-09-25T12:00:00Z",
-          "updatedAt": "2026-09-25T12:00:00Z",
-          "branch": "wisp/1a2b3c4d",
-          "worktreePath": "/Users/me/Library/Application Support/wisp/worktrees/app-5e6f7a8b/01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01"
+          "updatedAt": "2026-09-25T12:00:00Z"
         }
       }
     }

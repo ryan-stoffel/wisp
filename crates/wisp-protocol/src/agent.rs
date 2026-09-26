@@ -125,6 +125,31 @@ pub struct AgentRun {
     pub updated_at: Timestamp,
 }
 
+/// The part of a run that changes while it runs, as `agent.updated` reports it. The rest of
+/// [`AgentRun`], including its prompt, never changes after `agent.started`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRunState {
+    /// Where the run is.
+    pub status: AgentStatus,
+    /// The account it is charged to now.
+    pub account_id: String,
+    /// The vendor's session id, once the CLI reported it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub session_id: Option<String>,
+    /// Why it failed, for people. Absent once it runs again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub error: Option<String>,
+    /// Its latest commit, once wispd made one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub diff: Option<DiffSummary>,
+    /// When it changed, in RFC 3339 UTC.
+    pub updated_at: Timestamp,
+}
+
 /// Why a run failed, for code to match on.
 ///
 /// A newer wispd may send a kind this version does not know; treat it as unknown.

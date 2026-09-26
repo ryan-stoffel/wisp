@@ -262,7 +262,7 @@ async fn until(
 }
 
 fn updated_to(status: AgentStatus) -> impl FnMut(&EventsEventParams) -> bool {
-    move |event| matches!(&event.event, WispEvent::AgentUpdated { run, .. } if run.status == status)
+    move |event| matches!(&event.event, WispEvent::AgentUpdated { state, .. } if state.status == status)
 }
 
 fn has_item(item: AgentOutputItem) -> impl FnMut(&EventsEventParams) -> bool {
@@ -487,11 +487,17 @@ async fn a_worker_edits_its_worktree_writes_shared_context_commits_and_replays()
         })
         .expect("diffReady");
     assert_eq!((diff.files, diff.insertions, diff.deletions), (1, 2, 1));
-    let WispEvent::AgentUpdated { run: done, .. } = &events.last().unwrap().event else {
+    let WispEvent::AgentUpdated { state: done, .. } = &events.last().unwrap().event else {
         unreachable!()
     };
     assert_eq!(done.diff.as_ref(), Some(&diff));
     assert_eq!(done.session_id.as_deref(), Some("session-1"));
+    for event in &events {
+        if let WispEvent::AgentUpdated { .. } = event.event {
+            let json = serde_json::to_string(&event.event).unwrap();
+            assert!(!json.contains("Rewrite the README"), "no prompt: {json}");
+        }
+    }
 
     assert_committed(Path::new(&project.repo_path), &branch, &worktree, &diff);
     assert_eq!(
@@ -840,7 +846,7 @@ async fn a_worker_learns_its_limits_and_a_fallback_moves_its_usage_to_the_new_ac
             AgentFailureKind::RateLimited
         ))
     );
-    let WispEvent::AgentUpdated { run, .. } = &events.last().unwrap().event else {
+    let WispEvent::AgentUpdated { state: run, .. } = &events.last().unwrap().event else {
         unreachable!()
     };
     assert_eq!(run.account_id, "key-1");

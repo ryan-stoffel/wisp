@@ -4,8 +4,8 @@ use ts_rs::TS;
 
 use crate::id::uuid_v7_id;
 use crate::{
-    AgentFailureKind, AgentOutcome, AgentOutputItem, AgentRun, ContextFile, DiffSummary, Project,
-    ProjectId, RunId,
+    AgentFailureKind, AgentOutcome, AgentOutputItem, AgentRun, AgentRunState, ContextFile,
+    DiffSummary, Project, ProjectId, RunId,
 };
 
 uuid_v7_id! {
@@ -107,12 +107,14 @@ pub enum WispEvent {
         run: Option<AgentRun>,
     },
     /// Something about a run changed: its status, its session, its account, or its latest diff.
+    /// It carries only the part of the run that changes; apply it to the run from
+    /// `agent.started` or `agent/list`.
     #[serde(rename = "agent.updated")]
     AgentUpdated {
         /// The run's id.
         run_id: RunId,
-        /// The run as it stands now.
-        run: AgentRun,
+        /// The run's changing fields as they stand now.
+        state: AgentRunState,
     },
     /// Part of a run's transcript. wispd sends at most one per run every 50 ms, with everything
     /// that happened in between.

@@ -15,8 +15,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use wisp_protocol::jsonrpc::ErrorObject;
 use wisp_protocol::{
-    AccountChoice, AgentFailureKind, AgentOutcome, AgentOutputItem, AgentRun, DiffSummary,
-    ErrorKind, ProjectId, RunId, TurnId, WispEvent,
+    AccountChoice, AccountId, AgentFailureKind, AgentOutcome, AgentOutputItem, AgentRun,
+    DiffSummary, ErrorKind, ProjectId, RunId, TurnId, WispEvent,
 };
 use wisp_store::{Run as RunRow, SessionModelUsage, Worktree};
 
@@ -216,17 +216,36 @@ impl Actor {
                 ),
             ));
         };
-        let requested = match &self.row.fields.requested_account {
-            Some(json) => Some(
-                serde_json::from_str::<AccountChoice>(json).map_err(|error| {
-                    ErrorObject::internal_error(format!(
-                        "the run's stored account is invalid: {error}"
-                    ))
-                })?,
-            ),
-            None => None,
+        // The session belongs to the account the run was on when it ended, after any fallback,
+        // not to whatever the worker role's default is now.
+        let account = session_account(&self.row.state.account_id);
+        let not_resumable = |why: String| {
+            ErrorObject::wisp(
+                ErrorKind::RunNotResumable,
+                format!("run {} can't be resumed: {why}", self.id),
+            )
         };
-        let (prepared, _) = prepare(&self.daemon, self.project, requested).await?;
+        let (prepared, _) = match prepare(&self.daemon, self.project, Some(account)).await {
+            Ok(prepared) => prepared,
+            Err(error)
+                if error
+                    .wisp_data()
+                    .is_some_and(|data| data.kind == ErrorKind::AccountNotFound) =>
+            {
+                return Err(not_resumable(format!(
+                    "its session's account {} no longer exists",
+                    self.row.state.account_id
+                )));
+            }
+            Err(error) => return Err(error),
+        };
+        let backend = prepared.resolved.backend().name();
+        if backend != self.row.fields.backend {
+            return Err(not_resumable(format!(
+                "its session ran on {}, but its account now runs on {backend}",
+                self.row.fields.backend
+            )));
+        }
         let session = session_id.clone();
         let totals = store(&self.daemon, move |db| {
             db.session_usage_totals(&session)
@@ -237,17 +256,23 @@ impl Actor {
             session_id,
             usage_totals: totals.into_iter().map(model_usage).collect(),
         };
-        self.turns.insert(turn_id, text.clone());
-        self.last_message.clone_from(&text);
         info!(run = %self.id, "resuming an agent run's session");
-        self.launch(prepared, text, Some(turn_id), Some(resume), None)
-            .await;
+        let message = text.clone();
+        if self
+            .launch(prepared, text, Some(turn_id), Some(resume), None)
+            .await
+        {
+            // Only a turn that reached a CLI counts as sent: a retry after a failed start
+            // tries again.
+            self.turns.insert(turn_id, message.clone());
+            self.last_message = message;
+        }
         self.snapshot()
     }
 
     /// Starts the run's CLI with `prompt` and records the result: `running`, or `failed` with
     /// why. `paths` are the worktree's and the repository git folder's canonical paths, when the
-    /// caller already has them.
+    /// caller already has them. Returns whether the CLI started.
     pub async fn launch(
         &mut self,
         prepared: Prepared,
@@ -255,7 +280,7 @@ impl Actor {
         turn_id: Option<TurnId>,
         resume: Option<Resume>,
         paths: Option<(PathBuf, PathBuf)>,
-    ) {
+    ) -> bool {
         let paths = match paths {
             Some(paths) => Ok(paths),
             None => self.worker_paths().await,
@@ -264,7 +289,7 @@ impl Actor {
             Ok(paths) => paths,
             Err(error) => {
                 self.failed_to_start(error.message).await;
-                return;
+                return false;
             }
         };
         let Prepared {
@@ -302,8 +327,12 @@ impl Actor {
                 self.row.state.account_id = account_id;
                 self.row.state.error = None;
                 self.save().await;
+                true
             }
-            Err(error) => self.failed_to_start(error.to_string()).await,
+            Err(error) => {
+                self.failed_to_start(error.to_string()).await;
+                false
+            }
         }
     }
 
@@ -529,17 +558,21 @@ impl Actor {
                 warn!(run = %self.id, error = %error.message, "could not store an agent run's state");
             }
         }
-        match self.snapshot() {
-            Ok(run) => {
-                self.append(WispEvent::AgentUpdated {
-                    run_id: self.id,
-                    run,
-                });
-            }
-            Err(error) => {
-                warn!(run = %self.id, error = %error.message, "could not report an agent run");
-            }
-        }
+        self.append(WispEvent::AgentUpdated {
+            run_id: self.id,
+            state: convert::run_state(&self.row),
+        });
+    }
+}
+
+/// The account a run's session belongs to, as routing takes it: a key account's id, or else a
+/// backend's name for its subscription (0012).
+fn session_account(account_id: &str) -> AccountChoice {
+    match account_id.parse::<AccountId>() {
+        Ok(id) => AccountChoice::Key { id },
+        Err(_) => AccountChoice::Subscription {
+            backend: account_id.to_owned(),
+        },
     }
 }
 
@@ -578,9 +611,25 @@ fn commit_message(message: &str, run: RunId) -> String {
 
 #[cfg(test)]
 mod tests {
-    use wisp_protocol::RunId;
+    use wisp_protocol::{AccountChoice, AccountId, RunId};
 
-    use super::commit_message;
+    use super::{commit_message, session_account};
+
+    #[test]
+    fn a_session_resumes_on_the_account_it_ended_on() {
+        let key = AccountId::generate();
+        assert_eq!(
+            session_account(&key.to_string()),
+            AccountChoice::Key { id: key },
+            "after a fallback, the key account"
+        );
+        assert_eq!(
+            session_account("claude"),
+            AccountChoice::Subscription {
+                backend: "claude".to_owned()
+            }
+        );
+    }
 
     #[test]
     fn commit_messages_are_one_short_subject_and_the_run() {

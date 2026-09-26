@@ -1221,9 +1221,9 @@ export type WispEvent = { "kind": "project.created",
 	 */
 	runId: RunId,
 	/**
-	 * The run as it stands now.
+	 * The run's changing fields as they stand now.
 	 */
-	run: AgentRun, } | { "kind": "agent.output",
+	state: AgentRunState, } | { "kind": "agent.output",
 	/**
 	 * The run's id.
 	 */
@@ -1437,6 +1437,37 @@ export type AgentTodoStatus = "pending" | "inProgress" | "completed";
  * A newer wispd may send a status this version does not know; treat it as unknown.
  */
 export type AgentToolStatus = "ok" | "error" | "denied";
+
+/**
+ * The part of a run that changes while it runs, as `agent.updated` reports it. The rest of
+ * [`AgentRun`], including its prompt, never changes after `agent.started`.
+ */
+export type AgentRunState = {
+	/**
+	 * Where the run is.
+	 */
+	status: AgentStatus,
+	/**
+	 * The account it is charged to now.
+	 */
+	accountId: string,
+	/**
+	 * The vendor's session id, once the CLI reported it.
+	 */
+	sessionId?: string,
+	/**
+	 * Why it failed, for people. Absent once it runs again.
+	 */
+	error?: string,
+	/**
+	 * Its latest commit, once wispd made one.
+	 */
+	diff?: DiffSummary,
+	/**
+	 * When it changed, in RFC 3339 UTC.
+	 */
+	updatedAt: string,
+};
 
 /**
  * Params of `$/cancelRequest`.
