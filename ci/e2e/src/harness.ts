@@ -196,17 +196,32 @@ async function queryProjects(child: {
  * after a reconnect" (reconnect.ts): `WispProjectsService` keeps its old list across a reconnect
  * until the resubscribe's `resync` lands and it re-lists, so reading the UI right after the chip
  * reconnects can see the stale array. wispd's own store has no such lag.
- *
- * Local only (a bundled wispd, not the ssh-side one): CI showed a second connection reached over a
- * *separate* ssh session doesn't reliably see a project the first, still-open session's wispd just
- * created, for reasons this didn't track down; ssh.ts's own check relies on the sidebar row alone
- * instead (waitForSingleProjectRow), which has been reliable.
  */
 export function queryProjectsDirect(wispdExecutable: string, dataDir: string): Promise<readonly { id: string }[]> {
   const child = spawn(wispdExecutable, ['attach'], {
     env: { ...process.env, WISPD_DATA_DIR: dataDir },
     stdio: ['pipe', 'pipe', 'ignore'],
   });
+  return queryProjects(child);
+}
+
+/**
+ * The same, but over `ssh localhost` (ssh.ts), through the same wrapper `wisp.remoteWispdPath`
+ * points at (`launchConnectedForSsh`), so this reaches the identical `WISPD_DATA_DIR` the editor's
+ * own ssh session does.
+ *
+ * Not currently called: every CI run that used this (or an equivalent local `attach` against the
+ * ssh-side `WISPD_DATA_DIR`) found the project missing, even right after the sidebar showed it
+ * (#219). Whether that means the request lands on the wrong host after a switch, or something more
+ * mundane about a second connection here, is what #219 is for. ssh.ts's own check asserts only the
+ * sidebar row until #219 has an answer; re-enable this alongside it.
+ */
+export function queryProjectsOverSsh(wrapperPath: string, destination = 'localhost'): Promise<readonly { id: string }[]> {
+  const child = spawn(
+    'ssh',
+    ['-T', '-o', 'BatchMode=yes', '-o', 'ControlPath=none', '--', destination, `${wrapperPath} attach`],
+    { stdio: ['pipe', 'pipe', 'ignore'] },
+  );
   return queryProjects(child);
 }
 
