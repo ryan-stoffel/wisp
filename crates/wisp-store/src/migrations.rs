@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use rusqlite::{Connection, TransactionBehavior, params};
 
 use crate::error::StoreError;
@@ -172,10 +174,37 @@ const MIGRATIONS: &[Migration] = &[
         ALTER TABLE runs ADD COLUMN merge_into TEXT;
         ALTER TABLE runs ADD COLUMN merge_how TEXT;",
     },
+    // Normal threads (#110, decision 0017).
+    //
+    // - `repos`: lightweight repo entries that normal threads run in, one per canonical path.
+    //   `scratch` marks wispd's own entry for threads with no repo.
+    // - `threads`: one row per normal thread, keyed by its run's id. The run's `project_id`
+    //   holds the same `repo_id`, so its events and `agent/list` use the repo entry's id.
+    Migration {
+        version: 9,
+        sql: "CREATE TABLE repos (
+            id TEXT NOT NULL PRIMARY KEY,
+            name TEXT NOT NULL,
+            path TEXT NOT NULL UNIQUE,
+            scratch INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE threads (
+            id TEXT NOT NULL PRIMARY KEY,
+            repo_id TEXT NOT NULL,
+            archived INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX threads_repo ON threads (repo_id, created_at);",
+    },
 ];
 
-/// Bootstraps the `schema_version` table and applies any migration whose
-/// version is newer than what's recorded.
+/// Bootstraps the `schema_version` table and applies every migration whose
+/// version isn't recorded, in order. A missing version below the newest
+/// recorded one still applies, for a developer database that ran a branch's
+/// migration before an earlier-numbered one landed. Versions must be exactly
+/// `1..=N` (a test checks it), so two branches can't both ship the same one.
 pub(crate) fn run(conn: &mut Connection) -> Result<(), StoreError> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_version (
@@ -184,11 +213,11 @@ pub(crate) fn run(conn: &mut Connection) -> Result<(), StoreError> {
         );",
     )?;
 
-    let current: i64 = conn.query_row(
-        "SELECT COALESCE(MAX(version), 0) FROM schema_version",
-        [],
-        |row| row.get(0),
-    )?;
+    let applied: BTreeSet<i64> = conn
+        .prepare("SELECT version FROM schema_version")?
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    let current = applied.last().copied().unwrap_or(0);
 
     let supported = MIGRATIONS.last().map_or(0, |m| m.version);
     if current > supported {
@@ -198,10 +227,10 @@ pub(crate) fn run(conn: &mut Connection) -> Result<(), StoreError> {
         });
     }
 
-    for migration in MIGRATIONS.iter().filter(|m| m.version > current) {
+    for migration in MIGRATIONS.iter().filter(|m| !applied.contains(&m.version)) {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
-        // `current` was read before this transaction acquired the write
+        // `applied` was read before this transaction acquired the write
         // lock, so another connection may have applied this exact
         // migration in the meantime (two `Store::open` calls racing to
         // create the same brand-new database). Re-check under the lock,
@@ -225,4 +254,19 @@ pub(crate) fn run(conn: &mut Connection) -> Result<(), StoreError> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MIGRATIONS;
+
+    /// Versions are exactly `1..=N`: a duplicate would be skipped silently as already applied,
+    /// and a gap would let a later release apply a migration beneath a newer schema. Two branches
+    /// that each add one must take distinct numbers, and this fails whichever merges second.
+    #[test]
+    fn versions_are_exactly_one_to_n() {
+        let versions: Vec<i64> = MIGRATIONS.iter().map(|m| m.version).collect();
+        let expected: Vec<i64> = (1..=i64::try_from(MIGRATIONS.len()).unwrap()).collect();
+        assert_eq!(versions, expected);
+    }
 }
