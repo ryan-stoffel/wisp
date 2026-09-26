@@ -15,7 +15,9 @@ import type { Project } from '../../../../../platform/wisp/common/wispProtocol.j
 import { ChatModelSource, IChat, ISession, ISessionType, ISessionWorkspace, ISessionWorkspaceBrowseAction, SessionRemoteConnectionFailureReason, SessionRemoteConnectionStatus } from '../../../../services/sessions/common/session.js';
 import { ISendRequestOptions, ISessionChangeEvent, ISessionModelPickerOptions, ISessionModelsSnapshot, ISessionsProvider } from '../../../../services/sessions/common/sessionsProvider.js';
 import { IWispHostStatusService } from '../../../wisp/browser/wispHostStatusService.js';
-import { IWispProjectHost, WispProjectSession } from './wispProjectSession.js';
+import { IWispAgentLocation } from './wispAgentChat.js';
+import { IWispAgentsService } from './wispAgentsService.js';
+import { IWispProjectAgents, IWispProjectHost, WispProjectSession } from './wispProjectSession.js';
 import { IWispProjectsService } from './wispProjectsService.js';
 
 export const WISP_SESSIONS_PROVIDER_ID = 'wisp';
@@ -23,7 +25,8 @@ export const WISP_SESSIONS_PROVIDER_ID = 'wisp';
 /**
  * wisp's sessions provider (decision record 0011): one `wisp.project` session per project on the
  * connected host, kept current by `IWispProjectsService`, which follows the editor's wispd
- * connection. It holds no logic of its own beyond that mapping.
+ * connection, with the project's agent runs from `IWispAgentsService` as its subagent chats (0015).
+ * It holds no logic of its own beyond that mapping.
  *
  * Its capabilities are what wisp can do today. Projects are created from the sidebar, not from
  * upstream's new-session composer, so it offers no session types, workspaces, or quick chats, and
@@ -51,13 +54,19 @@ export class WispSessionsProvider extends Disposable implements ISessionsProvide
 	/** By project id, in the order `project/list` gave them. */
 	private readonly sessions = new Map<string, WispProjectSession>();
 	private readonly connectionStatus: IObservable<SessionRemoteConnectionStatus>;
+	private readonly location: IObservable<IWispAgentLocation>;
 
 	constructor(
 		@IWispProjectsService projectsService: IWispProjectsService,
 		@IWispHostStatusService private readonly hostStatusService: IWispHostStatusService,
+		@IWispAgentsService private readonly agentsService: IWispAgentsService,
 	) {
 		super();
 		this.connectionStatus = derived(this, reader => sessionConnectionStatus(hostStatusService.state.read(reader)));
+		this.location = derived(this, reader => ({
+			isLocal: isLocalHost(hostStatusService.configuredHost.read(reader)),
+			host: hostStatusService.status.read(reader).host,
+		}));
 		this._register(autorun(reader => this.sync(projectsService.projects.read(reader))));
 	}
 
@@ -79,7 +88,7 @@ export class WispSessionsProvider extends Disposable implements ISessionsProvide
 					changed.push(existing);
 				}
 			} else {
-				const session = new WispProjectSession(project, this.id, this.host());
+				const session = new WispProjectSession(project, this.id, this.host(), this.agents(project.id));
 				this.sessions.set(project.id, session);
 				added.push(session);
 			}
@@ -92,6 +101,20 @@ export class WispSessionsProvider extends Disposable implements ISessionsProvide
 	/** The host new sessions are on: the one configured when its projects arrived. */
 	private host(): IWispProjectHost {
 		return { isLocal: isLocalHost(this.hostStatusService.configuredHost.get()), connectionStatus: this.connectionStatus };
+	}
+
+	/** A project's runs, as its session lists them as subagent chats. */
+	private agents(projectId: string): IWispProjectAgents {
+		return {
+			runs: this.agentsService.runs(projectId),
+			step: runId => this.agentsService.step(runId),
+			location: this.location,
+		};
+	}
+
+	/** The session of a project on the connected host. */
+	getProjectSession(projectId: string): WispProjectSession | undefined {
+		return this.sessions.get(projectId);
 	}
 
 	getSessions(): ISession[] {
