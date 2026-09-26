@@ -49,6 +49,18 @@ pub enum ErrorKind {
     /// wispd could not create the run's worktree, for example because the project's repository
     /// has uncommitted changes. The message says what to do.
     WorktreeFailed,
+    /// The run was accepted (#157): its worktree and branch are gone, so there is nothing left to
+    /// review, and it takes no more messages.
+    RunAccepted,
+    /// `agent/accept` refused before changing anything: the run is still running or has no
+    /// commit, the repository's HEAD is detached or a merge or rebase is in progress there,
+    /// uncommitted changes in the user's checkout touch files the merge would change, or the run
+    /// has committed since the reviewed commit. The message says which.
+    MergeRefused,
+    /// `agent/accept` refused because the run's commit conflicts with the project's branch, which
+    /// has moved on since the run started. The message names the conflicting files. Nothing was
+    /// changed.
+    MergeConflict,
     /// A kind this version does not know yet.
     #[serde(other)]
     #[ts(skip)]
@@ -148,6 +160,9 @@ mod tests {
             (ErrorKind::RunNotResumable, "runNotResumable"),
             (ErrorKind::WorkerUnavailable, "workerUnavailable"),
             (ErrorKind::WorktreeFailed, "worktreeFailed"),
+            (ErrorKind::RunAccepted, "runAccepted"),
+            (ErrorKind::MergeRefused, "mergeRefused"),
+            (ErrorKind::MergeConflict, "mergeConflict"),
         ] {
             assert_eq!(serde_json::to_value(kind).unwrap(), json!(name));
             assert_eq!(

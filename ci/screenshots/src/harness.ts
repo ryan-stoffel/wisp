@@ -37,7 +37,7 @@ export type LaunchOptions = NonNullable<Parameters<typeof _electron.launch>[0]>;
 
 export interface Session extends ScenarioContext {
   close(): Promise<void>;
-  /** wispd's data folder for this run (daemon/src/paths.rs), so a caller can find its `wispd.lock` pid. */
+  /** wispd's data folder for this run (`WISPD_DATA_DIR`, daemon/src/paths.rs), so a caller can find its `wispd.lock` pid or drive it directly. */
   readonly wispdDataDir: string;
 }
 
@@ -136,8 +136,8 @@ export async function launch(options: LaunchOptions, scenario: Pick<Scenario, 'a
       app: started,
       window,
       dir: files,
-      close,
       wispdDataDir,
+      close,
       relaunch: async () => {
         await quit();
         const next = await start(extraArgs);

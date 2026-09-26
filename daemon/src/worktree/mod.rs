@@ -3,15 +3,17 @@
 //!
 //! [`WorktreeManager`] runs every git command through [`Launcher`], the same process supervisor
 //! backends use: an explicit, scrubbed environment and a timeout per call, so a hung or
-//! credential-prompting git can never block wispd. It never runs a git command whose `cwd` is the
-//! project repo's own working tree in a way that could change it: `worktree add`, `worktree
+//! credential-prompting git can never block wispd. Only one call changes the project repo's own
+//! working tree: [`WorktreeManager::accept`] (#157), when the user accepts a run, and it refuses
+//! rather than touch uncommitted changes (see `review`). Otherwise `worktree add`, `worktree
 //! remove`, and `worktree prune` only touch `.git/worktrees` metadata and refs, and `status`,
 //! `rev-parse`, and `diff` are read-only.
 //!
 //! The runner (`crate::agents`, #156) is its caller: `agent/start` creates a run's worktree here
 //! and stores its row, including [`CreatedWorktree::git_dir`], in `wisp-store`'s `worktrees`
 //! table, and a finished run is committed with [`WorktreeManager::commit_all`] and measured with
-//! [`WorktreeManager::diff_stat`]. #157 is what a client sees of the diff.
+//! [`WorktreeManager::diff_stat`]. A client reviews the commit through
+//! [`WorktreeManager::diff_commits`] and [`WorktreeManager::read_blob`] (#157).
 //!
 //! # Layout and naming
 //!
@@ -56,7 +58,9 @@
 //!
 //! [`WorktreeManager::create`] and [`WorktreeManager::remove`] are not scoped this way: their git
 //! commands run against `repo_root`, the user's own checkout, which a worker never writes, so
-//! there is no `.git` file or repo-local config of the worker's to distrust there.
+//! there is no `.git` file or repo-local config of the worker's to distrust there. They still run
+//! with hooks off, like every git call wispd makes (#157, #191): once a run is accepted, the
+//! checkout's hooks can include files the worker wrote.
 //!
 //! [`WorktreeManager::gc_orphans`] takes a third path (#171): an orphan folder has no
 //! [`CreatedWorktree::git_dir`] pinned for it the way a known worktree does, so it never
@@ -80,8 +84,13 @@
 //! repository's git folder — so this needs an unusual repository configuration to matter; #175
 //! tracks closing it.
 
+mod review;
 #[cfg(test)]
 mod tests;
+
+pub use review::{
+    AcceptError, Accepted, Blob, CommitDiff, FileDiff, MAX_BLOB_BYTES, MergeHow, validate_repo_path,
+};
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -375,6 +384,7 @@ pub struct WorktreeManager {
     git_safe_home: PathBuf,
     timeout: Duration,
     max_diff_bytes: usize,
+    merge_timeout: Duration,
     repo_locks: Arc<StdMutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>>,
 }
 
@@ -389,6 +399,7 @@ impl WorktreeManager {
             git_safe_home: data_dir_root.join(GIT_SAFE_HOME_DIR),
             timeout: DEFAULT_TIMEOUT,
             max_diff_bytes: DEFAULT_MAX_DIFF_BYTES,
+            merge_timeout: review::MERGE_TIMEOUT,
             repo_locks: Arc::new(StdMutex::new(HashMap::new())),
         }
     }
@@ -397,6 +408,13 @@ impl WorktreeManager {
     #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    /// Overrides how long Accept's checkout may run, 300 s by default.
+    #[must_use]
+    pub fn with_merge_timeout(mut self, merge_timeout: Duration) -> Self {
+        self.merge_timeout = merge_timeout;
         self
     }
 
@@ -888,9 +906,29 @@ impl WorktreeManager {
     /// Runs `git args` in `cwd` and returns its output, whatever its exit status. Only
     /// [`WorktreeError::Spawn`] and [`WorktreeError::Timeout`] are possible failures here; callers
     /// that want a non-zero exit turned into an error use [`WorktreeManager::run_git_ok`].
+    ///
+    /// Every call runs with `core.hooksPath=/dev/null` (#157, #191): no git command wispd runs
+    /// in the user's checkout ever runs a repository hook. Once a run is accepted, the
+    /// repository's hooks can include files the agent wrote (a tracked `core.hooksPath` such as
+    /// husky's `.husky/`), and `worktree add` (`post-checkout`) or `branch -D`
+    /// (`reference-transaction`) would otherwise run them, headless and unsandboxed, in wispd.
     async fn run_git(&self, cwd: &Path, args: &[&str]) -> Result<GitOutput, WorktreeError> {
+        self.run_git_for(cwd, args, self.timeout).await
+    }
+
+    /// [`WorktreeManager::run_git`] with its own timeout, for the one call that may take long.
+    async fn run_git_for(
+        &self,
+        cwd: &Path,
+        args: &[&str],
+        limit: Duration,
+    ) -> Result<GitOutput, WorktreeError> {
         let mut spec = ProcessSpec::new("git", cwd);
-        spec.args = args.iter().map(|arg| OsString::from(*arg)).collect();
+        spec.args = ["-c", "core.hooksPath=/dev/null"]
+            .iter()
+            .chain(args)
+            .map(|arg| OsString::from(*arg))
+            .collect();
         spec.scrub = GIT_SCRUBBED
             .iter()
             .map(|name| OsString::from(*name))
@@ -899,7 +937,7 @@ impl WorktreeManager {
         spec.stdin = StdinMode::Null;
 
         let process = self.launcher.spawn(&spec)?;
-        match timeout(self.timeout, collect(process)).await {
+        match timeout(limit, collect(process)).await {
             Ok((stdout, exit)) => Ok(GitOutput {
                 stdout: String::from_utf8_lossy(&stdout).into_owned(),
                 exit,
@@ -907,7 +945,7 @@ impl WorktreeManager {
             Err(_) => Err(WorktreeError::Timeout {
                 cwd: cwd.to_owned(),
                 args: owned_args(args),
-                timeout: self.timeout,
+                timeout: limit,
             }),
         }
     }
@@ -938,6 +976,29 @@ impl WorktreeManager {
         git_dir: &Path,
         args: &[&str],
     ) -> Result<GitOutput, WorktreeError> {
+        let spec = self.worktree_spec(work_tree, git_dir, args).await?;
+        let process = self.launcher.spawn(&spec)?;
+        match timeout(self.timeout, collect(process)).await {
+            Ok((stdout, exit)) => Ok(GitOutput {
+                stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                exit,
+            }),
+            Err(_) => Err(WorktreeError::Timeout {
+                cwd: work_tree.to_owned(),
+                args: owned_args(args),
+                timeout: self.timeout,
+            }),
+        }
+    }
+
+    /// The process spec for `git args` scoped to a worker's worktree: see
+    /// [`Self::run_worktree_git`].
+    async fn worktree_spec(
+        &self,
+        work_tree: &Path,
+        git_dir: &Path,
+        args: &[&str],
+    ) -> Result<ProcessSpec, WorktreeError> {
         tokio::fs::create_dir_all(&self.git_safe_home)
             .await
             .map_err(|source| WorktreeError::Io {
@@ -959,19 +1020,7 @@ impl WorktreeManager {
         spec.inject
             .set("HOME", self.git_safe_home.to_string_lossy().into_owned());
         spec.stdin = StdinMode::Null;
-
-        let process = self.launcher.spawn(&spec)?;
-        match timeout(self.timeout, collect(process)).await {
-            Ok((stdout, exit)) => Ok(GitOutput {
-                stdout: String::from_utf8_lossy(&stdout).into_owned(),
-                exit,
-            }),
-            Err(_) => Err(WorktreeError::Timeout {
-                cwd: work_tree.to_owned(),
-                args: owned_args(args),
-                timeout: self.timeout,
-            }),
-        }
+        Ok(spec)
     }
 
     /// Like [`WorktreeManager::run_worktree_git`], but a non-zero exit becomes
@@ -1102,30 +1151,35 @@ fn parse_name_status(output: &str) -> Vec<ChangedFile> {
             let code = fields.next().unwrap_or_default();
             let first = fields.next().unwrap_or_default().to_owned();
             let second = fields.next().map(str::to_owned);
-            let status = match code.as_bytes().first() {
-                Some(b'A') => ChangeStatus::Added,
-                Some(b'M') => ChangeStatus::Modified,
-                Some(b'D') => ChangeStatus::Deleted,
-                Some(b'R') => ChangeStatus::Renamed,
-                Some(b'C') => ChangeStatus::Copied,
-                Some(b'T') => ChangeStatus::TypeChanged,
-                Some(b'U') => ChangeStatus::Unmerged,
-                _ => ChangeStatus::Unknown(code.to_owned()),
-            };
-            match (&status, second) {
-                (ChangeStatus::Renamed | ChangeStatus::Copied, Some(new_path)) => ChangedFile {
-                    status,
-                    path: new_path,
-                    old_path: Some(first),
-                },
-                _ => ChangedFile {
-                    status,
-                    path: first,
-                    old_path: None,
-                },
-            }
+            changed_file(code, first, second)
         })
         .collect()
+}
+
+/// One `--name-status` entry: its status letters and one path, or two for a rename or copy.
+fn changed_file(code: &str, first: String, second: Option<String>) -> ChangedFile {
+    let status = match code.as_bytes().first() {
+        Some(b'A') => ChangeStatus::Added,
+        Some(b'M') => ChangeStatus::Modified,
+        Some(b'D') => ChangeStatus::Deleted,
+        Some(b'R') => ChangeStatus::Renamed,
+        Some(b'C') => ChangeStatus::Copied,
+        Some(b'T') => ChangeStatus::TypeChanged,
+        Some(b'U') => ChangeStatus::Unmerged,
+        _ => ChangeStatus::Unknown(code.to_owned()),
+    };
+    match (&status, second) {
+        (ChangeStatus::Renamed | ChangeStatus::Copied, Some(new_path)) => ChangedFile {
+            status,
+            path: new_path,
+            old_path: Some(first),
+        },
+        _ => ChangedFile {
+            status,
+            path: first,
+            old_path: None,
+        },
+    }
 }
 
 /// Sums `git diff --numstat`'s output: `added\tdeleted\tpath` per file, with `-` for both counts
