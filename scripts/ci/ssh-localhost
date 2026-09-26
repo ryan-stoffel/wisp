@@ -16,6 +16,10 @@
 set -eu
 
 status_file=${1:?"usage: $0 <status-file>"}
+# Set once the user-level sshd actually starts, however this script ends up exiting, so the
+# caller (scripts/ci/e2e) can always stop it: an ephemeral runner would tear it down anyway, but
+# leaving it running past this script's own use of it is untidy on general principle.
+sshd_pid=""
 
 write_status() {
   ready=$1
@@ -24,6 +28,9 @@ write_status() {
   if [ -n "$reason" ]; then
     # Single line: the reason ends up in a check's failure/skip message.
     printf 'WISP_E2E_SSH_REASON=%s\n' "$(printf '%s' "$reason" | tr '\n' ' ')" >> "$status_file"
+  fi
+  if [ -n "$sshd_pid" ]; then
+    printf 'WISP_E2E_SSHD_PID=%s\n' "$sshd_pid" >> "$status_file"
   fi
 }
 
@@ -77,6 +84,9 @@ for _ in $(seq 1 20); do
   fi
   sleep 0.25
 done
+if [ -f "$state_dir/sshd.pid" ]; then
+  sshd_pid=$(cat "$state_dir/sshd.pid")
+fi
 
 for _ in $(seq 1 20); do
   ssh-keyscan -t ed25519 -p "$port" localhost >> "$known_hosts" 2>/dev/null || true
