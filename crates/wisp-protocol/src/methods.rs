@@ -26,6 +26,7 @@ use ts_rs::TS;
 
 use crate::jsonrpc::CancelRequestParams;
 use crate::{
+    AccountsDefaultsGetParams, AccountsDefaultsGetResult, AccountsDefaultsSetParams,
     AccountsKeysAddParams, AccountsKeysAddResult, AccountsKeysListParams, AccountsKeysListResult,
     AccountsKeysRemoveParams, AccountsKeysRemoveResult, AccountsListParams, AccountsListResult,
     AccountsRefreshParams, AccountsRefreshResult, ContextListParams, ContextListResult,
@@ -142,6 +143,12 @@ method_table! {
         /// `usage/get`: per-account tokens and cost for today and this week (local time on this
         /// host), and the latest limit windows.
         UsageGet = "usage/get": UsageGetParams => UsageGetResult;
+        /// `accounts/defaults/get`: this host's default account for the coordinator role and for
+        /// a worker role, absent where none is set (#119).
+        AccountsDefaultsGet = "accounts/defaults/get": AccountsDefaultsGetParams => AccountsDefaultsGetResult;
+        /// `accounts/defaults/set`: sets or clears one role's default account, and returns both
+        /// roles' defaults as they stand after the change.
+        AccountsDefaultsSet = "accounts/defaults/set": AccountsDefaultsSetParams => AccountsDefaultsGetResult;
         /// `context/list`: a project's shared context files (0005), each with its size, when it
         /// was last modified, and who last wrote it, if known.
         ContextList = "context/list": ContextListParams => ContextListResult;
@@ -202,6 +209,8 @@ mod tests {
                 "accounts/list",
                 "accounts/refresh",
                 "usage/get",
+                "accounts/defaults/get",
+                "accounts/defaults/set",
                 "context/list",
                 "context/read",
                 "context/write",
