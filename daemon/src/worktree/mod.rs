@@ -80,6 +80,7 @@
 //! repository's git folder — so this needs an unusual repository configuration to matter; #175
 //! tracks closing it.
 
+mod scratch;
 #[cfg(test)]
 mod tests;
 

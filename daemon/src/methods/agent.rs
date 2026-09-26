@@ -23,7 +23,7 @@ const MAX_EVENTS_LIMIT: u32 = 1000;
 /// leaves room for the envelope. A page holds at least one event whatever its size.
 pub(crate) const MAX_EVENTS_PAGE_BYTES: usize = 4 * 1024 * 1024;
 
-fn check_text(name: &str, text: &str) -> Result<(), ErrorObject> {
+pub(super) fn check_text(name: &str, text: &str) -> Result<(), ErrorObject> {
     if text.trim().is_empty() {
         return Err(ErrorObject::invalid_params(format!(
             "{name} must not be empty"

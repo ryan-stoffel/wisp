@@ -402,7 +402,12 @@ fn assert_worker_invocation(fake: &Fake) {
                 },
                 "filesystem": {
                     "denyRead": deny_read,
-                    "allowRead": [cwd, "/Users/u/Library/Application Support/wisp/context/p"],
+                    "allowRead": [
+                        cwd,
+                        "/Users/u/Library/Application Support/wisp/context/p",
+                        format!("{cwd}/.git"),
+                        "/Users/u/src/app/.git",
+                    ],
                     "denyWrite": [format!("{cwd}/.git"), "/Users/u/src/app/.git"],
                 },
             },

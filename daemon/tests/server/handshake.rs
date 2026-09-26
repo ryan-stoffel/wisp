@@ -29,6 +29,7 @@ async fn the_handshake_agrees_on_a_version_and_reports_the_host() {
             ("accounts".to_owned(), serde_json::Map::new()),
             ("agentClis".to_owned(), serde_json::Map::new()),
             ("agents".to_owned(), serde_json::Map::new()),
+            ("threads".to_owned(), serde_json::Map::new()),
         ]))
     );
     assert_eq!(init.max_frame_bytes, MAX_FRAME_BYTES as u64);

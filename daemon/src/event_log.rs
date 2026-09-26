@@ -94,6 +94,10 @@ pub(crate) fn run_of(event: &WispEvent) -> Option<RunId> {
         | WispEvent::AgentDiffReady { run_id, .. } => Some(*run_id),
         WispEvent::ProjectCreated { .. }
         | WispEvent::ContextChanged { .. }
+        | WispEvent::RepoAdded { .. }
+        | WispEvent::ThreadStarted { .. }
+        | WispEvent::ThreadUpdated { .. }
+        | WispEvent::ThreadDeleted { .. }
         | WispEvent::Unknown => None,
     }
 }
