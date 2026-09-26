@@ -10,13 +10,13 @@ Each script finds the repo root on its own, so it runs from any directory.
 | `../editor/test-wisp` | Runs the tests of wisp's editor code in `editor/overlay/src/vs/platform/wisp` with upstream's Node test runner, after `prepare`, `npm ci --ignore-scripts`, and upstream's `transpile-client`. They include an integration test against the `wispd` that `check-rust` built, in temporary data folders. It needs macOS, because `wispd` does, so it runs in the `rust` job, not the `fork` job. | `ci.yml` (#63), `rust` job |
 | `check-fork` | Runs `scripts/editor/test`, then checks that the Code - OSS pin and patches apply (`scripts/editor/prepare`, then `scripts/editor/export-patches --check`) and that the root `.nvmrc` equals upstream's. It fails if an id in wisp's exclusion list (`editor/overlay/src/vs/workbench/common/wisp/exclusions.ts`) no longer appears in upstream's source. Then it type-checks `src/` in the patched tree with upstream's `npm run typecheck-client`, after `npm ci --ignore-scripts` when `node_modules` is missing and upstream's `node build/npm/electronTypes.ts`, which downloads the checksum-verified `electron.d.ts` | `ci.yml` (#8), `fork` job |
 | `../editor/test-wisp-browser` | Runs the browser-layer tests of wisp's editor code, `editor/overlay/src/vs/sessions/contrib/**/wisp/**/test/**` (for example `sessions/contrib/wisp/test/browser`), with upstream's Playwright-backed browser test runner, `test/unit/browser/index.js --browser chromium`, headless. These touch `vs/base/browser` (the real DOM), so `test-wisp`'s Node runner, which excludes anything under a `browser` directory, cannot run them. After `prepare`, `npm ci --ignore-scripts`, and `transpile-client`, it runs `npx playwright install` for Chromium, then the tests, and fails if the run reports zero passing tests, so a glob typo cannot pass silently. Needs no `wispd` or packaged app, so it runs in the `fork` job, on the tree `check-fork` already prepared, rather than in the `rust` job (#180). | `ci.yml` (#180), `fork` job |
-| `build-app` | Builds the packaged `Wisp.app` with `scripts/editor/build-app`, for this Mac's architecture or the one named (`arm64` or `x64`), and prints its path. It is the app `app-launch` launches by default. | `screenshots.yml` (#4), `capture` job, when the app cache misses |
+| `build-app` | Builds the packaged `Wisp.app` with `scripts/editor/build-app`, for this Mac's architecture or the one named (`arm64` or `x64`), and prints its path. It is the app `app-launch` launches by default. | `screenshots.yml` (#4), `capture` job, when the app cache misses for the head or, for `before-after`, the base commit |
 | `check-app` | Checks a packaged `Wisp.app`, or a zip of one, for an architecture: its signature, its main binary's architecture, its `product.json` against `editor/product.json`, its bundle id, icon, `wisp` launcher and `wisp --version`, and `wispd` and `wispd --version` (#62) | `ci.yml` (#9), `app` and `app-x64` jobs |
 | `app-cache-key` | Prints the cache key of the packaged app for an architecture (see [The app job](#the-app-job)) | `ci.yml` (#9), `app` and `app-x64` jobs (#177); `screenshots.yml`, `capture` job |
 | `app-launch` | Prints Playwright `_electron.launch` options for a packaged `Wisp.app` as one line of JSON (see [app-launch](#app-launch)) | `screenshots` |
-| `screenshots` | Captures every scenario in `ci/screenshots/` from the app into a directory (see [Screenshots](#screenshots)) | `screenshots.yml` (#4), `capture` job |
-| `publish-screenshots` | Checks a capture directory, commits its PNGs to the `ci-screenshots` branch, and creates or updates the PR comment. It needs Actions' environment; locally, `--dry-run` prints the comment | `screenshots.yml` (#4), `publish` job |
-| `check-screenshots` | `npm ci`, then lint, type-check, and test `ci/screenshots/`, including the tests that guard the `publish` job | `ci.yml` (#39), `screenshots` job |
+| `screenshots` | Captures the scenes named by `--request` from the app into a directory: screenshots, before and after pairs, and videos (see [Screenshots](#screenshots)) | `screenshots.yml` (#4, #244), `capture` job |
+| `publish-screenshots` | Checks a capture directory, commits its files to the `ci-screenshots` branch, and writes the Screenshots section of the PR body. It needs Actions' environment; locally, `--dry-run` prints the section | `screenshots.yml` (#4, #244), `publish` job |
+| `check-screenshots` | `npm ci`, then lint, type-check, and test `ci/screenshots/`, including the tests that guard the `publish` job, parse request blocks, and replace the body section | `ci.yml` (#39), `screenshots` job |
 | `smoke` | Runs the Playwright smoke checks in `ci/smoke/` against the app (see [Smoke tests](#smoke-tests)) | `ci.yml` (#13), `smoke` job |
 | `check-smoke` | `npm ci`, then lint, type-check, and test `ci/smoke/` | `ci.yml` (#13), `smoke` job |
 | `package-app` | Builds `Wisp.app` from source with a version stamped in, zips it, checks the zip with `check-app`, and prints the bundle path (see [package-app](#package-app)) | `release.yml` (#5), `build` job |
@@ -71,16 +71,38 @@ const window = await electronApp.firstWindow();
 
 ## Screenshots
 
-`screenshots.yml` runs on every PR from a branch in this repo. It has two jobs, so the PR's build and its dependencies never run where the write token is; the publish script and this workflow itself still come from the PR head until #48:
+`screenshots.yml` captures visuals only for a PR that asks for them ([0018](../../docs/decisions/0018-pr-visuals-on-request.md)): one with the `screenshots` label and a `wisp-media` block in its body naming the scenes. Visuals belong only where they show what changed: `after` captures of a new view, a `before-after` pair for a user-visible bug fix, a `video` of a flow. Backend, CI, docs, refactor, and test-only PRs get none. The PR template's Visuals section tells authors how to ask.
 
-- `capture` (macOS, `contents: read`) gets the arm64 `Wisp.app` (see [Getting the app](#getting-the-app)), runs `screenshots <dir>`, and uploads the PNGs, `manifest.json`, and both steps' logs as the `screenshots` artifact. `screenshots` installs `ci/screenshots/`, whose only runtime dependency is `playwright-core`, and runs each scenario in `ci/screenshots/src/scenarios.ts` against a fresh launch of the app from `app-launch`'s output. It exits 1 if any scenario failed. For PRs from forks, whose token is read-only, the job logs a notice and skips the rest, and `publish` does not run.
-- `publish` (Linux, `contents: write` and `pull-requests: write`) runs even when `capture` failed. It checks out only `scripts/ci/` and `ci/screenshots/src/`, installs nothing, downloads the artifact, and runs `publish-screenshots`. That commits the PNGs to the orphan branch `ci-screenshots` under `pr-<number>/<short-sha>/`, then creates or updates the one comment by `github-actions[bot]` that contains `<!-- wisp-screenshots -->`. The images are `raw.githubusercontent.com` URLs pinned to the `ci-screenshots` commit, so no cache shows an old image. Nothing is deleted from `ci-screenshots` yet (#40).
+```
+<!-- wisp-media
+after: agents-window-project
+before-after: agents-window-disconnected
+video: agents-window-subagent
+-->
+```
+
+- **Syntax.** One `mode: scene, scene` line per mode. Scenes are the `name`s in `ci/screenshots/src/scenarios.ts`, separated by commas or spaces. Blank lines and lines starting with `#` are skipped, and `;` also ends a line. Each scene appears at most once (`before-after` already includes the after), and a block names at most 10. The first block outside the section the workflow writes counts. `ci/screenshots/src/request.ts` parses it.
+- **Triggers.** The label being added, and `synchronize`, `reopened`, and `edited` while it is on. The `request` job's `if` stops an unlabeled PR, or a `labeled` event for another label, before a runner starts; an `edited` event that changed neither the block nor the base branch is skipped too, so editing the description's prose does not capture again. `workflow_dispatch` with a `pr` input runs the workflow by hand, still only for an open PR with the label. Removing the label starts nothing, so the section stays as it was.
+- **Required checks.** `develop` requires only `ci`, so the skipped jobs of an unlabeled PR block nothing.
+
+It has three jobs, so the PR's build and its dependencies never run where the write token is; the publish script and this workflow itself still come from the PR head until #48:
+
+- `request` (Linux, `contents: read` and `pull-requests: read`) reads the PR from the API, so labels and body are current even for `workflow_dispatch`. It checks out the head's `ci/screenshots/`, installs its one runtime dependency, and runs `src/resolve.ts`: it applies the rules above, checks every scene against `scenarios.ts`, and, for `before-after`, asks the compare API for the merge base of the base branch and the head. That commit is the "before", so the pair differs by this PR only. A labeled PR with no block, a malformed line, a duplicate, or an unknown scene fails this job with an `::error::` that says what to fix, and `publish` writes the same message into the section. A PR from a fork, whose token is read-only, gets a notice and nothing else.
+- `capture` (macOS, `contents: read`) gets the head's arm64 `Wisp.app`, and for `before-after` the base commit's too (see [Getting the app](#getting-the-app)). For a `video` it installs Homebrew's `ffmpeg`, since the runner image has none and Playwright's own build only writes WebM. Then it runs `screenshots <dir> --request <scenes>` and uploads the files, `manifest.json`, and the steps' logs as the `screenshots` artifact. `screenshots` installs `ci/screenshots/`, whose only runtime dependency is `playwright-core`, and runs each requested scene against a fresh launch of the app from `app-launch`'s output:
+  - `after`: one screenshot from the head app, `<name>.png`.
+  - `before-after`: the scene against the base app (`<name>.base.png`), then the head app (`<name>.png`). A scene that fails on the base app does not fail the job; its screenshot at that moment often shows the bug, and the section shows it as the before.
+  - `video`: the scene with Playwright's `recordVideo` at the window's size, held on its last state for 2 seconds. It keeps the window's video as `<name>.webm` and makes `<name>.gif` with an ffmpeg palette pass: 10 fps at 800 px wide, then 8 fps at 640 px, then 5 fps at 480 px, until the GIF is at most 10 MB. A scene that relaunches the app records its last launch. `screenshots` downloads Playwright's ffmpeg, which `recordVideo` encodes with.
+
+  It exits 1 if any head shot failed. Concurrency is per job, so a new capture for the same PR cancels an older one, but a run the `request` job skipped cancels nothing.
+- `publish` (Linux, `contents: write` and `pull-requests: write`) runs after `capture`, even when it failed, and after a `request` job that found a problem to report. It checks out only `scripts/ci/` and `ci/screenshots/src/`, installs nothing, downloads the artifact, and runs `publish-screenshots`. That commits the files to the orphan branch `ci-screenshots` under `pr-<number>/<short-sha>/`, then writes the section. It reads the PR body again just before its `PATCH`, replaces only the text from `<!-- wisp-media:start -->` through `<!-- wisp-media:end -->` (or appends the section, the first time), and never posts a comment. If the head has moved on, it leaves the section to that commit's run. Images are `raw.githubusercontent.com` URLs pinned to the `ci-screenshots` commit, so no cache shows an old image. A `before-after` is a two-column table; a `video` is its GIF, which GitHub renders from a raw URL, linking the WebM's page on `ci-screenshots`. Nothing is deleted from `ci-screenshots` yet (#40).
 
 Rules that keep the token away from the PR's build:
 
-- `publish.ts` and the files it imports (`artifact.ts`, `branch.ts`, `comment.ts`, `manifest.ts`) use only Node built-ins. A test enforces this, and the `publish` job has no `node_modules`, so a package import fails instead of running.
-- `publish` treats the artifact as untrusted. `manifest.json` must parse into the known shape. Each file must be `<name>.png` or `<name>.failed.png` for a listed scenario, a regular file, at most 10 MB, and start with the PNG signature; the files together must total at most 25 MB. Titles and reasons must be plain text. Only the last 64 KB of `build.log` and `capture.log` are read, and only when the job outputs say that step failed. If anything fails these checks, nothing is pushed, the comment says the results were rejected, and the `publish` job fails. If `capture` succeeded but its artifact never reaches `publish` (a lost upload or a failed download), `publish` reports the results as missing and fails instead of passing silently.
-- No repository secret goes into the `capture` job. Its logs are written with `tee`, so Actions' masking does not apply, and their tails are posted in the comment. The job's one credential is its own `contents: read` `GITHUB_TOKEN`, which only the build step gets, and only on a cache miss. It reads nothing that is not public, and it expires when the job ends, before `publish` reads any log.
+- `publish.ts` and the files it imports (`artifact.ts`, `branch.ts`, `section.ts`, `manifest.ts`) use only Node built-ins, as does `request.ts`. A test enforces this, and the `publish` job has no `node_modules`, so a package import fails instead of running.
+- `publish` treats the artifact as untrusted. `manifest.json` must parse into the known shape, including each scene's mode. Each file must be one the manifest allows for its scene and mode (`<name>.png`, `<name>.failed.png`, `<name>.base.png`, `<name>.base.failed.png`, `<name>.gif`, `<name>.webm`), a regular file, and start with its kind's signature (PNG, GIF, or WebM's EBML header). A PNG or GIF may be at most 10 MB and a WebM 25 MB, and the files together at most 60 MB. Titles and reasons must be plain text. Only the last 64 KB of `build.log`, `base-build.log`, and `capture.log` are read, and only when the job outputs say that step failed. If anything fails these checks, nothing is pushed, the section says the results were rejected, and the `publish` job fails. If `capture` succeeded but its artifact never reaches `publish` (a lost upload or a failed download), `publish` reports the results as missing and fails instead of passing silently.
+- `publish` treats the `request` job's outputs as untrusted too, since that job ran the PR's code. The shas must be 40 hex characters and the PR a number, and a problem that is not plain text, as `textProblem` defines it, is replaced with a pointer to the job's log. The request parser builds its messages from fixed text and names that passed the name rule, never from the body's raw text.
+- Nothing untrusted can write `<!--` into the section: `renderSection` escapes it, so an error message cannot forge the end marker or a request block that a later run would read.
+- No repository secret goes into the `request` or `capture` job. `capture`'s logs are written with `tee`, so Actions' masking does not apply, and their tails are posted in the section. The job's one credential is its own `contents: read` `GITHUB_TOKEN`, which only the build steps get, and only on a cache miss. It reads nothing that is not public, and it expires when the job ends, before `publish` reads any log.
 
 ### Getting the app
 
@@ -91,22 +113,30 @@ Rules that keep the token away from the PR's build:
 3. On a miss, the `build` step runs `build-app arm64` itself. That step gets the `GITHUB_TOKEN`, because upstream's build calls GitHub's API and anonymous calls from shared runners hit the rate limit.
 4. The job summary says which of the two happened.
 
+For `before-after`, it does the same for the base commit, which it checks out into `.wisp-base/`:
+
+1. It runs that commit's own `app-cache-key arm64`, so the key is the one `ci.yml` computed when it built that commit.
+2. It restores that key first, because an entry's path is part of its version and the base zip must restore to the same `dist/editor/wisp-darwin-arm64.zip` as the head's, then moves the zip aside before the head's restore.
+3. On a miss, the `base-build` step runs the base commit's `build-app arm64` in `.wisp-base/`. A failed base build fails only the before side of each `before-after` scene, and `publish` shows the end of its log.
+
+A PR's run can restore entries saved by `develop` and by the PR's own runs. The merge base is a `develop` commit, so its app is in the cache unless it was evicted; a `workflow_dispatch` run from `develop` can read only `develop`'s entries, so the head app may be built there.
+
 `capture` never saves to that cache. The `app` job stays its only writer, and saves only builds that passed `check-app`. Screenshots are informational, so a cached app is good enough here; releases never use one.
 
 A push that changes no fork input hits: the zip comes from an earlier run of the same PR or from `develop`. A push that changes a fork input misses in both workflows at once, because `screenshots.yml` cannot wait on a job in `ci.yml`. On that push `capture` builds arm64 while `ci.yml`'s `app` job (and, on a push to `develop` or `main`, `app-x64`) builds it too. So the PR's first screenshots arrive about as fast as the `app` job's own cold run, within #9's 30 minutes, at the cost of one extra arm64 build, about 20 macOS runner minutes. On #89's first push, a miss, `capture` took 19 min 54 s: 18 min 16 s to build and 56 s for the three scenarios. The `app` job's legs took 21 min (arm64) and 23 min 33 s (x64), back when both built in one matrix job (#177 split them). On the next push, a hit, `capture` took 1 min 40 s: 7 s to restore the zip, 10 s to unpack it, and 55 s for the scenarios.
 
-Waiting for the `app` job instead would not be faster, because the wait lasts as long as the build. It would also need a token that can read Actions, polling, and a way to notice a failed `app` job. And it could never finish when the keys differ: `ci.yml` builds the PR's merge commit, while `capture` checks out the head, whose screenshots the comment shows. When a PR is behind `develop` on a fork input, the `app` job saves a key that `capture` never asks for. A build handles that case, and an evicted cache entry too.
+Waiting for the `app` job instead would not be faster, because the wait lasts as long as the build. It would also need a token that can read Actions, polling, and a way to notice a failed `app` job. And it could never finish when the keys differ: `ci.yml` builds the PR's merge commit, while `capture` checks out the head, whose screenshots the section shows. When a PR is behind `develop` on a fork input, the `app` job saves a key that `capture` never asks for. A build handles that case, and an evicted cache entry too.
 
-### Adding a view
+### Adding a scene
 
-Add an entry to `scenarios` in `ci/screenshots/src/scenarios.ts`. The workflow does not change.
+Add an entry to `scenarios` in `ci/screenshots/src/scenarios.ts`, in the PR that adds the view, and name it in the PR's `wisp-media` block. The workflow does not change. Any scene works in any mode: a flow that reads well as a video is a scene whose `run` walks through it.
 
-- `name`: the file name, in lowercase words joined by hyphens.
-- `title`: the heading and alt text in the comment. Plain text: letters, digits, spaces, and `, . : ; ' " ( ) / + & = _ -`.
+- `name`: the name the request block uses and the file name, in lowercase words joined by hyphens.
+- `title`: the heading and alt text in the section. Plain text: letters, digits, spaces, and `, . : ; ' " ( ) / + & = _ -`.
 - `settings` (optional): user settings the scenario starts with, written to its throwaway profile's `settings.json`, such as `wisp.host`.
 - `env(dir)` (optional): environment variables the app starts with, on top of the harness's own, such as a `PATH` with `ci/smoke/fixtures/fake-cli` first so the bundled wispd runs the fake `claude` (#105).
 - `args(dir)` (optional): returns extra app arguments, such as a folder and a file to open. `dir` is an empty directory for the scenario's own files, deleted afterwards. Copy fixtures into it rather than opening them in the checkout, so the app never writes into the repo. A test checks that every absolute path it returns is inside `dir`.
-- `run({ app, window })`: drives the app and returns `screenshot(window)`. If this build does not have the view yet, it returns `notAvailable(reason)` instead: the comment lists the view as not available, and the job still passes. The reason follows the same plain-text rule as `title`, so it cannot hold `#123` or `@name`, which would notify that issue or person from every PR. If the view exists but breaks, `run` throws. The `capture` job then fails, and the comment shows the error and a screenshot of the window at that moment.
+- `run({ app, window })`: drives the app and returns `screenshot(window)`. If this build does not have the view yet, it returns `notAvailable(reason)` instead: the section lists the view as not available, and the job still passes. The reason follows the same plain-text rule as `title`, so it cannot hold `#123` or `@name`, which would notify that issue or person from every PR. If the view exists but breaks, `run` throws. The `capture` job then fails, and the section shows the error and a screenshot of the window at that moment.
 
 Before `run` is called:
 
@@ -121,7 +151,7 @@ After `app-launch`'s `args`, the harness passes these arguments, then the scenar
 - `WISPD_DATA_DIR` in the same temp directory, so the wispd a scenario starts never touches the machine's own data folder. The harness stops that wispd when the scenario ends, using the pid in its `wispd.lock`.
 - Not `--enable-smoke-test-driver`, because it hides notification toasts, and the screenshots should show what a user sees.
 
-Launching gets 60 seconds for the process and 60 for the first window, then waiting for the window plus `run` gets 180 seconds. The `capture` step has 20 minutes, and when a step times out, `publish` still reports it.
+Launching gets 60 seconds for the process and 60 for the first window, then waiting for the window plus `run` gets 180 seconds. The `capture` step has 30 minutes, and when a step times out, `publish` still reports it.
 
 The shipped scenarios wait for these elements, using the classes and attributes that upstream's smoke tests use, never pixel positions:
 
@@ -138,12 +168,12 @@ The shipped scenarios wait for these elements, using the classes and attributes 
 
 ```sh
 scripts/ci/build-app            # or set WISP_APP_BUNDLE to a Wisp.app you already have
-scripts/ci/screenshots
+scripts/ci/screenshots --request 'after: agents-window, startup'
 scripts/ci/publish-screenshots --dry-run
 scripts/ci/check-screenshots
 ```
 
-`screenshots` writes to `ci/screenshots/out/`, and `publish-screenshots --dry-run` checks that directory the way the `publish` job does and prints the comment it would post. Add `--logs <dir>` with `BUILD_OUTCOME=failure` or `CAPTURE_OUTCOME=failure` to include a failed step's `build.log` or `capture.log`.
+`screenshots` writes to `ci/screenshots/out/` unless a directory comes first, and `publish-screenshots --dry-run` checks that directory the way the `publish` job does and prints the section it would write. `--request` takes the block's lines, with `;` between them, as in `'after: startup; video: agents-window'`. For `before-after`, set `WISP_BASE_APP_BUNDLE` to the base commit's `Wisp.app`; for `video`, install ffmpeg (`brew install ffmpeg`) or point `WISP_FFMPEG` at one. Add `--logs <dir>` with `BUILD_OUTCOME=failure`, `BASE_BUILD_OUTCOME=failure`, or `CAPTURE_OUTCOME=failure` to include that step's log, `BASE_SHA` to label the before side, and `REQUEST_PROBLEM` to see how a bad request reads.
 
 - A local run takes about 30 seconds once the app is built. `build-app` takes about 8 minutes on an M3 Pro from a clean tree, or 5 once `node_modules` is installed.
 - The windows open on your screen. A Retina display doubles the image size.
