@@ -4,18 +4,21 @@
 
 /* The bar above a shared context file's content (note 10): theme tokens only. */
 
+/*
+ * No fixed height: the contribution measures this node's own (wrapped) height and sizes the view
+ * zone to match, since the detail pane is often narrower than the message needs (#106 review,
+ * round two).
+ */
 .wisp-context-banner {
 	display: flex;
 	align-items: center;
 	box-sizing: border-box;
 	width: 100%;
-	height: 100%;
-	padding: 0 var(--vscode-spacing-size160);
-	overflow: hidden;
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size160);
 	background-color: var(--vscode-editorWidget-background);
 	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
 	color: var(--vscode-descriptionForeground);
 	font-size: var(--vscode-fontSize-label1);
-	white-space: nowrap;
-	text-overflow: ellipsis;
+	line-height: 1.4;
+	white-space: normal;
 }
