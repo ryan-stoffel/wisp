@@ -8,13 +8,16 @@ import { constObservable, derived, IObservable, ISettableObservable, observableV
 import { basename } from '../../../../../base/common/path.js';
 import { ThemeIcon } from '../../../../../base/common/themables.js';
 import { URI } from '../../../../../base/common/uri.js';
-import type { Project } from '../../../../../platform/wisp/common/wispProtocol.js';
+import type { AgentRun, Project, RunId } from '../../../../../platform/wisp/common/wispProtocol.js';
 import { ChatInteractivity, ChatModelSource, IChat, IChatCapabilities, IChatCheckpoints, ISession, ISessionCapabilities, ISessionChangeset, ISessionFileChange, ISessionWorkspace, SessionRemoteConnectionStatus, SessionStatus, toSessionId } from '../../../../services/sessions/common/session.js';
 import { projectResource, WISP_PROJECT_SESSION_TYPE } from '../common/wispProjects.js';
+import { IWispAgentLocation, WispAgentChat } from './wispAgentChat.js';
 
 /**
- * What wisp supports on a project today (M1): one chat, the coordinator, and nothing that changes
- * a project. Each flag turns on with the milestone that gives wispd a method for it.
+ * What wisp supports on a project today: the coordinator, the subagents wispd runs for it (M3), and
+ * nothing that changes a project. No one starts a new chat in a project from upstream's UI, so
+ * `supportsMultipleChats` stays off. Each flag turns on with the milestone that gives wispd a
+ * method for it.
  */
 export const WISP_PROJECT_CAPABILITIES: ISessionCapabilities = {
 	supportsMultipleChats: false,
@@ -32,6 +35,13 @@ export interface IWispProjectHost {
 	/** True when the host is this Mac, so the repository is a local folder. */
 	readonly isLocal: boolean;
 	readonly connectionStatus: IObservable<SessionRemoteConnectionStatus>;
+}
+
+/** A project's agent runs, from `IWispAgentsService`, and where they run. */
+export interface IWispProjectAgents {
+	readonly runs: IObservable<readonly AgentRun[]>;
+	step(runId: RunId): IObservable<string | undefined>;
+	readonly location: IObservable<IWispAgentLocation>;
 }
 
 /**
@@ -65,9 +75,11 @@ class WispCoordinatorChat implements IChat {
 }
 
 /**
- * One wispd project as a session of the Agents window (decision record 0011). Its main and only
- * chat is the coordinator. A project on this Mac has its repository as its workspace, so Files
- * and **IDE** work; one on another host has none, since v1 can't open a host's folders (#67).
+ * One wispd project as a session of the Agents window (decision record 0011). Its main chat is
+ * the coordinator, and each agent run is a tool-origin chat after it (0015), which upstream lists
+ * in the Agents pill and opens as a tab. A project on this Mac has its repository as its
+ * workspace, so Files and **IDE** work; one on another host has none, since v1 can't open a
+ * host's folders (#67).
  */
 export class WispProjectSession implements ISession {
 	readonly sessionId: string;
@@ -98,8 +110,10 @@ export class WispProjectSession implements ISession {
 	readonly capabilities = constObservable(WISP_PROJECT_CAPABILITIES);
 
 	private readonly _project: ISettableObservable<Project>;
+	/** One chat per run, kept so a chat's identity survives each update of the list. */
+	private readonly agentChats = new Map<RunId, WispAgentChat>();
 
-	constructor(project: Project, providerId: string, host: IWispProjectHost) {
+	constructor(project: Project, providerId: string, host: IWispProjectHost, agents?: IWispProjectAgents) {
 		this._project = observableValue<Project>(this, project);
 		this.resource = projectResource(project.id);
 		this.sessionId = toSessionId(providerId, this.resource);
@@ -112,7 +126,30 @@ export class WispProjectSession implements ISession {
 		this.workspace = constObservable(host.isLocal ? localWorkspace(project.repoPath) : undefined);
 		const coordinator = new WispCoordinatorChat(this.resource, this.createdAt, this._project);
 		this.mainChat = constObservable<IChat>(coordinator);
-		this.chats = constObservable<readonly IChat[]>([coordinator]);
+		// Subagents follow the coordinator in the order they started, which the Agents pill reverses.
+		this.chats = agents
+			? derived(this, reader => [coordinator, ...agents.runs.read(reader).map(run => this.agentChat(run, coordinator.resource, agents))])
+			: constObservable<readonly IChat[]>([coordinator]);
+	}
+
+	private agentChat(run: AgentRun, parent: URI, agents: IWispProjectAgents): WispAgentChat {
+		let chat = this.agentChats.get(run.id);
+		if (!chat) {
+			let last = run;
+			const current = derived(this, reader => {
+				last = agents.runs.read(reader).find(candidate => candidate.id === run.id) ?? last;
+				return last;
+			});
+			chat = new WispAgentChat(run, parent, current, agents.step(run.id), agents.location);
+			this.agentChats.set(run.id, chat);
+		}
+		return chat;
+	}
+
+	/** The chat of one of this project's runs, once its run is listed. */
+	getAgentChat(runId: RunId): WispAgentChat | undefined {
+		this.chats.get();
+		return this.agentChats.get(runId);
 	}
 
 	get project(): Project {

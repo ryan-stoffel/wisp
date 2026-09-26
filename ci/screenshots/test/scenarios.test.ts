@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, relative } from 'node:path';
+import { delimiter, isAbsolute, join, relative } from 'node:path';
 import { test } from 'node:test';
 import { LIMITS, nameProblem, textProblem } from '../src/manifest.ts';
 import { scenarios } from '../src/scenarios.ts';
@@ -27,6 +27,15 @@ test('creates a project, and sees it again after quitting Wisp and wispd', () =>
 
   assert.ok(names.includes('agents-window-project'));
   assert.ok(names.includes('agents-window-project-reopened'));
+});
+
+test('captures the Agents panel and a subagent tab, with the fake claude first on PATH', () => {
+  for (const name of ['agents-window-agents-panel', 'agents-window-subagent']) {
+    const scenario = scenarios.find((candidate) => candidate.name === name);
+    assert.ok(scenario, name);
+    const path = scenario.env?.('/unused').PATH ?? '';
+    assert.match(path.split(delimiter)[0] ?? '', /ci\/smoke\/fixtures\/fake-cli$/, name);
+  }
 });
 
 test('names are unique and titles are text the comment accepts', () => {

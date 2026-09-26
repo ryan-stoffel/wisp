@@ -8,6 +8,7 @@ import { setARIAContainer } from '../../../../../base/browser/ui/aria/aria.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { IChatSessionsService } from '../../../../../workbench/contrib/chat/common/chatSessionsService.js';
+import { IChatAgentService } from '../../../../../workbench/contrib/chat/common/participants/chatAgents.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { Registry } from '../../../../../platform/registry/common/platform.js';
 import { WISP_HOST_SETTING } from '../../../../../platform/wisp/common/wispdConfiguration.js';
@@ -167,8 +168,13 @@ suite('wisp: Agents window', () => {
 				registerChatSessionContribution: (contribution: { type: string }) => { chatTypes.push(contribution.type); return Disposable.None; },
 				registerChatSessionContentProvider: (scheme: string) => { chatTypes.push(`content:${scheme}`); return Disposable.None; },
 			} as unknown as IChatSessionsService);
+			const agents: string[] = [];
+			instantiationService.stub(IChatAgentService, {
+				registerDynamicAgent: (data: { id: string; isDefault?: boolean; modes: readonly string[] }) => { agents.push(`${data.id}:${data.isDefault}:${data.modes.join(',')}`); return Disposable.None; },
+			} as unknown as IChatAgentService);
 			disposables.add(instantiationService.createInstance(WispSessionsProviderContribution));
-			assert.deepStrictEqual(chatTypes, ['wisp.project', 'content:wisp.project'], 'the coordinator\'s chat type registers in process');
+			assert.deepStrictEqual(chatTypes, ['wisp.project', 'content:wisp.project', 'wisp.agent', 'content:wisp.agent'], 'the coordinator\'s and the subagents\' chat types register in process');
+			assert.deepStrictEqual(agents, ['wisp.agent:true:agent'], 'the subagents\' chat agent is the default for agent mode, since upstream sends nothing without one');
 
 			const provider = providers.getProvider<WispSessionsProvider>(WISP_SESSIONS_PROVIDER_ID);
 			assert.ok(provider instanceof WispSessionsProvider);

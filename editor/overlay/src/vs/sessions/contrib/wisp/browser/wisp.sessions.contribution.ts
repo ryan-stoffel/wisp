@@ -23,6 +23,8 @@ import './wispContext.contribution.js';
 import './wispComposerFooter.js';
 import './wispAccountsEditor.js';
 import './wispComposerAccount.js';
+import './wispAgentsPanel.js';
+import './wispStartSubagent.js';
 
 registerSingleton(IWispHostStatusService, WispHostStatusService, InstantiationType.Delayed);
 registerSingleton(IWispAccountsService, WispAccountsService, InstantiationType.Delayed);
