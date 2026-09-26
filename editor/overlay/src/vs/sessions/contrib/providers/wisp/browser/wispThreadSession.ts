@@ -38,11 +38,14 @@ export interface IWispThreadContext {
 	/** The thread's run as `IWispAgentsService` has it, once the thread started. */
 	run(runId: RunId): IObservable<AgentRun | undefined>;
 	step(runId: RunId): IObservable<string | undefined>;
+	/** The files the run's latest commit changed, from `agent/diff`, for the Changes tab. */
+	changes(runId: RunId, run: IObservable<AgentRun | undefined>): IObservable<readonly ISessionFileChange[]>;
 }
 
 /**
  * A thread's one chat: its run's `wisp.agent` chat with no tool origin, so #105's transcript,
- * composer, and Stop serve it (0015). Before the thread starts it is an untitled draft.
+ * composer, and Stop serve it (0015). Before the thread starts it is an untitled draft. Its
+ * `changes` are the files its latest commit changed, which the Changes tab lists.
  */
 class WispThreadChat implements IChat {
 	readonly resource: URI;
@@ -51,7 +54,6 @@ class WispThreadChat implements IChat {
 	readonly updatedAt: IObservable<Date>;
 	readonly status: IObservable<SessionStatus>;
 	readonly state: IObservable<IWispAgentState | undefined>;
-	readonly changes = constObservable<readonly ISessionFileChange[]>([]);
 	readonly checkpoints = constObservable<IChatCheckpoints | undefined>(undefined);
 	readonly modelId = constObservable<string | undefined>(undefined);
 	readonly modelSource = constObservable<ChatModelSource | undefined>(undefined);
@@ -63,7 +65,7 @@ class WispThreadChat implements IChat {
 	readonly lastTurnEnd: IObservable<Date | undefined>;
 	readonly capabilities = constObservable(THREAD_CHAT_CAPABILITIES);
 
-	constructor(runId: RunId, createdAt: Date, run: IObservable<AgentRun | undefined>, step: IObservable<string | undefined>, where: IObservable<IWispAgentLocation>, untitled: IObservable<string>, archived: IObservable<boolean>) {
+	constructor(runId: RunId, createdAt: Date, run: IObservable<AgentRun | undefined>, step: IObservable<string | undefined>, where: IObservable<IWispAgentLocation>, untitled: IObservable<string>, archived: IObservable<boolean>, readonly changes: IObservable<readonly ISessionFileChange[]>) {
 		this.resource = threadChatResource(runId);
 		this.createdAt = createdAt;
 		this.isArchived = archived;
@@ -116,7 +118,7 @@ export class WispThreadSession implements ISession {
 	readonly title: IObservable<string>;
 	readonly updatedAt: IObservable<Date>;
 	readonly status: IObservable<SessionStatus>;
-	readonly changes = constObservable<readonly ISessionFileChange[]>([]);
+	readonly changes: IObservable<readonly ISessionFileChange[]>;
 	readonly changesets = constObservable<readonly ISessionChangeset[] | undefined>(undefined);
 	readonly modelId = constObservable<string | undefined>(undefined);
 	readonly mode = constObservable<{ readonly id: string; readonly kind: string } | undefined>(undefined);
@@ -157,7 +159,8 @@ export class WispThreadSession implements ISession {
 		this.isArchived = derived(this, reader => this._thread.read(reader)?.archived ?? false);
 		const run = context.run(runId);
 		const started = derived(this, reader => this._started.read(reader) ? run.read(reader) : undefined);
-		this.chat = new WispThreadChat(runId, this.createdAt, started, context.step(runId), context.location, constObservable(getUntitledSessionTitle(quickChat)), this.isArchived);
+		this.chat = new WispThreadChat(runId, this.createdAt, started, context.step(runId), context.location, constObservable(getUntitledSessionTitle(quickChat)), this.isArchived, context.changes(runId, started));
+		this.changes = this.chat.changes;
 		this.mainChat = constObservable<IChat>(this.chat);
 		this.chats = constObservable<readonly IChat[]>([this.chat]);
 		this.title = this.chat.title;

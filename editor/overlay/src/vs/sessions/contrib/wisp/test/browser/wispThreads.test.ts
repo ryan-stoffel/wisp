@@ -67,7 +67,7 @@ suite('wisp: threads', () => {
 		] : [];
 		const runs = [
 			run(IN_REPO, APP, 'Fix the flaky attach test', { updatedAt: '2026-09-26T10:05:00Z' }),
-			run(QUICK, SCRATCH, 'What is a git worktree?', { status: 'completed' }),
+			run(QUICK, SCRATCH, 'What is a git worktree?', { status: 'completed', diff: { commit: 'c0ffee', files: 2, insertions: 3, deletions: 1 } }),
 			run(ARCHIVED, APP, 'Old work', { status: 'completed' }),
 		];
 		context.wispd.handler = async (method, params) => {
@@ -80,6 +80,14 @@ suite('wisp: threads', () => {
 					return { runs: runs.filter(candidate => candidate.project === (params as AgentListParams).project), seq: 3 };
 				case 'agent/events':
 					return { events: [], more: false };
+				case 'agent/diff':
+					return {
+						base: 'ba5e', head: 'c0ffee', truncated: false, stats: { files: 2, insertions: 3, deletions: 1 },
+						files: [
+							{ path: 'NOTES.md', status: 'added', insertions: 2, deletions: 0 },
+							{ path: 'README.md', status: 'modified', insertions: 1, deletions: 1 },
+						],
+					};
 				case 'accounts/defaults/get':
 					return { worker: { kind: 'subscription', backend: 'claude' } };
 				case 'repo/add': {
@@ -134,12 +142,27 @@ suite('wisp: threads', () => {
 			assert.strictEqual(inRepo.mainChat.get().resource.toString(), threadChatResource(IN_REPO).toString());
 			assert.strictEqual(inRepo.mainChat.get().origin, undefined, 'a thread\'s chat has no coordinator');
 			assert.strictEqual(inRepo.status.get(), SessionStatus.InProgress);
-			assert.strictEqual(quick.status.get(), SessionStatus.Completed);
+			assert.strictEqual(quick.status.get(), SessionStatus.NeedsInput, 'a finished run with a commit needs review');
 			assert.strictEqual(inRepo.workspace.get()?.label, 'wisp');
 			assert.ok(inRepo.capabilities.get().supportsDelete);
 			assert.deepStrictEqual(context.provider.sessionTypes.map(type => type.id), [WISP_THREAD_SESSION_TYPE]);
 			assert.ok(context.provider.supportsQuickChats);
 			assert.strictEqual(context.agents.getRun(IN_REPO)?.project, APP.id, 'the runs come from each repo entry\'s agent/list');
+		});
+
+		test('the Changes tab lists the files of the run\'s latest commit, from agent/diff', async () => {
+			const context = await services();
+			const quick = threadSessions(context).find(session => session.runId === QUICK)!;
+			quick.changes.get();
+			await settle();
+			const changes = quick.mainChat.get().changes.get();
+			assert.deepStrictEqual(changes.map(change => [change.originalUri?.toString(), change.modifiedUri?.toString(), change.insertions, change.deletions]), [
+				[undefined, `wisp-agent://${QUICK}/head/NOTES.md?c0ffee`, 2, 0],
+				[`wisp-agent://${QUICK}/base/README.md?ba5e`, `wisp-agent://${QUICK}/head/README.md?c0ffee`, 1, 1],
+			]);
+			assert.strictEqual(quick.changes.get(), changes);
+			const inRepo = threadSessions(context).find(session => session.runId === IN_REPO)!;
+			assert.deepStrictEqual(inRepo.changes.get(), [], 'a run with no commit has no changes');
 		});
 
 		test('a thread on another host names its repository without a local folder', async () => {

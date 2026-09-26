@@ -6,16 +6,17 @@ import { CancellationError } from '../../../../../base/common/errors.js';
 import { Codicon } from '../../../../../base/common/codicons.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
-import { autorun, derived, IObservable } from '../../../../../base/common/observable.js';
+import { autorun, derived, IObservable, ISettableObservable, observableValue } from '../../../../../base/common/observable.js';
 import { isAbsolute } from '../../../../../base/common/path.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { localize } from '../../../../../nls.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { IQuickInputService, IQuickPickItem, IQuickPickSeparator } from '../../../../../platform/quickinput/common/quickInput.js';
 import { generateUuidV7 } from '../../../../../platform/wisp/common/uuidv7.js';
+import { agentReviewItems } from '../../../../../platform/wisp/common/wispAgentFiles.js';
 import { IWispdService } from '../../../../../platform/wisp/common/wispd.js';
 import type { Repo, RunId, Thread } from '../../../../../platform/wisp/common/wispProtocol.js';
-import { ISession, ISessionType, ISessionWorkspace, ISessionWorkspaceBrowseAction, SessionRemoteConnectionStatus, SessionTypeAuthRequirement } from '../../../../services/sessions/common/session.js';
+import { ISession, ISessionFileChange, ISessionType, ISessionWorkspace, ISessionWorkspaceBrowseAction, SessionRemoteConnectionStatus, SessionTypeAuthRequirement } from '../../../../services/sessions/common/session.js';
 import { ISessionChangeEvent } from '../../../../services/sessions/common/sessionsProvider.js';
 import { pickWorkerAccount } from '../../../wisp/browser/wispStartSubagent.js';
 import { WISP_AGENT_CHAT_TYPE } from '../common/wispAgentRuns.js';
@@ -43,6 +44,11 @@ export interface IWispThreadsHost {
 	readonly location: IObservable<IWispAgentLocation>;
 }
 
+interface IDiffEntry {
+	commit: string | undefined;
+	readonly value: ISettableObservable<readonly ISessionFileChange[]>;
+}
+
 type RepoPick = IQuickPickItem & { readonly path?: string; readonly other?: boolean };
 
 /**
@@ -59,6 +65,8 @@ export class WispThreadSessions extends Disposable {
 	private readonly sessions = new Map<RunId, WispThreadSession>();
 	/** Drafts by session id, until they are sent or deleted. */
 	private readonly drafts = new Map<string, WispThreadSession>();
+	/** Each run's changed files, by the commit they were listed for. */
+	private readonly diffs = new Map<RunId, IDiffEntry>();
 	/** Drafts whose `thread/start` is on its way, by run id, so the thread adopts the draft. */
 	private readonly sending = new Map<RunId, WispThreadSession>();
 
@@ -112,7 +120,50 @@ export class WispThreadSessions extends Disposable {
 				return scope ? this.agentsService.runs(scope).read(reader).find(run => run.id === runId) : undefined;
 			}),
 			step: runId => this.agentsService.step(runId),
+			changes: (runId, run) => derived(reader => {
+				const entry = this.diffEntry(runId);
+				const commit = run.read(reader)?.diff?.commit;
+				if (commit && entry.commit !== commit) {
+					entry.commit = commit;
+					this.fetchChanges(runId, commit, entry);
+				}
+				return entry.value.read(reader);
+			}),
 		};
+	}
+
+	private diffEntry(runId: RunId): IDiffEntry {
+		let entry = this.diffs.get(runId);
+		if (!entry) {
+			entry = { commit: undefined, value: observableValue<readonly ISessionFileChange[]>(`wispThreadChanges-${runId}`, []) };
+			this.diffs.set(runId, entry);
+		}
+		return entry;
+	}
+
+	/**
+	 * Lists the files of a run's commit with `agent/diff` (#157), each with a `wisp-agent:` URI on
+	 * both sides, which the review's file system serves. A host without `agentReview` has none.
+	 */
+	private async fetchChanges(runId: RunId, commit: string, entry: IDiffEntry): Promise<void> {
+		try {
+			const diff = await this.wispdService.request('agent/diff', { runId });
+			if (entry.commit !== commit) {
+				return;
+			}
+			entry.value.set(agentReviewItems(runId, diff).map(item => ({
+				uri: (item.modified ?? item.original)!,
+				originalUri: item.original,
+				modifiedUri: item.modified,
+				insertions: item.file.insertions,
+				deletions: item.file.deletions,
+			})), undefined);
+		} catch {
+			// No review on this host, or the run's worktree is gone after an accept: no list.
+			if (entry.commit === commit) {
+				entry.value.set([], undefined);
+			}
+		}
 	}
 
 	private sync(threads: readonly Thread[], repos: readonly Repo[]): void {
