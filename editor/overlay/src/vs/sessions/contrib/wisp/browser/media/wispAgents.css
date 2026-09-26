@@ -1,0 +1,176 @@
+/*---------------------------------------------------------------------------------------------
+ *  wisp: not part of Code - OSS. Edit editor/overlay in the wisp repo, not this copy.
+ *--------------------------------------------------------------------------------------------*/
+
+/*
+ * The Agents pill and panel (docs/design/agents-window.md, note 8). Only theme and size tokens,
+ * so light, dark, and high contrast themes need no rules of their own. Each state mark has its
+ * own shape, and every row names its state in text, so no state depends on color alone.
+ */
+
+.wisp-agents-pill-running {
+	display: inline-block;
+	flex: none;
+	width: 6px;
+	height: 6px;
+	margin-left: var(--vscode-spacing-size40);
+	border-radius: 50%;
+	background-color: var(--vscode-chat-sessionStateIndicator-inProgressBorder, var(--vscode-progressBar-background));
+}
+
+.wisp-agents-pill-count {
+	margin-left: var(--vscode-spacing-size40);
+	color: var(--vscode-descriptionForeground);
+}
+
+.wisp-agents-panel {
+	box-sizing: border-box;
+	max-width: calc(100vw - 32px);
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size80) var(--vscode-spacing-size80);
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
+	border-radius: var(--vscode-cornerRadius-large, 8px);
+	background-color: var(--vscode-editorWidget-background);
+	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	box-shadow: 0 2px 8px var(--vscode-widget-shadow, transparent);
+	font-size: var(--vscode-fontSize-body1, 13px);
+}
+
+.wisp-agents-panel button {
+	margin: 0;
+	border: none;
+	background: none;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+}
+
+.wisp-agents-panel button:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.wisp-agents-panel-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	height: 28px;
+	padding: 0 var(--vscode-spacing-size40);
+}
+
+.wisp-agents-panel-title {
+	color: var(--vscode-descriptionForeground);
+}
+
+.wisp-agents-panel-close {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	border-radius: var(--vscode-cornerRadius-medium, 4px);
+}
+
+.wisp-agents-panel-close:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.wisp-agents-panel-list {
+	max-height: 280px;
+	overflow-y: auto;
+	outline: none;
+}
+
+.wisp-agents-panel-list:focus-visible .wisp-agents-panel-row.active {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.wisp-agents-panel-row {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	height: 30px;
+	padding: 0 var(--vscode-spacing-size40);
+	border-radius: var(--vscode-cornerRadius-medium, 4px);
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.wisp-agents-panel-row:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.wisp-agents-panel-row.active {
+	background-color: var(--vscode-list-inactiveSelectionBackground);
+	color: var(--vscode-list-inactiveSelectionForeground, inherit);
+}
+
+.wisp-agents-panel-row-title {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.wisp-agents-panel-row-where {
+	display: flex;
+	flex: none;
+	align-items: center;
+	gap: var(--vscode-spacing-size40);
+	color: var(--vscode-descriptionForeground);
+}
+
+.wisp-agents-panel-row-state {
+	flex: none;
+	margin-left: auto;
+	padding-left: var(--vscode-spacing-size80);
+	color: var(--vscode-descriptionForeground);
+}
+
+.wisp-agents-panel-more {
+	height: 26px;
+	margin-top: var(--vscode-spacing-size20) !important;
+	padding: 0 var(--vscode-spacing-size40) 0 calc(var(--vscode-spacing-size40) + 8px + var(--vscode-spacing-size80)) !important;
+	color: var(--vscode-descriptionForeground) !important;
+}
+
+.wisp-agents-panel-more:hover {
+	color: var(--vscode-foreground) !important;
+}
+
+/* State marks, 8 px: hollow, filled, filled with a halo, diamond, and square. */
+
+.wisp-agent-mark {
+	display: inline-block;
+	flex: none;
+	box-sizing: border-box;
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+}
+
+.wisp-agent-mark-hollow {
+	border: 1.5px solid var(--vscode-descriptionForeground);
+}
+
+.wisp-agent-mark-running {
+	background-color: var(--vscode-chat-sessionStateIndicator-inProgressBorder, var(--vscode-progressBar-background));
+	box-shadow: 0 0 0 2px color-mix(in srgb, var(--vscode-chat-sessionStateIndicator-inProgressBorder, var(--vscode-progressBar-background)) 35%, transparent);
+}
+
+.wisp-agent-mark-filled {
+	background-color: var(--vscode-agentsBadge-background, var(--vscode-activityBarBadge-background));
+}
+
+.wisp-agent-mark-done {
+	background-color: var(--vscode-charts-green);
+}
+
+.wisp-agent-mark-diamond {
+	border-radius: 1px;
+	background-color: var(--vscode-errorForeground);
+	transform: rotate(45deg) scale(0.85);
+}
+
+.wisp-agent-mark-square {
+	border-radius: 1px;
+	background-color: var(--vscode-descriptionForeground);
+}

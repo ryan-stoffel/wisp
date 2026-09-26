@@ -1,7 +1,7 @@
 # wisp on the Agents window
 
 - Status: design for M0 to M4, from #100, revised after Ryan's decisions and his Cursor Projects reference. It supersedes [coordinator-chat.md](coordinator-chat.md).
-- Decision: [0011](../decisions/0011-agents-window-baseline.md). Builds on 0004, 0005, and 0007.
+- Decision: [0011](../decisions/0011-agents-window-baseline.md). Builds on 0004, 0005, and 0007. [0015](../decisions/0015-subagent-chats.md) records how #105 built the Agents pill, panel, and subagent tabs.
 - Upstream: the Agents window of Code - OSS 1.139.0 (`src/vs/sessions/`).
 - Reference: Ryan's Cursor Projects screenshot, described on #100, and the Agents pill: [reference/cursor-agents-pill.png](agents-window/reference/cursor-agents-pill.png).
 
