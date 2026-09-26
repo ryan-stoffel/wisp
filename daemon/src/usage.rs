@@ -1,12 +1,10 @@
 //! Turns backend usage events (0004, #113) into `wisp-store` rows (#120).
 //!
 //! [`record_event`] is a plain, synchronous function over `&mut wisp_store::Store`, the same
-//! shape [`crate::methods::project`] uses for `project/create`. A future runner (M3) will call it
-//! once per event through the store's single-thread owner
-//! ([`crate::store::StoreHandle::run`](../store/struct.StoreHandle.html#method.run)), exactly the
-//! way `methods::usage::get` already does for reads below: queued as another store job, so
-//! recording never blocks whatever is forwarding the run's event stream onward. Until that runner
-//! exists, this module is exercised directly with fixture events.
+//! shape [`crate::methods::project`] uses for `project/create`. The runner (`crate::agents`,
+//! #156) calls it once per event through the store's single-thread owner
+//! ([`crate::store::StoreHandle::run`](../store/struct.StoreHandle.html#method.run)), charged to
+//! whichever account the run is on at that point, which changes on `Event::AccountFallback`.
 
 use jiff::Timestamp;
 use wisp_store::{LimitSnapshot, SessionModelUsage, Store, StoreError, UsageDelta};

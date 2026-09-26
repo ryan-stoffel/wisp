@@ -8,13 +8,10 @@
 //! remove`, and `worktree prune` only touch `.git/worktrees` metadata and refs, and `status`,
 //! `rev-parse`, and `diff` are read-only.
 //!
-//! This module is not wired to the protocol yet; #156 (`agent/start` end to end) is the first
-//! caller, and #157 is what a client sees. Storing a worktree's row and deciding when to persist
-//! it is left to that caller: `wisp-store`'s blocking SQLite calls already run on
-//! [`crate::store::StoreHandle`]'s own thread for everything else the async server touches, and
-//! #156 owns wiring the run lifecycle (and its own runs/events tables) into that. What this module
-//! gives #156 is the `worktrees` table and CRUD (`wisp_store::Store::{create,get,list,delete}_worktree`)
-//! and a [`WorktreeManager`] ready to be called with whatever path set the store produces.
+//! The runner (`crate::agents`, #156) is its caller: `agent/start` creates a run's worktree here
+//! and stores its row, including [`CreatedWorktree::git_dir`], in `wisp-store`'s `worktrees`
+//! table, and a finished run is committed with [`WorktreeManager::commit_all`] and measured with
+//! [`WorktreeManager::diff_stat`]. #157 is what a client sees of the diff.
 //!
 //! # Layout and naming
 //!

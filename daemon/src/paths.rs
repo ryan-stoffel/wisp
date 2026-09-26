@@ -5,7 +5,9 @@
 //!
 //! - `wispd.sock`: the socket, unless its path is too long (see [`DataDir::socket_path`]).
 //! - `wispd.lock`: held with `flock` while a `wispd serve` runs. It contains that process's pid.
-//! - `wispd.sqlite3`: the project store, with SQLite's `-wal` and `-shm` files next to it.
+//! - `wispd.sqlite3`: the project store and the event log, with SQLite's `-wal` and `-shm` files
+//!   next to it.
+//! - `worktrees/`: agent runs' git worktrees (#154), and `context/`: shared context (#155).
 //! - `logs/wispd.log`: the log.
 //!
 //! `--data-dir` or [`DATA_DIR_ENV`] moves the whole folder. Every subcommand that reaches the
@@ -110,8 +112,8 @@ impl DataDir {
         self.root.join("context")
     }
 
-    /// One project's shared context folder: `context/<project-id>/` in the data folder. #156
-    /// hands this path to a backend as its shared context folder.
+    /// One project's shared context folder: `context/<project-id>/` in the data folder. The
+    /// runner (#156) makes it writable for the project's workers.
     #[must_use]
     pub fn context_dir(&self, project: ProjectId) -> PathBuf {
         self.context_root().join(project.to_string())

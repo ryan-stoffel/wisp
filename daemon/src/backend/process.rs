@@ -4,8 +4,8 @@
 //!   holds its three pipes and nothing else of wispd's, such as client sockets or the listener
 //!   (#86). It leads a new session and process group, so a terminal that started wispd can't
 //!   signal it, and cancelling can reach everything it started.
-//! - **The environment is explicit**: a base ([`Environment::inherited`] today; #96 replaces it
-//!   with one that doesn't depend on what started wispd), minus [`ALWAYS_SCRUBBED`] and the
+//! - **The environment is explicit**: a base (wispd's own with the usual install folders on
+//!   `PATH`, decision 0014; #96 may capture the login shell's instead), minus [`ALWAYS_SCRUBBED`] and the
 //!   backend's scrub list, plus [`DATA_DIR_ENV`](crate::paths::DATA_DIR_ENV) from
 //!   [`DataDir::command`], plus the backend's injected variables, such as an API key.
 //! - **Output**: stdout as lines with a size cap, stderr into a ring buffer whose tail goes into

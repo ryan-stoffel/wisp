@@ -206,7 +206,7 @@ async fn a_new_project_needs_a_repository_and_reports_its_branch() {
 }
 
 #[tokio::test]
-async fn projects_outlive_a_restart_and_the_event_log_starts_over() {
+async fn projects_and_the_event_log_outlive_a_restart() {
     let dir = temp_dir();
     let wispd = Wispd::start(dir.path()).await;
     let mut client = Client::connect(&wispd.socket).await;
@@ -223,16 +223,16 @@ async fn projects_outlive_a_restart_and_the_event_log_starts_over() {
     let wispd = Wispd::start(dir.path()).await;
     let mut client = Client::connect(&wispd.socket).await;
     let second_log = client.initialize().await.unwrap().log_id;
-    assert_ne!(
+    assert_eq!(
         first_log, second_log,
-        "M1's log is in memory, so it starts over"
+        "the log is stored from M3 on, so it continues (decision 0014)"
     );
     let listed = client
         .call::<ProjectList>(ProjectListParams {})
         .await
         .unwrap();
     assert_eq!(listed.projects, [created]);
-    assert_eq!(listed.seq, 0);
+    assert_eq!(listed.seq, 1, "project.created is still in the log");
 }
 
 #[tokio::test]
