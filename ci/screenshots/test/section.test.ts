@@ -79,6 +79,7 @@ test('a request problem is the whole section', () => {
   const section = render({ requestProblem: 'Unknown scene: nope. Scenes are the names in ci/screenshots/src/scenarios.ts: startup.' });
 
   assert.ok(section.includes('> [!CAUTION]\n> Nothing captured: Unknown scene: nope.'));
+  assert.ok(section.includes('\nChecked [`abcdef1`]'));
   assert.ok(!section.includes('###'));
 });
 

@@ -43,7 +43,7 @@ export function renderSection(input: SectionInput): string {
   const results = manifest?.results ?? [];
   const blocks = [
     '## Screenshots',
-    `Captured from ${commitLink(input, input.headSha)} by [this run](${input.runUrl}) for the wisp-media block in this description${
+    `${input.requestProblem === undefined ? 'Captured from' : 'Checked'} ${commitLink(input, input.headSha)} by [this run](${input.runUrl}) for the wisp-media block in this description${
       results.length > 0 ? `: ${tally(results)}` : ''
     }.`,
   ];
