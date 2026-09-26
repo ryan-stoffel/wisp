@@ -9,9 +9,9 @@ import { IObservable, observableValue, transaction } from '../../../../base/comm
 import { localize } from '../../../../nls.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { IStorageService, StorageScope } from '../../../../platform/storage/common/storage.js';
 import { IWispdService, WispdError, WispdState } from '../../../../platform/wisp/common/wispd.js';
-import type { AccountId, AccountUsage, CliKind, DetectedCli, KeyAccount, Provider, RawKey } from '../../../../platform/wisp/common/wispProtocol.js';
+import type { AccountChoice, AccountId, AccountUsage, CliKind, DetectedCli, KeyAccount, Provider, RawKey } from '../../../../platform/wisp/common/wispProtocol.js';
 
 export const IWispAccountsService = createDecorator<IWispAccountsService>('wispAccountsService');
 
@@ -23,6 +23,8 @@ export type WispAccountChoice =
 	| { readonly kind: 'cli'; readonly cli: CliKind }
 	| { readonly kind: 'key'; readonly id: AccountId };
 
+/** #121's local-only storage key. Read once to migrate into wispd's role default, then deleted;
+ * see {@link WispAccountsService.migrateLocalChoice}. */
 const COORDINATOR_CHOICE_KEY = 'wisp.accounts.coordinatorChoice';
 
 /**
@@ -81,13 +83,19 @@ export interface IWispAccountsService {
 	removeKey(id: AccountId): Promise<void>;
 
 	/**
-	 * The composer's remembered choice for the coordinator's account, kept on this machine only.
-	 * wispd has no role defaults yet (#119, PR #164 is still open); once it does, this should
-	 * become a `accounts/defaults/set` call instead (tracked in a follow-up issue).
+	 * This host's default account for the coordinator role (#119's `accounts/defaults/get`),
+	 * absent when none is set. Loaded by {@link reload} and kept current across a reconnect.
 	 */
 	readonly coordinatorChoice: IObservable<WispAccountChoice | undefined>;
+	readonly coordinatorChoiceState: IObservable<WispAccountsLoadState>;
 
-	setCoordinatorChoice(choice: WispAccountChoice | undefined): void;
+	/**
+	 * Sets or clears the coordinator's default account with `accounts/defaults/set`. Rejects with
+	 * the `WispdError` wispd answered with (`invalidParams` names the offending account or
+	 * backend, per decision record 0012) after reverting {@link coordinatorChoice} to its previous
+	 * value; the caller is responsible for telling the user.
+	 */
+	setCoordinatorChoice(choice: WispAccountChoice | undefined): Promise<void>;
 }
 
 export class WispAccountsService extends Disposable implements IWispAccountsService {
@@ -116,6 +124,8 @@ export class WispAccountsService extends Disposable implements IWispAccountsServ
 
 	private readonly _coordinatorChoice = observableValue<WispAccountChoice | undefined>(this, undefined);
 	readonly coordinatorChoice: IObservable<WispAccountChoice | undefined> = this._coordinatorChoice;
+	private readonly _coordinatorChoiceState = observableValue<WispAccountsLoadState>(this, { kind: 'idle' });
+	readonly coordinatorChoiceState: IObservable<WispAccountsLoadState> = this._coordinatorChoiceState;
 
 	constructor(
 		@IWispdService private readonly wispdService: IWispdService,
@@ -123,34 +133,23 @@ export class WispAccountsService extends Disposable implements IWispAccountsServ
 		@IStorageService private readonly storageService: IStorageService,
 	) {
 		super();
-		this._coordinatorChoice.set(this.readCoordinatorChoice(), undefined);
 		this._register(wispdService.onDidChangeState(state => this.onState(state)));
 		wispdService.getState().then(state => this.onState(state), () => { /* the shared process is gone; the window is closing */ });
 	}
 
-	setCoordinatorChoice(choice: WispAccountChoice | undefined): void {
+	async setCoordinatorChoice(choice: WispAccountChoice | undefined): Promise<void> {
+		const previous = this._coordinatorChoice.get();
 		this._coordinatorChoice.set(choice, undefined);
-		if (choice) {
-			this.storageService.store(COORDINATOR_CHOICE_KEY, JSON.stringify(choice), StorageScope.APPLICATION, StorageTarget.MACHINE);
-		} else {
-			this.storageService.remove(COORDINATOR_CHOICE_KEY, StorageScope.APPLICATION);
-		}
-	}
-
-	private readCoordinatorChoice(): WispAccountChoice | undefined {
-		const raw = this.storageService.get(COORDINATOR_CHOICE_KEY, StorageScope.APPLICATION);
-		if (!raw) {
-			return undefined;
-		}
 		try {
-			const parsed: unknown = JSON.parse(raw);
-			if (isAccountChoice(parsed)) {
-				return parsed;
-			}
-		} catch {
-			// Falls through to undefined below.
+			const result = await this.wispdService.request('accounts/defaults/set', {
+				role: 'coordinator',
+				account: choice ? toAccountChoice(choice) : undefined,
+			});
+			this._coordinatorChoice.set(fromAccountChoice(result.coordinator), undefined);
+		} catch (error) {
+			this._coordinatorChoice.set(previous, undefined);
+			throw error;
 		}
-		return undefined;
 	}
 
 	reload(): void {
@@ -169,6 +168,7 @@ export class WispAccountsService extends Disposable implements IWispAccountsServ
 		}
 		this.listKeyAccounts();
 		this.listUsage();
+		this.loadCoordinatorChoice();
 	}
 
 	async refreshClis(): Promise<void> {
@@ -243,6 +243,84 @@ export class WispAccountsService extends Disposable implements IWispAccountsServ
 			this._usageState.set({ kind: 'failed', message: describeFailure(error) }, undefined);
 		}
 	}
+
+	private async loadCoordinatorChoice(): Promise<void> {
+		this._coordinatorChoiceState.set({ kind: 'loading' }, undefined);
+		try {
+			const result = await this.wispdService.request('accounts/defaults/get', {});
+			const existing = fromAccountChoice(result.coordinator);
+			const local = this.takeLocalChoice();
+			const coordinator = existing ?? (local ? await this.migrateLocalChoice(local) : undefined);
+			this._coordinatorChoice.set(coordinator, undefined);
+			this._coordinatorChoiceState.set({ kind: 'ready' }, undefined);
+		} catch (error) {
+			this.logService.error('[wisp] accounts/defaults/get failed', error);
+			this._coordinatorChoiceState.set({ kind: 'failed', message: describeFailure(error) }, undefined);
+		}
+	}
+
+	/** Reads #121's local-only choice and deletes it, so this runs at most once ever: the first
+	 * `accounts/defaults/get` that succeeds, whether or not wispd already had a coordinator
+	 * default (in which case the local value is just discarded, never overwriting it). */
+	private takeLocalChoice(): WispAccountChoice | undefined {
+		const raw = this.storageService.get(COORDINATOR_CHOICE_KEY, StorageScope.APPLICATION);
+		if (raw === undefined) {
+			return undefined;
+		}
+		this.storageService.remove(COORDINATOR_CHOICE_KEY, StorageScope.APPLICATION);
+		try {
+			const parsed: unknown = JSON.parse(raw);
+			return isAccountChoice(parsed) ? parsed : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** Sends #121's locally stored choice to wispd once, only when wispd has no coordinator
+	 * default yet. A failure (for example a key account since removed) just drops it: the local
+	 * copy is already gone by the time this runs, so there is nothing left to retry. */
+	private async migrateLocalChoice(choice: WispAccountChoice): Promise<WispAccountChoice | undefined> {
+		try {
+			const result = await this.wispdService.request('accounts/defaults/set', {
+				role: 'coordinator',
+				account: toAccountChoice(choice),
+			});
+			return fromAccountChoice(result.coordinator);
+		} catch (error) {
+			this.logService.error('[wisp] failed to migrate the locally stored coordinator account choice', error);
+			return undefined;
+		}
+	}
+}
+
+const KNOWN_CLI_KINDS: readonly CliKind[] = ['claude', 'codex', 'cursor'];
+
+function isCliKind(value: string): value is CliKind {
+	return (KNOWN_CLI_KINDS as readonly string[]).includes(value);
+}
+
+/** {@link WispAccountChoice} as wispd's `accounts/defaults/set` wants it. */
+function toAccountChoice(choice: WispAccountChoice): AccountChoice {
+	return choice.kind === 'cli' ? { kind: 'subscription', backend: choice.cli } : { kind: 'key', id: choice.id };
+}
+
+/**
+ * wispd's `AccountChoice` as the composer's picker understands it. A newer wispd may send a
+ * `kind`, or a subscription `backend`, this version does not know: both come back as `undefined`
+ * rather than a choice the picker cannot render, mirroring `AccountChoice`'s own doc comment
+ * ("treat that as absent rather than end a switch... in an exhaustiveness assertion").
+ */
+function fromAccountChoice(choice: AccountChoice | undefined): WispAccountChoice | undefined {
+	if (!choice) {
+		return undefined;
+	}
+	if (choice.kind === 'subscription') {
+		return isCliKind(choice.backend) ? { kind: 'cli', cli: choice.backend } : undefined;
+	}
+	if (choice.kind === 'key') {
+		return { kind: 'key', id: choice.id };
+	}
+	return undefined;
 }
 
 function isAccountChoice(value: unknown): value is WispAccountChoice {
