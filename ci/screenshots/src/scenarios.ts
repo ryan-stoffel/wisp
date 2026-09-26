@@ -132,7 +132,7 @@ export const scenarios: readonly Scenario[] = [
     title: 'Shared context added, listed, and open with its host bar',
     async run(context) {
       await createProject(context, { withCommit: true });
-      await addSharedContextFile(context.window, 'notes.md');
+      await addSharedContextFile(context.window, 'notes.txt');
       return screenshot(context.window);
     },
   },
