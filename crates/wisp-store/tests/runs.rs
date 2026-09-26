@@ -317,7 +317,7 @@ fn a_version_6_database_gains_runs_events_and_worktree_git_dirs() {
             .unwrap();
     }
     // Roll the database back to what #119 left on develop: schema 6, no runs, events, git_dir
-    // column, or turns table (#190's migration 9; dropping `runs` already undoes #157's migration
+    // column, or turns table (#190's migration 10; dropping `runs` already undoes #157's migration
     // 8 columns on it, since they're columns of the table this drops wholesale).
     {
         let conn = Connection::open(&path).unwrap();

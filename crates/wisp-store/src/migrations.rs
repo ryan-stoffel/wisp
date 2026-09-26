@@ -175,9 +175,13 @@ const MIGRATIONS: &[Migration] = &[
     // Turn idempotency across a restart (#190): `Actor::turns` kept sent turns only in memory, so
     // a wispd restart lost `agent/send`'s idempotency (0014) for a run's `turnId`s, and a retried
     // `agent/send` could resume a session twice with the same message. No foreign key to `runs`,
-    // matching this database's existing style (`role_defaults`, `events`).
+    // matching this database's existing style (`role_defaults`, `events`), and no retention of its
+    // own yet: a row is small (an id and the sent text) and nothing prunes a finished run's rows
+    // at all today (0016, #207), so this waits on the same removal feature `events` does rather
+    // than growing its own ad hoc rule (#190 review non-blocking note). #207 also needs to delete
+    // a removed run's `turns` rows, since this table has no cascade.
     Migration {
-        version: 9,
+        version: 10,
         sql: "CREATE TABLE turns (
             run_id TEXT NOT NULL,
             turn_id TEXT NOT NULL,
