@@ -17,7 +17,7 @@ import { WispdError } from '../../../../../platform/wisp/common/wispd.js';
 import type { ContextFile } from '../../../../../platform/wisp/common/wispProtocol.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { WispContextAddFileFlow } from '../../browser/wispContextAddFile.js';
-import { WispContextEditorBanner } from '../../browser/wispContextEditorBanner.js';
+import { WispContextEditorBanner, wispContextBannerMessage } from '../../browser/wispContextEditorBanner.js';
 import { WispContextFileSystemProvider } from '../../browser/wispContextFileSystemProvider.js';
 import { IWispContextService, WispContextService } from '../../browser/wispContextService.js';
 import { contextFileDetail, projectFacts } from '../../browser/wispProjectView.js';
@@ -32,6 +32,22 @@ const TWO = '0192f0c4-0000-7000-8000-000000000002';
 
 function contextFile(path: string, options: Partial<ContextFile> = {}): ContextFile {
 	return { path, size: 5, modifiedAt: '2026-09-24T12:00:00Z', lastWriter: 'editor', ...options };
+}
+
+/**
+ * `assert.rejects(promise, matcher)` from upstream's own `test/unit/assert.js` treats `matcher` as
+ * the failure message and never calls it, so `assert.rejects(p, (error) => error.code === X)`
+ * passes no matter why `p` rejected (#106's second review, #228 for the shared fix). This awaits
+ * `promise` itself and asserts on the caught error's `code`, so a wrong code actually fails.
+ */
+async function assertRejectsWithCode(promise: Promise<unknown>, code: string, message?: string): Promise<void> {
+	try {
+		await promise;
+	} catch (error) {
+		assert.strictEqual((error as { code?: string }).code, code, message);
+		return;
+	}
+	assert.fail(message ? `expected ${message} to reject with ${code}` : `expected the promise to reject with ${code}`);
 }
 
 suite('wisp: shared context', () => {
@@ -242,7 +258,7 @@ suite('wisp: shared context', () => {
 			assert.deepStrictEqual(readyFiles(contextService, ONE).map(f => f.path), ['notes.md']);
 		});
 
-		test('a project that leaves IWispProjectsService.projects has its watch, and its subscription, disposed', async () => {
+		test('a project that leaves IWispProjectsService.projects has its watch paused, and resumed if it reappears', async () => {
 			const { wispd, contextService, projects } = services();
 			contextService.state(ONE);
 			wispd.setState(connected());
@@ -253,15 +269,22 @@ suite('wisp: shared context', () => {
 
 			// projects.reload() re-lists with the original handler, now answering as if ONE no longer exists.
 			const originalHandler = wispd.handler!;
-			wispd.handler = async (method, params) => method === 'project/list' ? { projects: [], seq: 20 } : originalHandler(method, params);
+			let listed = [project(TWO, 'magic')];
+			wispd.handler = async (method, params) => method === 'project/list' ? { projects: listed, seq: 20 } : originalHandler(method, params);
 			projects.reload();
 			await settle();
 
-			assert.strictEqual(subscription.active, false, 'the watch\'s subscription ended');
-			// Asking again re-lists from scratch, proving the watch itself, not just its subscription, was dropped.
+			assert.strictEqual(subscription.active, false, 'the watch\'s subscription ended while the project is gone');
+			assert.strictEqual(contextService.state(ONE).get().kind, 'idle', 'paused, not left showing a stale ready list');
+
+			// The Watch itself is kept, not dropped: an editor left open on one of the project's files
+			// holds this same `state(ONE)` observable, and it must start reporting changes again once
+			// the project comes back, without needing to be reopened (#106's second review).
 			const requestsBefore = wispd.requests.filter(([method]) => method === 'context/list').length;
-			contextService.state(ONE);
+			listed = [project(ONE, 'billing'), project(TWO, 'magic')];
+			projects.reload();
 			await settle();
+			assert.strictEqual(contextService.state(ONE).get().kind, 'ready', 'resumed on its own once the project reappeared');
 			const requestsAfter = wispd.requests.filter(([method]) => method === 'context/list').length;
 			assert.strictEqual(requestsAfter, requestsBefore + 1);
 		});
@@ -306,8 +329,7 @@ suite('wisp: shared context', () => {
 			context.wispd.setState(connected());
 			await settle();
 			const fsProvider = provider(context);
-			await assert.rejects(fsProvider.readFile(toContextUri(ONE, 'missing.md')), (error: Error) =>
-				(error as unknown as { code: string }).code === FileSystemProviderErrorCode.FileNotFound);
+			await assertRejectsWithCode(fsProvider.readFile(toContextUri(ONE, 'missing.md')), FileSystemProviderErrorCode.FileNotFound);
 		});
 
 		test('the project\'s folder is a directory, and writing or reading it is refused', async () => {
@@ -316,8 +338,10 @@ suite('wisp: shared context', () => {
 			const root = URI.from({ scheme: 'wisp-context', authority: ONE, path: '/' });
 			const stat = await fsProvider.stat(root);
 			assert.strictEqual(stat.type, FileType.Directory);
-			await assert.rejects(fsProvider.readFile(root), (error: Error) =>
-				(error as unknown as { code: string }).code === FileSystemProviderErrorCode.FileIsADirectory);
+			await assertRejectsWithCode(fsProvider.readFile(root), FileSystemProviderErrorCode.FileIsADirectory, 'readFile');
+			await assertRejectsWithCode(
+				fsProvider.writeFile(root, VSBuffer.fromString('x').buffer, { create: true, overwrite: true, unlock: false, atomic: false }),
+				FileSystemProviderErrorCode.FileIsADirectory, 'writeFile');
 		});
 
 		test('mkdir, delete, and rename are refused: wispd\'s protocol has none of them', async () => {
@@ -438,6 +462,23 @@ suite('wisp: shared context', () => {
 			assert.deepStrictEqual(opened.map(uri => uri.toString()), [toContextUri(ONE, 'notes.md').toString()]);
 		});
 
+		test('when the list is already loaded, an existing name is recognized without a context/read round trip', async () => {
+			const context = services(); // seeded with notes.md, per the services() default
+			context.wispd.setState(connected());
+			await settle();
+			context.contextService.state(ONE); // warms the watch, as the Project tab's section would have
+			await settle();
+			const opened = stubOpenedEditor(context.instantiationService);
+			stubQuickInput(context.instantiationService, 'notes.md');
+			context.wispd.requests.length = 0; // only count what the add-file flow itself sends
+
+			const file = await context.instantiationService.createInstance(WispContextAddFileFlow).run(ONE);
+			assert.strictEqual(file?.path, 'notes.md');
+			assert.ok(!context.wispd.requests.some(([method]) => method === 'context/read'), 'the ready list already confirms the file exists');
+			assert.ok(!context.wispd.requests.some(([method]) => method === 'context/write'));
+			assert.deepStrictEqual(opened.map(uri => uri.toString()), [toContextUri(ONE, 'notes.md').toString()]);
+		});
+
 		test('a read failure that is not contextNotFound is reported, and nothing is written', async () => {
 			const context = services();
 			const handler = context.wispd.handler!;
@@ -463,20 +504,23 @@ suite('wisp: shared context', () => {
 
 	suite('editor banner', () => {
 
-		/** A minimal `ICodeEditor`: only the three members `WispContextEditorBanner` calls. */
+		/** A minimal `ICodeEditor`: only the members `WispContextEditorBanner` calls. */
 		function fakeEditor(initialModel: { uri: URI } | null) {
 			const modelChange = new Emitter<void>();
+			const layoutChange = new Emitter<void>();
 			let model = initialModel;
 			let nextId = 1;
+			let layoutZoneCalls = 0;
 			const zones = new Map<string, IViewZone>();
 			const editor = {
 				getModel: () => model,
 				onDidChangeModel: modelChange.event,
+				onDidLayoutChange: layoutChange.event,
 				changeViewZones: (callback: (accessor: IViewZoneChangeAccessor) => void) => {
 					callback({
 						addZone: (zone: IViewZone) => { const id = String(nextId++); zones.set(id, zone); return id; },
 						removeZone: (id: string) => { zones.delete(id); },
-						layoutZone: () => { /* unused by the banner */ },
+						layoutZone: () => { layoutZoneCalls++; },
 					} as IViewZoneChangeAccessor);
 				},
 			};
@@ -484,7 +528,9 @@ suite('wisp: shared context', () => {
 				editor: editor as unknown as ICodeEditor,
 				zones,
 				setModel: (next: { uri: URI } | null) => { model = next; modelChange.fire(); },
-				dispose: () => modelChange.dispose(),
+				fireLayoutChange: () => layoutChange.fire(),
+				layoutZoneCalls: () => layoutZoneCalls,
+				dispose: () => { modelChange.dispose(); layoutChange.dispose(); },
 			};
 		}
 
@@ -522,6 +568,30 @@ suite('wisp: shared context', () => {
 			const { editor, zones, dispose } = fakeEditor({ uri: root });
 			const banner = new WispContextEditorBanner(editor, fakeHostStatus('this Mac'));
 			assert.strictEqual(zones.size, 0);
+			banner.dispose();
+			dispose();
+		});
+
+		test('carries the full message as a hover title, and resizes the zone to the domNode\'s measured height', () => {
+			const { editor, zones, fireLayoutChange, layoutZoneCalls, dispose } = fakeEditor({ uri: toContextUri(ONE, 'notes.md') });
+			const banner = new WispContextEditorBanner(editor, fakeHostStatus('this Mac'));
+			const zone = [...zones.values()][0];
+			const message = wispContextBannerMessage('this Mac');
+			assert.strictEqual(zone.domNode.getAttribute('title'), message, 'the full sentence is readable on hover even if the zone is too short to show it all');
+			assert.strictEqual(zone.heightInPx, 28, 'starts with a single-line guess');
+
+			// The domNode is never attached to a document in this test double, so its real
+			// `offsetHeight` is always 0; this stands in for the browser measuring wrapped text
+			// taller than one line once the pane is narrow enough to wrap the sentence.
+			Object.defineProperty(zone.domNode, 'offsetHeight', { value: 56, configurable: true });
+			fireLayoutChange();
+			assert.strictEqual(zone.heightInPx, 56, 'relayouts to the measured height');
+			assert.strictEqual(layoutZoneCalls(), 1);
+
+			// A layout change that doesn't change the measured height is a no-op.
+			fireLayoutChange();
+			assert.strictEqual(layoutZoneCalls(), 1);
+
 			banner.dispose();
 			dispose();
 		});
@@ -574,8 +644,10 @@ suite('wisp: shared context', () => {
 			disposables.add(fsProvider);
 			for (const bad of ['/../secrets.md', '/sub/notes.md']) {
 				const uri = URI.from({ scheme: 'wisp-context', authority: ONE, path: bad });
-				await assert.rejects(fsProvider.readFile(uri), (error: Error) =>
-					(error as unknown as { code: string }).code === FileSystemProviderErrorCode.FileNotFound, bad);
+				await assertRejectsWithCode(fsProvider.readFile(uri), FileSystemProviderErrorCode.FileNotFound, `readFile ${bad}`);
+				await assertRejectsWithCode(
+					fsProvider.writeFile(uri, VSBuffer.fromString('x').buffer, { create: true, overwrite: true, unlock: false, atomic: false }),
+					FileSystemProviderErrorCode.FileNotFound, `writeFile ${bad}`);
 			}
 			assert.deepStrictEqual(context.wispd.requests, [], 'wispd never saw a request for any of them');
 		});
