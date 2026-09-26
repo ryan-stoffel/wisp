@@ -1645,6 +1645,11 @@ export type AgentFileParams = {
 	 * Which side to read.
 	 */
 	side: AgentFileSide,
+	/**
+	 * Whether to leave the content out and answer only `exists` and `size`, as a file system's
+	 * `stat` needs. Absent means false.
+	 */
+	sizeOnly?: boolean,
 };
 
 /**
@@ -1680,7 +1685,8 @@ export type AgentFileResult = {
 	 */
 	size?: number,
 	/**
-	 * Its exact content, base64-encoded, when it exists and is not too large. A symlink's
+	 * Its exact content, base64-encoded, when it exists, is not too large, and `sizeOnly` was not
+	 * asked. A symlink's
 	 * content is its target, as git stores it; it is never followed.
 	 */
 	content?: string,

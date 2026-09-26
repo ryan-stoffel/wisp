@@ -1,0 +1,25 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "agent/file",
+    "params": {
+      "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+      "path": "README.md",
+      "side": "head",
+      "sizeOnly": true
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "path": "README.md",
+      "side": "head",
+      "commit": "9b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c",
+      "exists": true,
+      "size": 30,
+      "tooLarge": false
+    }
+  }
+]

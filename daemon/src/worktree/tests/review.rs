@@ -167,6 +167,46 @@ async fn a_huge_file_diff_is_cut_short_but_keeps_its_stats() {
 }
 
 #[tokio::test]
+async fn diff_caps_count_json_escapes() {
+    let f = fixture().await;
+    // Control characters are text to git, and six bytes each once escaped as JSON.
+    let line = format!("{}\n", "\u{1}".repeat(99));
+    for n in 0..20 {
+        std::fs::write(
+            f.worktree().join(format!("ctl{n:02}.txt")),
+            line.repeat(1500),
+        )
+        .unwrap();
+    }
+    let head = f.commit().await;
+    let diff = f
+        .mgr
+        .diff_commits(f.worktree(), &f.created.git_dir, &f.created.base, &head)
+        .await
+        .unwrap();
+    assert_eq!(diff.files.len(), 20);
+    let mut total = 0;
+    for file in &diff.files {
+        let Some(text) = &file.diff else {
+            continue;
+        };
+        let escaped = serde_json::to_string(text).unwrap().len() - 2;
+        assert!(
+            escaped <= 256 * 1024,
+            "{} is {escaped} bytes as JSON",
+            file.path
+        );
+        assert!(file.diff_truncated, "{}", file.path);
+        total += escaped;
+    }
+    assert!(total <= 4 * 1024 * 1024, "{total}");
+    assert!(
+        diff.files.iter().any(|file| file.diff.is_none()),
+        "past the total cap, files have no diff"
+    );
+}
+
+#[tokio::test]
 async fn read_blob_returns_either_side_byte_for_byte() {
     let f = fixture().await;
     let base = f.created.base.clone();
@@ -416,48 +456,109 @@ async fn accept_refuses_a_detached_head_or_an_operation_in_progress() {
     );
     git(&f.repo, &["checkout", "-q", "main"]);
 
-    std::fs::write(f.repo.join(".git/MERGE_HEAD"), format!("{head}\n")).unwrap();
-    let error = f.accept(&commit).await.unwrap_err();
-    assert!(
-        matches!(&error, AcceptError::Refused(message) if message.contains("a merge")),
-        "{error:?}"
-    );
-    assert_eq!(rev_parse(&f.repo, "HEAD"), head);
+    let git_dir = f.repo.join(".git");
+    for (marker, folder, what) in [
+        ("MERGE_HEAD", false, "a merge"),
+        ("CHERRY_PICK_HEAD", false, "a cherry-pick"),
+        ("REVERT_HEAD", false, "a revert"),
+        ("rebase-merge", true, "a rebase"),
+        ("rebase-apply", true, "a rebase or git am"),
+    ] {
+        let path = git_dir.join(marker);
+        if folder {
+            std::fs::create_dir(&path).unwrap();
+        } else {
+            std::fs::write(&path, format!("{head}\n")).unwrap();
+        }
+        let error = f.accept(&commit).await.unwrap_err();
+        assert!(
+            matches!(&error, AcceptError::Refused(message) if message.contains(&format!("the middle of {what};"))),
+            "{marker}: {error:?}"
+        );
+        assert_eq!(rev_parse(&f.repo, "HEAD"), head, "{marker}");
+        if folder {
+            std::fs::remove_dir(&path).unwrap();
+        } else {
+            std::fs::remove_file(&path).unwrap();
+        }
+    }
+    assert_eq!(f.accept(&commit).await.unwrap().how, MergeHow::FastForward);
 }
 
+/// Plants an executable hook named `name` in `dir` that creates `<sentinels>/<name>` when run.
+fn plant_hook(dir: &Path, name: &str, sentinels: &Path) {
+    write_sentinel_script(&dir.join(name), &sentinels.join(name));
+}
+
+fn ran(sentinels: &Path) -> Vec<String> {
+    let mut ran: Vec<String> = std::fs::read_dir(sentinels)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    ran.sort();
+    ran
+}
+
+const HOOKS: &[&str] = &[
+    "post-merge",
+    "post-checkout",
+    "reference-transaction",
+    "post-rewrite",
+];
+
 #[tokio::test]
-async fn accept_runs_no_hooks_even_ones_the_agent_committed() {
+async fn no_hook_runs_through_accept_remove_and_the_next_create() {
     let f = fixture().await;
-    // A second run, created before any hook exists, for the merge-commit path below. (`git
-    // worktree add` runs the repository's own post-checkout hook, which is #154's behavior.)
+    let sentinels = tempfile::tempdir().unwrap();
+    // The repository points hooks at a tracked folder, as husky does, and the agent commits hooks
+    // there. The user also has hooks of their own in .git/hooks, for when the path is unset.
+    git(&f.repo, &["config", "core.hooksPath", ".husky"]);
+    for hook in HOOKS {
+        plant_hook(&f.worktree().join(".husky"), hook, sentinels.path());
+        plant_hook(&f.repo.join(".git/hooks"), hook, sentinels.path());
+    }
+    std::fs::write(f.worktree().join("README.md"), "agent\n").unwrap();
+    let commit = f.commit().await;
+
+    let accepted = f.accept(&commit).await.unwrap();
+    assert_eq!(accepted.how, MergeHow::FastForward);
+    assert!(
+        f.repo.join(".husky/reference-transaction").exists(),
+        "merged"
+    );
+    assert_eq!(ran(sentinels.path()), Vec::<String>::new(), "accept");
+
+    // What `agent/accept` does next: remove the worktree and delete its branch, which fires
+    // `reference-transaction` when hooks are on.
+    f.mgr
+        .remove(&f.repo, &f.created.path, &f.created.branch)
+        .await
+        .unwrap();
+    assert!(!f.created.path.exists());
+    assert_eq!(
+        git_output(&f.repo, &["branch", "--list", &f.created.branch]),
+        ""
+    );
+    assert_eq!(ran(sentinels.path()), Vec::<String>::new(), "remove");
+
+    // The next `agent/start` makes a worktree, which fires `post-checkout` when hooks are on.
     let second = f
         .mgr
         .create(&f.repo, RunId::generate(), None)
         .await
         .unwrap();
-    let sentinels = tempfile::tempdir().unwrap();
-    let agent_hook = sentinels.path().join("agent-hook-ran");
-    let user_hook = sentinels.path().join("user-hook-ran");
-    // The repository points hooks at a tracked folder, as husky does, and the agent adds a
-    // post-merge hook there. The user also has one of their own in .git/hooks.
-    git(&f.repo, &["config", "core.hooksPath", ".husky"]);
-    write_sentinel_script(&f.worktree().join(".husky/post-merge"), &agent_hook);
-    write_sentinel_script(&f.worktree().join(".husky/post-checkout"), &agent_hook);
-    write_sentinel_script(
-        &f.worktree().join(".husky/reference-transaction"),
-        &agent_hook,
-    );
-    std::fs::write(f.worktree().join("README.md"), "agent\n").unwrap();
-    let commit = f.commit().await;
-    write_sentinel_script(&f.repo.join(".git/hooks/post-merge"), &user_hook);
-
-    let accepted = f.accept(&commit).await.unwrap();
-    assert_eq!(accepted.how, MergeHow::FastForward);
-    assert!(f.repo.join(".husky/post-merge").exists(), "merged");
-    assert!(!agent_hook.exists(), "the agent's hook must not run");
-    assert!(!user_hook.exists(), "no hook runs during a headless accept");
+    assert!(second.path.join(".husky/post-checkout").exists());
+    assert_eq!(ran(sentinels.path()), Vec::<String>::new(), "create");
 
     // A merge commit takes the other path, through merge-tree and commit-tree.
+    std::fs::write(second.path.join("second.txt"), "agent\n").unwrap();
+    let second_commit = f
+        .mgr
+        .commit_all(&second.path, &second.git_dir, &f.repo, "agent")
+        .await
+        .unwrap()
+        .unwrap()
+        .sha;
     std::fs::write(f.repo.join("notes.txt"), "user\n").unwrap();
     git(
         &f.repo,
@@ -470,32 +571,105 @@ async fn accept_runs_no_hooks_even_ones_the_agent_committed() {
             "user",
         ],
     );
-    std::fs::write(second.path.join("second.txt"), "agent\n").unwrap();
-    let second_commit = f
-        .mgr
-        .commit_all(&second.path, &second.git_dir, &f.repo, "agent")
-        .await
-        .unwrap()
-        .unwrap()
-        .sha;
-    std::fs::write(f.repo.join("notes.txt"), "user again\n").unwrap();
-    git(
-        &f.repo,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "-q",
-            "-am",
-            "user again",
-        ],
-    );
     let merged = f
         .mgr
         .accept(&f.repo, &second_commit, "Merge wisp run: second\n")
         .await
         .unwrap();
     assert_eq!(merged.how, MergeHow::Merge);
-    assert!(!agent_hook.exists());
-    assert!(!user_hook.exists());
+    f.mgr
+        .remove(&f.repo, &second.path, &second.branch)
+        .await
+        .unwrap();
+    assert_eq!(ran(sentinels.path()), Vec::<String>::new(), "merge path");
+
+    // The sentinel scripts do work: git run by hand fires them.
+    git(&f.repo, &["branch", "proof"]);
+    assert!(ran(sentinels.path()).contains(&"reference-transaction".to_owned()));
+}
+
+#[tokio::test]
+async fn accept_never_overwrites_an_ignored_file() {
+    let f = fixture().await;
+    std::fs::write(f.repo.join(".gitignore"), ".env\n").unwrap();
+    git(&f.repo, &["add", ".gitignore"]);
+    git(&f.repo, &["commit", "-q", "-m", "ignore .env"]);
+    std::fs::write(f.repo.join(".env"), "SECRET=user\n").unwrap();
+    // A worktree cut from the new HEAD, whose agent force-adds its own .env.
+    let run = f
+        .mgr
+        .create(&f.repo, RunId::generate(), None)
+        .await
+        .unwrap();
+    std::fs::write(run.path.join(".env"), "SECRET=agent\n").unwrap();
+    git(&run.path, &["add", "--force", ".env"]);
+    let commit = f
+        .mgr
+        .commit_all(&run.path, &run.git_dir, &f.repo, "agent")
+        .await
+        .unwrap()
+        .unwrap()
+        .sha;
+    let head = rev_parse(&f.repo, "HEAD");
+
+    let error = f.accept(&commit).await.unwrap_err();
+    assert!(
+        matches!(&error, AcceptError::Refused(message) if message.contains(".env")),
+        "{error:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join(".env")).unwrap(),
+        "SECRET=user\n"
+    );
+    assert_eq!(rev_parse(&f.repo, "HEAD"), head);
+
+    // Once the user moves their file away, the accept goes through.
+    std::fs::rename(f.repo.join(".env"), f.repo.join(".env.mine")).unwrap();
+    assert_eq!(f.accept(&commit).await.unwrap().how, MergeHow::FastForward);
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join(".env")).unwrap(),
+        "SECRET=agent\n"
+    );
+}
+
+#[tokio::test]
+async fn a_failing_user_filter_leaves_the_checkout_as_it_was() {
+    let f = fixture().await;
+    // The user's own filter, as Git LFS configures one: required, and here its smudge fails, as
+    // a download would. The agent routes its files to it with .gitattributes.
+    git(&f.repo, &["config", "filter.boom.clean", "cat"]);
+    git(&f.repo, &["config", "filter.boom.smudge", "false"]);
+    git(&f.repo, &["config", "filter.boom.required", "true"]);
+    std::fs::write(f.worktree().join(".gitattributes"), "*.txt filter=boom\n").unwrap();
+    std::fs::write(f.worktree().join("a-new.txt"), "agent\n").unwrap();
+    std::fs::write(f.worktree().join("notes.txt"), "one\ntwo\nthree\nagent\n").unwrap();
+    std::fs::write(f.worktree().join("README.md"), "agent\n").unwrap();
+    std::fs::remove_file(f.worktree().join("old.txt")).unwrap();
+    let commit = f.commit().await;
+    std::fs::write(f.repo.join("mine.md"), "untouched\n").unwrap();
+    let head = rev_parse(&f.repo, "HEAD");
+    let status = git_output(&f.repo, &["status", "--porcelain"]);
+
+    let error = f.accept(&commit).await.unwrap_err();
+    assert!(
+        matches!(&error, AcceptError::Refused(message) if message.contains("put back")),
+        "{error:?}"
+    );
+    assert_eq!(rev_parse(&f.repo, "HEAD"), head);
+    assert_eq!(
+        git_output(&f.repo, &["status", "--porcelain"]),
+        status,
+        "only the user's own untracked file"
+    );
+    assert!(!f.repo.join(".gitattributes").exists());
+    assert!(!f.repo.join("a-new.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("old.txt")).unwrap(),
+        "going away\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("notes.txt")).unwrap(),
+        "one\ntwo\nthree\n"
+    );
+    assert!(!f.repo.join(".git/index.lock").exists());
 }

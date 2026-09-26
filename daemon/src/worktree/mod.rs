@@ -58,7 +58,9 @@
 //!
 //! [`WorktreeManager::create`] and [`WorktreeManager::remove`] are not scoped this way: their git
 //! commands run against `repo_root`, the user's own checkout, which a worker never writes, so
-//! there is no `.git` file or repo-local config of the worker's to distrust there.
+//! there is no `.git` file or repo-local config of the worker's to distrust there. They still run
+//! with hooks off, like every git call wispd makes (#157, #191): once a run is accepted, the
+//! checkout's hooks can include files the worker wrote.
 //!
 //! **Known gap (#175):** a `-c` override wins over a config value no matter how that value was
 //! set, including through an `include`/`includeIf`, so hooks and hooksPath stay closed either
@@ -869,9 +871,29 @@ impl WorktreeManager {
     /// Runs `git args` in `cwd` and returns its output, whatever its exit status. Only
     /// [`WorktreeError::Spawn`] and [`WorktreeError::Timeout`] are possible failures here; callers
     /// that want a non-zero exit turned into an error use [`WorktreeManager::run_git_ok`].
+    ///
+    /// Every call runs with `core.hooksPath=/dev/null` (#157, #191): no git command wispd runs
+    /// in the user's checkout ever runs a repository hook. Once a run is accepted, the
+    /// repository's hooks can include files the agent wrote (a tracked `core.hooksPath` such as
+    /// husky's `.husky/`), and `worktree add` (`post-checkout`) or `branch -D`
+    /// (`reference-transaction`) would otherwise run them, headless and unsandboxed, in wispd.
     async fn run_git(&self, cwd: &Path, args: &[&str]) -> Result<GitOutput, WorktreeError> {
+        self.run_git_for(cwd, args, self.timeout).await
+    }
+
+    /// [`WorktreeManager::run_git`] with its own timeout, for the one call that may take long.
+    async fn run_git_for(
+        &self,
+        cwd: &Path,
+        args: &[&str],
+        limit: Duration,
+    ) -> Result<GitOutput, WorktreeError> {
         let mut spec = ProcessSpec::new("git", cwd);
-        spec.args = args.iter().map(|arg| OsString::from(*arg)).collect();
+        spec.args = ["-c", "core.hooksPath=/dev/null"]
+            .iter()
+            .chain(args)
+            .map(|arg| OsString::from(*arg))
+            .collect();
         spec.scrub = GIT_SCRUBBED
             .iter()
             .map(|name| OsString::from(*name))
@@ -880,7 +902,7 @@ impl WorktreeManager {
         spec.stdin = StdinMode::Null;
 
         let process = self.launcher.spawn(&spec)?;
-        match timeout(self.timeout, collect(process)).await {
+        match timeout(limit, collect(process)).await {
             Ok((stdout, exit)) => Ok(GitOutput {
                 stdout: String::from_utf8_lossy(&stdout).into_owned(),
                 exit,
@@ -888,7 +910,7 @@ impl WorktreeManager {
             Err(_) => Err(WorktreeError::Timeout {
                 cwd: cwd.to_owned(),
                 args: owned_args(args),
-                timeout: self.timeout,
+                timeout: limit,
             }),
         }
     }

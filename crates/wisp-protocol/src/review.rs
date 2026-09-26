@@ -138,6 +138,11 @@ pub struct AgentFileParams {
     pub path: String,
     /// Which side to read.
     pub side: AgentFileSide,
+    /// Whether to leave the content out and answer only `exists` and `size`, as a file system's
+    /// `stat` needs. Absent means false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub size_only: Option<bool>,
 }
 
 /// Result of `agent/file`.
@@ -157,7 +162,8 @@ pub struct AgentFileResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub size: Option<u64>,
-    /// Its exact content, base64-encoded, when it exists and is not too large. A symlink's
+    /// Its exact content, base64-encoded, when it exists, is not too large, and `sizeOnly` was not
+    /// asked. A symlink's
     /// content is its target, as git stores it; it is never followed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]

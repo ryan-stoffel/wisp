@@ -1016,6 +1016,7 @@ async fn read_file(
             run_id,
             path: path.to_owned(),
             side,
+            size_only: None,
         })
         .await
 }
@@ -1070,6 +1071,18 @@ async fn assert_reviewable(
         content(client, run_id, "README.md", AgentFileSide::Base).await,
         "hello\n"
     );
+    let stat = client
+        .call::<AgentFile>(AgentFileParams {
+            run_id,
+            path: "README.md".to_owned(),
+            side: AgentFileSide::Head,
+            size_only: Some(true),
+        })
+        .await
+        .unwrap();
+    assert!(stat.exists && !stat.too_large);
+    assert_eq!(stat.size, Some(25));
+    assert_eq!(stat.content, None, "sizeOnly leaves the content out");
     diff
 }
 
@@ -1100,6 +1113,7 @@ async fn assert_paths_are_checked(client: &mut Conn, run_id: RunId) {
             run_id: RunId::generate(),
             path: "README.md".to_owned(),
             side: AgentFileSide::Head,
+            size_only: None,
         })
         .await
         .unwrap_err();

@@ -116,7 +116,13 @@ pub(crate) async fn file(
     daemon: &Arc<Daemon>,
     params: AgentFileParams,
 ) -> Result<AgentFileResult, ErrorObject> {
-    let AgentFileParams { run_id, path, side } = params;
+    let AgentFileParams {
+        run_id,
+        path,
+        side,
+        size_only,
+    } = params;
+    let size_only = size_only.unwrap_or(false);
     validate_repo_path(&path).map_err(ErrorObject::invalid_params)?;
     if side == AgentFileSide::Unknown {
         return Err(ErrorObject::invalid_params("side must be base or head"));
@@ -138,7 +144,7 @@ pub(crate) async fn file(
             Path::new(&worktree.git_dir),
             &commit,
             &path,
-            MAX_BLOB_BYTES,
+            if size_only { 0 } else { MAX_BLOB_BYTES },
         )
         .await
         .map_err(|error| worktree_failed(&error))?;
@@ -158,8 +164,8 @@ pub(crate) async fn file(
             commit,
             exists: true,
             size: Some(blob.size),
-            too_large: blob.content.is_none(),
-            content: blob.content.as_deref().map(base64),
+            too_large: blob.size > MAX_BLOB_BYTES,
+            content: blob.content.as_deref().filter(|_| !size_only).map(base64),
         },
     })
 }

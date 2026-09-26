@@ -8,17 +8,17 @@
 //! [`WorktreeManager::accept`] merges the run's commit into the project repository's current
 //! branch, in the user's own checkout. It works out the result first, in the object store (the
 //! commit itself for a fast-forward, or a merge commit from `git merge-tree --write-tree`), then
-//! refuses if the merge conflicts or if uncommitted changes touch a file the result changes. Only
-//! then does it move the branch and working tree, with `git merge --ff-only <result>`, whose
-//! two-way checkout keeps every other uncommitted change and either finishes or changes nothing.
-//! It never pushes.
+//! refuses if the merge conflicts, if uncommitted changes touch a file the result changes, or if
+//! any file, ignored ones included, sits where the result adds one. Only then does it move the
+//! branch and working tree, with `git merge --ff-only --no-overwrite-ignore <result>`, whose
+//! two-way checkout keeps every other uncommitted change. If that checkout stops part way (one of
+//! the user's own filters failed or timed out), wispd puts back the files it had written, so the
+//! checkout ends as it was. It never pushes.
 //!
 //! Those calls use the user's own configuration, since the checkout is theirs: global config,
-//! filters such as Git LFS's, merge drivers, and identity. Hooks are the exception, turned off
-//! with `core.hooksPath=/dev/null`. The merge has just brought in files the worker wrote, and a
-//! repository's `core.hooksPath` often names a tracked folder (husky's `.husky/`), so a
-//! `post-merge` or `post-checkout` hook could be the worker's own code, run unsandboxed in wispd
-//! the moment it lands. The merge commit is not signed, because signing can wait on a prompt.
+//! filters such as Git LFS's, merge drivers, and identity. Hooks are the exception: like every git
+//! call wispd makes, they run with `core.hooksPath=/dev/null` (see `WorktreeManager::run_git`).
+//! The merge commit is not signed, because signing can wait on a prompt.
 
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -43,8 +43,19 @@ const MAX_FILE_DIFF_BYTES: usize = 256 * 1024;
 /// The most unified diff [`WorktreeManager::diff_commits`] returns in all, half of 0007's frame.
 const MAX_TOTAL_DIFF_BYTES: usize = 4 * 1024 * 1024;
 
+/// The most JSON the file list of [`WorktreeManager::diff_commits`] takes, not counting diffs:
+/// paths can be up to 4 KiB each, and escaping can grow them.
+const MAX_LISTING_BYTES: usize = 2 * 1024 * 1024;
+
+/// About how much JSON one listed file takes besides its paths and diff: field names, stats.
+const PER_FILE_OVERHEAD: usize = 160;
+
 /// The most files [`WorktreeManager::diff_commits`] lists. Totals still count every file.
 const MAX_DIFF_FILES: usize = 3000;
+
+/// How long Accept's `merge --ff-only` may run: it checks files out through the user's own
+/// filters, and a Git LFS smudge can download for a while.
+const MERGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// The longest path `agent/file` takes, in bytes.
 const MAX_PATH_BYTES: usize = 4096;
@@ -237,7 +248,17 @@ impl WorktreeManager {
             insertions: counts.iter().map(|count| count.0).sum(),
             deletions: counts.iter().map(|count| count.1).sum(),
         };
-        let listed = entries.len().min(MAX_DIFF_FILES);
+        let mut listing = 0usize;
+        let listed = entries
+            .iter()
+            .take(MAX_DIFF_FILES)
+            .take_while(|entry| {
+                listing += PER_FILE_OVERHEAD
+                    + json_len(&entry.path)
+                    + entry.old_path.as_deref().map_or(0, json_len);
+                listing <= MAX_LISTING_BYTES
+            })
+            .count();
         let patches = self
             .patches(worktree_path, git_dir, &with(&["--patch"]), entries.len())
             .await?;
@@ -268,7 +289,9 @@ impl WorktreeManager {
     }
 
     /// Streams `git diff --patch` and splits it into one section per file, each capped at
-    /// `MAX_FILE_DIFF_BYTES`, keeping sections only until `MAX_TOTAL_DIFF_BYTES` is reached.
+    /// `MAX_FILE_DIFF_BYTES`, keeping sections only until `MAX_TOTAL_DIFF_BYTES` is reached. Both
+    /// count the text's size as a JSON string, escapes included, since that is what goes in the
+    /// frame: a line of control characters is six times its raw size.
     /// Returns no sections at all when their number isn't `expected`, since they could then not
     /// be matched to files by position.
     async fn patches(
@@ -282,18 +305,16 @@ impl WorktreeManager {
         let mut process = self.launcher.spawn(&spec)?;
         let read = async {
             let mut sections: Vec<(Option<String>, bool)> = Vec::new();
-            let mut current: Option<(Vec<u8>, bool)> = None;
+            // Each section's text, its size as JSON, and whether it was cut short.
+            let mut current: Option<(String, usize, bool)> = None;
             let mut total = 0usize;
-            let close = |current: &mut Option<(Vec<u8>, bool)>,
+            let close = |current: &mut Option<(String, usize, bool)>,
                          sections: &mut Vec<(Option<String>, bool)>,
                          total: &mut usize| {
-                if let Some((bytes, truncated)) = current.take() {
-                    if *total + bytes.len() <= MAX_TOTAL_DIFF_BYTES {
-                        *total += bytes.len();
-                        sections.push((
-                            Some(String::from_utf8_lossy(&bytes).into_owned()),
-                            truncated,
-                        ));
+                if let Some((text, size, truncated)) = current.take() {
+                    if *total + size <= MAX_TOTAL_DIFF_BYTES {
+                        *total += size;
+                        sections.push((Some(text), truncated));
                     } else {
                         *total = MAX_TOTAL_DIFF_BYTES;
                         sections.push((None, false));
@@ -305,19 +326,22 @@ impl WorktreeManager {
                     Some(Output::Line(line)) => {
                         if line.starts_with(b"diff --git ") {
                             close(&mut current, &mut sections, &mut total);
-                            current = Some((Vec::new(), false));
+                            current = Some((String::new(), 0, false));
                         }
-                        if let Some((bytes, truncated)) = &mut current {
-                            if bytes.len() + line.len() < MAX_FILE_DIFF_BYTES {
-                                bytes.extend_from_slice(&line);
-                                bytes.push(b'\n');
+                        if let Some((text, size, truncated)) = &mut current {
+                            let line = String::from_utf8_lossy(&line);
+                            let line_size = json_len(&line) + 2;
+                            if !*truncated && *size + line_size <= MAX_FILE_DIFF_BYTES {
+                                text.push_str(&line);
+                                text.push('\n');
+                                *size += line_size;
                             } else {
                                 *truncated = true;
                             }
                         }
                     }
                     Some(Output::Oversized { .. }) => {
-                        if let Some((_, truncated)) = &mut current {
+                        if let Some((_, _, truncated)) = &mut current {
                             *truncated = true;
                         }
                     }
@@ -495,16 +519,81 @@ impl WorktreeManager {
             (merge, MergeHow::Merge)
         };
 
-        let changed = self
+        let changes = self
             .run_checkout_git_ok(
                 &repo_root,
-                &["diff", "--name-only", "-z", "--no-renames", &head, &result],
+                &[
+                    "diff",
+                    "--name-status",
+                    "-z",
+                    "--no-renames",
+                    &head,
+                    &result,
+                ],
             )
             .await?;
-        let changed: HashSet<&str> = z_tokens(&changed).collect();
+        let changes = parse_changes(&changes);
+        self.refuse_overlap(&repo_root, &repo, &changes).await?;
+
+        let merged = self
+            .run_git_for(
+                &repo_root,
+                &[
+                    "merge",
+                    "--ff-only",
+                    "--no-autostash",
+                    "--no-stat",
+                    "--no-overwrite-ignore",
+                    &result,
+                ],
+                MERGE_TIMEOUT,
+            )
+            .await;
+        let failure = match merged {
+            Ok(output) if output.success() => None,
+            Ok(output) if describe_failure(&output).contains("would be overwritten") => {
+                return Err(AcceptError::Refused(format!(
+                    "git would have to overwrite files in {repo} to update {into}, so it changed \
+                     nothing: {}",
+                    describe_failure(&output)
+                )));
+            }
+            Ok(output) => Some(describe_failure(&output)),
+            Err(WorktreeError::Timeout { .. }) => Some(format!(
+                "it did not finish within {}s",
+                MERGE_TIMEOUT.as_secs()
+            )),
+            Err(error) => return Err(error.into()),
+        };
+        if let Some(failure) = failure {
+            if self.resolve_commit(&repo_root, "HEAD").await? == result {
+                warn!(repo, %failure, "git reported a failure after moving the branch; the accept stands");
+            } else {
+                return Err(self
+                    .roll_back(&repo_root, &repo, &into, &changes, &failure)
+                    .await);
+            }
+        }
+        Ok(Accepted {
+            commit: result,
+            into,
+            how,
+        })
+    }
+
+    /// Refuses when a local change would be lost or overwritten by the merge: uncommitted changes
+    /// (staged, unstaged, or untracked) to a path it changes, or any file, ignored or not, where it
+    /// adds one. `--no-overwrite-ignore` makes git refuse that last case too; this names the files.
+    async fn refuse_overlap(
+        &self,
+        repo_root: &Path,
+        repo: &str,
+        changes: &[(char, String)],
+    ) -> Result<(), AcceptError> {
+        let paths: HashSet<&str> = changes.iter().map(|(_, path)| path.as_str()).collect();
         let status = self
             .run_checkout_git_ok(
-                &repo_root,
+                repo_root,
                 &[
                     "status",
                     "--porcelain=v1",
@@ -516,35 +605,89 @@ impl WorktreeManager {
             .await?;
         let mut overlap: Vec<&str> = z_tokens(&status)
             .filter_map(|entry| entry.get(3..))
-            .filter(|path| changed.contains(path))
+            .filter(|path| paths.contains(path))
             .collect();
-        if !overlap.is_empty() {
-            overlap.sort_unstable();
-            overlap.dedup();
-            return Err(AcceptError::Refused(format!(
-                "uncommitted changes in {repo} touch files the agent changed: {}; commit or stash \
-                 them, then accept again",
-                list_paths(&overlap)
-            )));
+        for (kind, path) in changes {
+            if *kind == 'A'
+                && tokio::fs::symlink_metadata(repo_root.join(path))
+                    .await
+                    .is_ok()
+            {
+                overlap.push(path);
+            }
         }
+        if overlap.is_empty() {
+            return Ok(());
+        }
+        overlap.sort_unstable();
+        overlap.dedup();
+        Err(AcceptError::Refused(format!(
+            "uncommitted or ignored files in {repo} are in the way of files the agent changed: {}; \
+             commit, stash, or move them, then accept again",
+            list_paths(&overlap)
+        )))
+    }
 
-        let merged = self
-            .run_checkout_git(
-                &repo_root,
-                &["merge", "--ff-only", "--no-autostash", "--no-stat", &result],
-            )
-            .await?;
-        if !merged.success() {
-            return Err(AcceptError::Refused(format!(
-                "git could not update {into} in {repo} without touching uncommitted changes: {}",
-                describe_failure(&merged)
-            )));
+    /// Puts back the files a failed `merge --ff-only` may have written before it stopped, such as
+    /// when one of the user's own filters (a Git LFS smudge, say) failed or timed out part way.
+    /// git hasn't moved the branch or written the index then, and [`Self::refuse_overlap`]
+    /// proved none of these paths had local changes, so the index's version (HEAD's) is the
+    /// user's own. Paths the merge added are removed; `.gitattributes` files go first, so the
+    /// rest are checked out with the user's own filters again.
+    async fn roll_back(
+        &self,
+        repo_root: &Path,
+        repo: &str,
+        into: &str,
+        changes: &[(char, String)],
+        failure: &str,
+    ) -> AcceptError {
+        let mut ordered: Vec<&(char, String)> = changes.iter().collect();
+        ordered.sort_by_key(|(_, path)| !is_attributes(path));
+        let mut restore = Vec::new();
+        let mut left = Vec::new();
+        for (kind, path) in ordered {
+            if *kind == 'A' {
+                match tokio::fs::remove_file(repo_root.join(path)).await {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(_) => left.push(path.clone()),
+                }
+            } else if is_attributes(path) {
+                if self
+                    .run_git(repo_root, &["checkout-index", "--force", "--", path])
+                    .await
+                    .map_or(true, |output| !output.success())
+                {
+                    left.push(path.clone());
+                }
+            } else {
+                restore.push(path.as_str());
+            }
         }
-        Ok(Accepted {
-            commit: result,
-            into,
-            how,
-        })
+        for chunk in restore.chunks(200) {
+            let mut args = vec!["checkout-index", "--force", "--"];
+            args.extend_from_slice(chunk);
+            if self
+                .run_git(repo_root, &args)
+                .await
+                .map_or(true, |output| !output.success())
+            {
+                left.extend(chunk.iter().map(|path| (*path).to_owned()));
+            }
+        }
+        if left.is_empty() {
+            AcceptError::Refused(format!(
+                "git could not update {into} in {repo} ({failure}); wispd put back the files it \
+                 had started to write, so nothing changed"
+            ))
+        } else {
+            AcceptError::Refused(format!(
+                "git could not update {into} in {repo} ({failure}), and wispd could not put back \
+                 {}; check them with git status",
+                list_paths(&left)
+            ))
+        }
     }
 
     async fn refuse_in_progress(&self, repo_root: &Path, repo: &str) -> Result<(), AcceptError> {
@@ -604,6 +747,7 @@ impl WorktreeManager {
                     "--write-tree",
                     "--name-only",
                     "--no-messages",
+                    "-z",
                     head,
                     target,
                 ],
@@ -612,13 +756,8 @@ impl WorktreeManager {
         match tree.exit.info.code {
             Some(0) => {}
             Some(1) => {
-                let mut paths: Vec<String> = tree
-                    .stdout
-                    .lines()
-                    .skip(1)
-                    .filter(|line| !line.is_empty())
-                    .map(str::to_owned)
-                    .collect();
+                let mut paths: Vec<String> =
+                    z_tokens(&tree.stdout).skip(1).map(str::to_owned).collect();
                 paths.dedup();
                 return Err(AcceptError::Conflict {
                     into: into.to_owned(),
@@ -633,7 +772,11 @@ impl WorktreeManager {
                 }));
             }
         }
-        let tree = tree.stdout.lines().next().unwrap_or_default().to_owned();
+        let tree = z_tokens(&tree.stdout)
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
         if self.resolve_identity(repo_root).await?.is_none() {
             return Err(AcceptError::Refused(format!(
                 "{} has no git identity configured (user.name and user.email), which the merge \
@@ -660,16 +803,14 @@ impl WorktreeManager {
         Ok(commit.trim().to_owned())
     }
 
-    /// `git args` in the user's own checkout, with its own configuration, but no hooks: see the
-    /// module documentation.
+    /// `git args` in the user's own checkout, with its own configuration. Like every call through
+    /// [`WorktreeManager::run_git`], it runs no hooks.
     async fn run_checkout_git(
         &self,
         repo_root: &Path,
         args: &[&str],
     ) -> Result<super::GitOutput, WorktreeError> {
-        let mut full = vec!["-c", "core.hooksPath=/dev/null"];
-        full.extend_from_slice(args);
-        self.run_git(repo_root, &full).await
+        self.run_git(repo_root, args).await
     }
 
     async fn run_checkout_git_ok(
@@ -701,6 +842,32 @@ fn parse_name_status_z(output: &str) -> Vec<ChangedFile> {
         files.push(changed_file(code, first, second));
     }
     files
+}
+
+/// The size of `text` as a JSON string's content, as `serde_json` writes it: `"` and `\\` and the
+/// short escapes (`\n`, `\t`, ...) take two bytes, other control characters six (`\u00XX`).
+fn json_len(text: &str) -> usize {
+    text.bytes()
+        .map(|byte| match byte {
+            b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 0x08 | 0x0c => 2,
+            0x00..=0x1f => 6,
+            _ => 1,
+        })
+        .sum()
+}
+
+/// Parses `git diff --name-status -z --no-renames`: `(status letter, path)` per file.
+fn parse_changes(output: &str) -> Vec<(char, String)> {
+    let mut tokens = z_tokens(output);
+    let mut changes = Vec::new();
+    while let (Some(code), Some(path)) = (tokens.next(), tokens.next()) {
+        changes.push((code.chars().next().unwrap_or('M'), path.to_owned()));
+    }
+    changes
+}
+
+fn is_attributes(path: &str) -> bool {
+    path == ".gitattributes" || path.ends_with("/.gitattributes")
 }
 
 /// The NUL-terminated tokens of a `-z` output. The output collector ends the last line with a
@@ -737,7 +904,7 @@ fn parse_numstat_z(output: &str) -> Vec<(u64, u64, bool)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_name_status_z, parse_numstat_z, validate_repo_path};
+    use super::{json_len, parse_name_status_z, parse_numstat_z, validate_repo_path};
     use crate::worktree::ChangeStatus;
 
     #[test]
@@ -769,6 +936,21 @@ mod tests {
             assert!(validate_repo_path(bad).is_err(), "{bad:?}");
         }
         assert!(validate_repo_path(&"a".repeat(4097)).is_err());
+    }
+
+    #[test]
+    fn json_len_counts_escapes_as_serde_json_writes_them() {
+        for text in [
+            "plain",
+            "quote \" and \\",
+            "tab\tnew\nline\r",
+            "\u{1}\u{1f}\u{7f}",
+            "é✓",
+            "",
+        ] {
+            let encoded = serde_json::to_string(text).unwrap();
+            assert_eq!(json_len(text), encoded.len() - 2, "{text:?}");
+        }
     }
 
     #[test]
