@@ -5,11 +5,13 @@ use serde_json::{Value, json};
 use tracing::error;
 use wisp_protocol::jsonrpc::ErrorObject;
 use wisp_protocol::{
-    AgentFailureKind, AgentOutcome, AgentOutputItem, AgentPolicy, AgentRun, AgentRunState,
-    AgentStatus, AgentTodoItem, AgentTodoStatus, AgentToolStatus, DiffSummary, ProjectId, RunId,
+    AgentFailureKind, AgentMerge, AgentMergeKind, AgentOutcome, AgentOutputItem, AgentPolicy,
+    AgentRun, AgentRunState, AgentStatus, AgentTodoItem, AgentTodoStatus, AgentToolStatus,
+    DiffSummary, ProjectId, RunId,
 };
 
 use crate::backend::{Event, FailureKind, Outcome, TodoStatus, ToolStatus};
+use crate::worktree::MergeHow;
 
 /// The longest tool output an `agent.output` item carries, in bytes. The rest is cut, since the
 /// full output stays in the CLI's own session and 0007 caps a frame at 8 MiB.
@@ -25,6 +27,7 @@ pub(super) const COMPLETED: &str = "completed";
 pub(super) const FAILED: &str = "failed";
 pub(super) const CANCELLED: &str = "cancelled";
 pub(super) const INTERRUPTED: &str = "interrupted";
+pub(super) const ACCEPTED: &str = "accepted";
 
 /// The store's text for the only policy `agent/start` takes.
 pub(super) const WORKSPACE_WRITE: &str = "workspaceWrite";
@@ -37,6 +40,7 @@ fn status(text: &str) -> AgentStatus {
         FAILED => AgentStatus::Failed,
         CANCELLED => AgentStatus::Cancelled,
         INTERRUPTED => AgentStatus::Interrupted,
+        ACCEPTED => AgentStatus::Accepted,
         _ => AgentStatus::Unknown,
     }
 }
@@ -88,6 +92,29 @@ pub(super) fn run_state(row: &wisp_store::Run) -> AgentRunState {
         error: state.error.clone(),
         diff: diff(state),
         updated_at: row.updated_at,
+    }
+}
+
+/// The store's text for how `agent/accept` merged a run.
+pub(super) fn merge_how_text(how: MergeHow) -> &'static str {
+    match how {
+        MergeHow::FastForward => "fastForward",
+        MergeHow::Merge => "merge",
+        MergeHow::UpToDate => "upToDate",
+    }
+}
+
+/// A stored accept as the protocol's merge.
+pub(super) fn merge(accept: &wisp_store::RunAccept) -> AgentMerge {
+    AgentMerge {
+        commit: accept.commit.clone(),
+        into: accept.into.clone(),
+        how: match accept.how.as_str() {
+            "fastForward" => AgentMergeKind::FastForward,
+            "merge" => AgentMergeKind::Merge,
+            "upToDate" => AgentMergeKind::UpToDate,
+            _ => AgentMergeKind::Unknown,
+        },
     }
 }
 
