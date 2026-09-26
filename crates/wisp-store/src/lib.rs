@@ -1,4 +1,4 @@
-//! SQLite-backed storage for wisp projects and key accounts.
+//! SQLite-backed storage for wisp projects, key accounts, agent runs, and wispd's event log.
 //!
 //! [`Store`] owns one SQLite connection and applies its own versioned
 //! migrations on open. The caller chooses the database path; this crate
@@ -10,8 +10,10 @@
 mod accounts;
 mod defaults;
 mod error;
+mod events;
 mod migrations;
 mod project;
+mod runs;
 mod timestamp;
 mod usage;
 mod worktree;
@@ -26,7 +28,9 @@ use rusqlite::{Connection, Error as SqliteError, ErrorCode};
 pub use accounts::{Account, AccountFields};
 pub use defaults::RoleDefault;
 pub use error::StoreError;
+pub use events::StoredEvent;
 pub use project::{Project, ProjectFields};
+pub use runs::{Run, RunFields, RunState};
 pub use usage::{LimitSnapshot, SessionModelUsage, UsageDelta, UsageSummary};
 pub use worktree::{Worktree, WorktreeFields};
 

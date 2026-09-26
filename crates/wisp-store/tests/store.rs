@@ -36,6 +36,7 @@ fn sample_worktree_fields() -> WorktreeFields {
             .to_string(),
         branch: "wisp/abcd1234".to_string(),
         base: "b7e1f2a3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9".to_string(),
+        git_dir: "/Users/ryan/dev/wisp/.git/worktrees/0199-run".to_string(),
     }
 }
 
@@ -438,9 +439,9 @@ fn a_version_1_database_migrates_and_keeps_its_projects() {
         })
         .expect("read schema version");
     assert_eq!(
-        version, 6,
-        "migrations 3 (accounts, #117), 4 (usage, #120), 5 (worktrees, #154), and 6 (role \
-         defaults, #119) also apply"
+        version, 7,
+        "migrations 3 (accounts, #117), 4 (usage, #120), 5 (worktrees, #154), 6 (role \
+         defaults, #119), and 7 (runs and events, #156) also apply"
     );
     let account_columns: Vec<String> = conn
         .prepare("SELECT name FROM pragma_table_info('accounts')")
@@ -529,8 +530,9 @@ fn a_version_3_database_from_develop_migrates_to_usage_tables_and_keeps_its_acco
         })
         .expect("read schema version");
     assert_eq!(
-        version, 6,
-        "migrations 5 (worktrees, #154) and 6 (role defaults, #119) also apply"
+        version, 7,
+        "migrations 5 (worktrees, #154), 6 (role defaults, #119), and 7 (runs and events, \
+         #156) also apply"
     );
 }
 

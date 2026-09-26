@@ -14,6 +14,10 @@ pub struct WorktreeFields {
     pub path: String,
     pub branch: String,
     pub base: String,
+    /// The linked worktree's own private git directory, resolved once when it was created
+    /// (#166). Every later git call pins it instead of trusting the worktree's `.git` file, which
+    /// a worker can rewrite, so it is stored rather than derived again after a restart.
+    pub git_dir: String,
 }
 
 /// A worktree row.
@@ -24,6 +28,8 @@ pub struct Worktree {
     pub path: String,
     pub branch: String,
     pub base: String,
+    /// See [`WorktreeFields::git_dir`]. Empty for a row written before the column existed.
+    pub git_dir: String,
     pub created_at: Timestamp,
 }
 
@@ -35,6 +41,7 @@ struct RawWorktree {
     path: String,
     branch: String,
     base: String,
+    git_dir: String,
     created_at: String,
 }
 
@@ -46,7 +53,8 @@ impl RawWorktree {
             path: row.get(2)?,
             branch: row.get(3)?,
             base: row.get(4)?,
-            created_at: row.get(5)?,
+            git_dir: row.get(5)?,
+            created_at: row.get(6)?,
         })
     }
 
@@ -55,6 +63,7 @@ impl RawWorktree {
             && self.path == fields.path
             && self.branch == fields.branch
             && self.base == fields.base
+            && self.git_dir == fields.git_dir
     }
 
     fn into_worktree(self) -> Result<Worktree, StoreError> {
@@ -64,6 +73,7 @@ impl RawWorktree {
             path: self.path,
             branch: self.branch,
             base: self.base,
+            git_dir: self.git_dir,
             created_at: timestamp::parse(&self.created_at)?,
         })
     }
@@ -72,7 +82,7 @@ impl RawWorktree {
 fn fetch_raw(conn: &Connection, id_text: &str) -> Result<Option<RawWorktree>, StoreError> {
     Ok(conn
         .query_row(
-            "SELECT id, repo_path, path, branch, base, created_at
+            "SELECT id, repo_path, path, branch, base, git_dir, created_at
              FROM worktrees WHERE id = ?1",
             params![id_text],
             RawWorktree::from_row,
@@ -111,8 +121,8 @@ impl Store {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute(
-            "INSERT INTO worktrees (id, repo_path, path, branch, base, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO worktrees (id, repo_path, path, branch, base, git_dir, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT (id) DO NOTHING",
             params![
                 id_text,
@@ -120,6 +130,7 @@ impl Store {
                 fields.path,
                 fields.branch,
                 fields.base,
+                fields.git_dir,
                 now
             ],
         )?;
@@ -156,7 +167,7 @@ impl Store {
     /// Returns a database error, or an error if a stored id or timestamp is corrupt.
     pub fn list_worktrees(&self) -> Result<Vec<Worktree>, StoreError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, repo_path, path, branch, base, created_at
+            "SELECT id, repo_path, path, branch, base, git_dir, created_at
              FROM worktrees
              ORDER BY created_at ASC, id ASC",
         )?;
