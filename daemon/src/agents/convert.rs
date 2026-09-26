@@ -27,6 +27,19 @@ pub(super) const MAX_TOOL_INPUT_BYTES: usize = 32 * 1024;
 /// every subscriber and then be replayed again on every reconnect.
 pub(super) const MAX_TEXT_ITEM_BYTES: usize = 32 * 1024;
 
+/// The longest a short identifier gets to be, in bytes: `ToolCall`'s `call_id` and `name`,
+/// `ToolResult`'s `call_id`, `SessionStarted`'s `session_id` and `model`, and every `message_id`.
+/// These are meant to be short, vendor-assigned tokens; this is defense in depth against a vendor
+/// bug or a hostile CLI reporting one that isn't (#190 review).
+pub(super) const MAX_ID_BYTES: usize = 1024;
+
+/// The longest one `TodoList` item's `text` gets to be, in bytes.
+pub(super) const MAX_TODO_TEXT_BYTES: usize = 4 * 1024;
+
+/// The most items one `TodoList` carries; the rest are dropped, not only their text, since even a
+/// short text per item adds up at an unbounded count (#190 review).
+pub(super) const MAX_TODO_ITEMS: usize = 500;
+
 pub(super) const STARTING: &str = "starting";
 pub(super) const RUNNING: &str = "running";
 pub(super) const COMPLETED: &str = "completed";
@@ -217,6 +230,11 @@ pub(super) fn truncate(text: &str, max: usize) -> String {
     format!("{}\n... ({} bytes cut)", &text[..end], text.len() - end)
 }
 
+/// A vendor-reported `message_id`, capped like any other identifier (#190 review).
+fn id(message_id: Option<&str>) -> Option<String> {
+    message_id.map(|id| truncate(id, MAX_ID_BYTES))
+}
+
 fn tool_input(input: &Value) -> Value {
     let bytes = serde_json::to_string(input).map_or(0, |json| json.len());
     if bytes > MAX_TOOL_INPUT_BYTES {
@@ -233,16 +251,16 @@ pub(super) fn output_item(event: &Event) -> Option<AgentOutputItem> {
         Event::SessionStarted {
             session_id, model, ..
         } => AgentOutputItem::SessionStarted {
-            session_id: session_id.clone(),
-            model: model.clone(),
+            session_id: truncate(session_id, MAX_ID_BYTES),
+            model: model.as_deref().map(|model| truncate(model, MAX_ID_BYTES)),
         },
         Event::TurnStarted { turn_id } => AgentOutputItem::TurnStarted { turn_id: *turn_id },
         Event::TextDelta { message_id, text } => AgentOutputItem::TextDelta {
-            message_id: message_id.clone(),
+            message_id: id(message_id.as_deref()),
             text: truncate(text, MAX_TEXT_ITEM_BYTES),
         },
         Event::Text { message_id, text } => AgentOutputItem::Text {
-            message_id: message_id.clone(),
+            message_id: id(message_id.as_deref()),
             text: truncate(text, MAX_TEXT_ITEM_BYTES),
         },
         Event::ToolCall {
@@ -250,8 +268,8 @@ pub(super) fn output_item(event: &Event) -> Option<AgentOutputItem> {
             name,
             input,
         } => AgentOutputItem::ToolCall {
-            call_id: call_id.clone(),
-            name: name.clone(),
+            call_id: truncate(call_id, MAX_ID_BYTES),
+            name: truncate(name, MAX_ID_BYTES),
             input: tool_input(input),
         },
         Event::ToolResult {
@@ -259,21 +277,22 @@ pub(super) fn output_item(event: &Event) -> Option<AgentOutputItem> {
             status,
             output,
         } => AgentOutputItem::ToolResult {
-            call_id: call_id.clone(),
+            call_id: truncate(call_id, MAX_ID_BYTES),
             status: tool_status(*status),
             output: output
                 .as_deref()
                 .map(|output| truncate(output, MAX_TOOL_OUTPUT_BYTES)),
         },
         Event::Reasoning { message_id, text } => AgentOutputItem::Reasoning {
-            message_id: message_id.clone(),
+            message_id: id(message_id.as_deref()),
             text: truncate(text, MAX_TEXT_ITEM_BYTES),
         },
         Event::TodoList { items } => AgentOutputItem::TodoList {
             items: items
                 .iter()
+                .take(MAX_TODO_ITEMS)
                 .map(|item| AgentTodoItem {
-                    text: item.text.clone(),
+                    text: truncate(&item.text, MAX_TODO_TEXT_BYTES),
                     status: todo_status(item.status),
                 })
                 .collect(),
@@ -319,9 +338,12 @@ mod tests {
     use wisp_protocol::{AgentOutputItem, AgentToolStatus};
 
     use super::{
-        MAX_TEXT_ITEM_BYTES, MAX_TOOL_INPUT_BYTES, MAX_TOOL_OUTPUT_BYTES, output_item, truncate,
+        MAX_ID_BYTES, MAX_TEXT_ITEM_BYTES, MAX_TODO_ITEMS, MAX_TODO_TEXT_BYTES,
+        MAX_TOOL_INPUT_BYTES, MAX_TOOL_OUTPUT_BYTES, output_item, truncate,
     };
-    use crate::backend::{Event, LimitStatus, LimitWindow, ModelUsage, ToolStatus, Usage};
+    use crate::backend::{
+        Event, LimitStatus, LimitWindow, ModelUsage, TodoItem, TodoStatus, ToolStatus, Usage,
+    };
 
     #[test]
     fn transcript_events_map_and_bookkeeping_events_do_not() {
@@ -441,5 +463,95 @@ mod tests {
             panic!("a turn finished");
         };
         cut(&result.unwrap());
+    }
+
+    /// #190 review: identifiers are capped too, not only free text — a vendor bug or a hostile
+    /// CLI reporting a huge `call_id`, `name`, `session_id`, `model`, or `message_id` shouldn't be
+    /// able to blow up an `agent.output` event any more than a huge tool output can.
+    #[test]
+    fn oversized_identifiers_are_cut() {
+        let big = "i".repeat(MAX_ID_BYTES + 1);
+        let cut = |field: &str| assert!(field.len() < MAX_ID_BYTES + 64, "{}", field.len());
+
+        let Some(AgentOutputItem::SessionStarted { session_id, model }) =
+            output_item(&Event::SessionStarted {
+                session_id: big.clone(),
+                model: Some(big.clone()),
+                api_key_source: None,
+            })
+        else {
+            panic!("a session started");
+        };
+        cut(&session_id);
+        cut(&model.unwrap());
+
+        let Some(AgentOutputItem::ToolCall { call_id, name, .. }) = output_item(&Event::ToolCall {
+            call_id: big.clone(),
+            name: big.clone(),
+            input: json!({}),
+        }) else {
+            panic!("a tool call");
+        };
+        cut(&call_id);
+        cut(&name);
+
+        let Some(AgentOutputItem::ToolResult { call_id, .. }) = output_item(&Event::ToolResult {
+            call_id: big.clone(),
+            status: ToolStatus::Ok,
+            output: None,
+        }) else {
+            panic!("a tool result");
+        };
+        cut(&call_id);
+
+        let Some(AgentOutputItem::Text { message_id, .. }) = output_item(&Event::Text {
+            message_id: Some(big),
+            text: "hi".to_owned(),
+        }) else {
+            panic!("text");
+        };
+        cut(&message_id.unwrap());
+    }
+
+    /// #190 review: a `TodoList` is capped on both axes — each item's text, and how many items
+    /// one event carries — so neither a single huge item nor an unbounded count of short ones can
+    /// make the event approach 0007's frame.
+    #[test]
+    fn a_todo_list_is_capped_on_item_text_and_on_count() {
+        let big_text = "t".repeat(MAX_TODO_TEXT_BYTES + 1);
+        let items: Vec<TodoItem> = (0..MAX_TODO_ITEMS + 50)
+            .map(|i| TodoItem {
+                text: if i == 0 {
+                    big_text.clone()
+                } else {
+                    "task".to_owned()
+                },
+                status: TodoStatus::Pending,
+            })
+            .collect();
+        let Some(AgentOutputItem::TodoList { items }) = output_item(&Event::TodoList { items })
+        else {
+            panic!("a todo list");
+        };
+        assert_eq!(items.len(), MAX_TODO_ITEMS, "extra items are dropped");
+        assert!(
+            items[0].text.len() < MAX_TODO_TEXT_BYTES + 64,
+            "{}",
+            items[0].text.len()
+        );
+        assert!(items[0].text.ends_with("bytes cut)"));
+    }
+
+    /// #190 review: `truncate` must land on a character boundary even when the cut falls inside a
+    /// multibyte character, not only for the all-ASCII strings the other tests use.
+    #[test]
+    fn truncate_keeps_multibyte_text_valid_utf8_at_the_boundary() {
+        // Each "é" is 2 bytes, so a byte cap that isn't a multiple of 2 lands mid-character;
+        // `truncate` must still produce valid UTF-8 (guaranteed by `String`'s own invariant, so a
+        // wrong cut point would panic rather than silently corrupt anything) and actually cut.
+        let text: String = "é".repeat(20_000);
+        let cut = truncate(&text, MAX_TEXT_ITEM_BYTES + 1);
+        assert!(cut.len() < text.len());
+        assert!(cut.ends_with("bytes cut)"));
     }
 }
