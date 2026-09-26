@@ -1,11 +1,8 @@
-import { execFile } from 'node:child_process';
 import { cp } from 'node:fs/promises';
 import { join } from 'node:path';
-import { promisify } from 'node:util';
-import type { ElectronApplication, Page } from 'playwright-core';
-import { screenshot, visible, type Scenario, type ScenarioContext } from './harness.ts';
-
-const execFileAsync = promisify(execFile);
+import { agentReply, agentTab, agentTask, chatShows, fakeClaudeEnv, openAgentsPanel, sendMessage, startSubagent } from './agents.ts';
+import { screenshot, visible, type Scenario } from './harness.ts';
+import { connectedToThisMac, createProject, hostChip, hostChipIn, projectName, projectRow, projectTab } from './projects.ts';
 
 const workspace = join(import.meta.dirname, '..', 'fixtures', 'workspace');
 const openFile = 'tasks.ts';
@@ -15,78 +12,6 @@ const openFile = 'tasks.ts';
  * route). An unresolvable name can take a DNS timeout of 30 s or more, longer than the handshake.
  */
 const unreachableHost = 'ssh://127.0.0.1:9';
-
-const hostChip = '.part.sidebar button.wisp-threads-host';
-
-/** Waits for the sidebar's host chip to reach a state, then checks its accessible name. */
-async function hostChipIn(window: Page, kind: string, ariaLabel: string): Promise<void> {
-  const chip = window.locator(`${hostChip}[data-kind="${kind}"]`);
-  await chip.waitFor({ state: 'visible' });
-  const label = await chip.getAttribute('aria-label');
-  if (label !== ariaLabel) {
-    throw new Error(`the host chip is labeled ${JSON.stringify(label)}, not ${JSON.stringify(ariaLabel)}`);
-  }
-}
-
-/** Waits for the bundled wispd to connect: the chip says so and the no-host view goes away. */
-async function connectedToThisMac(window: Page): Promise<void> {
-  await visible(window, '.part.titlebar', '.part.sidebar .wisp-threads');
-  await hostChipIn(window, 'connected', 'Host: this Mac, connected');
-  await window.locator('.wisp-agents-no-host').waitFor({ state: 'hidden' });
-}
-
-/** The project the project scenarios create, from a git repository of the same name. */
-const projectName = 'billing-service';
-const projectRow = `.part.sidebar button.wisp-threads-row[aria-label^="${projectName}, project"]`;
-
-/** Makes a real git repository in the scenario's folder, as `project/create` requires one. */
-async function gitRepository(dir: string): Promise<string> {
-  const repo = join(dir, projectName);
-  await execFileAsync('git', ['init', '--quiet', '--initial-branch=main', repo]);
-  return repo;
-}
-
-/**
- * Answers the next native folder picker with `folder`. On this Mac, New Project asks for the
- * repository with the system's folder picker, which Playwright can't drive.
- */
-async function answerFolderPicker(app: ElectronApplication, folder: string): Promise<void> {
-  // Electron's types aren't a dependency here, so the one method replaced is typed by hand.
-  interface Dialog {
-    showOpenDialog: () => Promise<{ canceled: boolean; filePaths: string[] }>;
-  }
-  await app.evaluate((electron: unknown, path: string) => {
-    (electron as { dialog: Dialog }).dialog.showOpenDialog = () => Promise.resolve({ canceled: false, filePaths: [path] });
-  }, folder);
-}
-
-/**
- * Creates a project the way a user does: `+` under Projects, the folder picker, then Enter on the
- * name wisp suggests. Waits for its row, and for its Project tab.
- */
-async function createProject({ app, window, dir }: ScenarioContext): Promise<void> {
-  await connectedToThisMac(window);
-  await answerFolderPicker(app, await gitRepository(dir));
-  await window.locator('.part.sidebar button.wisp-threads-new-project').click();
-  const name = window.locator('.quick-input-widget input');
-  await name.waitFor({ state: 'visible' });
-  const suggested = await name.inputValue();
-  if (suggested !== projectName) {
-    throw new Error(`New Project suggests the name ${JSON.stringify(suggested)}, not the folder's`);
-  }
-  await name.press('Enter');
-  await window.locator(projectRow).waitFor({ state: 'visible' });
-  await projectTab(window);
-}
-
-/** Waits for the Project tab to show the project, with the repository as its first fact. */
-async function projectTab(window: Page): Promise<void> {
-  await window.locator('.part.auxiliarybar .wisp-project-name', { hasText: projectName }).waitFor({ state: 'visible' });
-  const repo = await window.locator('.part.auxiliarybar .wisp-project-fact[data-fact="repo"] .wisp-project-fact-detail').textContent();
-  if (!repo?.includes(`${projectName} on this Mac, branch main`)) {
-    throw new Error(`the Project tab's repository fact is ${JSON.stringify(repo)}`);
-  }
-}
 
 export const scenarios: readonly Scenario[] = [
   {
@@ -199,6 +124,33 @@ export const scenarios: readonly Scenario[] = [
       await row.click();
       await projectTab(reopened.window);
       return screenshot(reopened.window);
+    },
+  },
+  {
+    name: 'agents-window-agents-panel',
+    title: 'The Agents panel, opened from the pill above the coordinator',
+    env: () => fakeClaudeEnv(),
+    async run(context) {
+      await createProject(context, { withCommit: true });
+      await startSubagent(context.window);
+      await chatShows(context.window, agentReply);
+      await openAgentsPanel(context.window, projectName);
+      await context.window.locator('.wisp-agents-panel-row[aria-label*="Needs review"]').waitFor({ state: 'visible', timeout: 30_000 });
+      return screenshot(context.window);
+    },
+  },
+  {
+    name: 'agents-window-subagent',
+    title: 'A subagent in a tab next to the coordinator, messaged directly',
+    env: () => fakeClaudeEnv(),
+    async run(context) {
+      await createProject(context, { withCommit: true });
+      await startSubagent(context.window);
+      await chatShows(context.window, agentReply);
+      await agentTab(context.window, agentTask).click();
+      await sendMessage(context.window, 'also handle credit notes');
+      await chatShows(context.window, 'Fake agent heard: also handle credit notes');
+      return screenshot(context.window);
     },
   },
 ];
