@@ -12,4 +12,8 @@ function requirePinnedNode(script) {
   }
 }
 
+if (require.main === module) {
+  requirePinnedNode(process.argv[2]);
+}
+
 module.exports = { requirePinnedNode };

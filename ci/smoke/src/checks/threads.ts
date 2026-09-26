@@ -1,21 +1,17 @@
-// A normal thread end to end (#110) over the local host's real wispd, the packaged app's bundled
-// binary, with the fake Claude Code of ../../../screenshots/src/agents.ts first on PATH. With a project
-// open, New Chat opens upstream's new-session composer in the project's repository; the first message
-// starts a thread, which the sidebar lists under the repository in Repositories, and whose chat shows the
-// agent's work, its composer, and its branch and host in the composer footer.
+// A normal thread end to end over the bundled wispd, with the fake Claude Code first on PATH: New
+// Chat in a project's repository, the thread's row under Repositories, its chat, composer footer,
+// and a follow-up message.
 import { agentReply, chatShows, fakeClaudeEnv, sendMessage } from '../../../screenshots/src/agents.ts';
-import { launch, type LaunchOptions } from '../../../screenshots/src/harness.ts';
+import { appLaunchOptions, launch, ready } from '../../../screenshots/src/harness.ts';
 import { createProject, projectName } from '../../../screenshots/src/projects.ts';
 import { openNewChat, repoThreadRow, sendFirstMessage, sessionsPart, threadTask } from '../../../screenshots/src/threads.ts';
 import { check } from '../check.ts';
-import { appLaunchOptions, ready } from '../harness.ts';
 
 export const threadsChecks = [
   check('New Chat starts a normal thread that lists under its repository and takes a message', async () => {
     const options = await appLaunchOptions();
-    const withFakeCli: LaunchOptions = { ...options, env: { ...options.env, ...fakeClaudeEnv() } };
     let step = 'launch';
-    const session = await launch(withFakeCli);
+    const session = await launch({ ...options, env: { ...options.env, ...fakeClaudeEnv() } });
     try {
       const { window } = session;
       await ready(session);

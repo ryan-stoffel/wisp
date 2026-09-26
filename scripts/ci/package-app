@@ -19,9 +19,7 @@ esac
 [ "$(uname -s)" = Darwin ] || fail "packaging needs macOS"
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
-want=$(cut -d. -f1 "$root/.nvmrc")
-have=$(node -p 'process.versions.node.split(".")[0]')
-[ "$have" = "$want" ] || fail "Node $want is required (.nvmrc pins $(cat "$root/.nvmrc")), but node is $(node --version)"
+node "$root/scripts/ci/release/node-version.js" "${0##*/}"
 bundle_id=io.github.ryan-stoffel.wisp
 zip="$root/dist/wisp-$version-$arch.zip"
 

@@ -16,9 +16,7 @@ case $arch in
 esac
 [ "$(uname -s)" = Darwin ] || fail "checking the app needs macOS"
 root=$(cd "$(dirname "$0")/../.." && pwd)
-want=$(cut -d. -f1 "$root/.nvmrc")
-have=$(node -p 'process.versions.node.split(".")[0]')
-[ "$have" = "$want" ] || fail "Node $want is required (.nvmrc pins $(cat "$root/.nvmrc")), but node is $(node --version)"
+node "$root/scripts/ci/release/node-version.js" "${0##*/}"
 input=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 [ -e "$input" ] || fail "$1 does not exist"
 

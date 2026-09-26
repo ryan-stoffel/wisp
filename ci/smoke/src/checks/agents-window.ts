@@ -1,16 +1,16 @@
-// A plain launch (no arguments) opens the Agents window: wisp's sidebar, the no-host view, and nothing
-// upstream would show to get a user signed in to Copilot (decision 0011; ci/screenshots/src/scenarios.ts's
-// agents-window scenario makes the same no-host composer check for the screenshot itself).
+// A plain launch opens the Agents window: wisp's sidebar, the no-host view, and nothing upstream
+// would show to get a user signed in to Copilot (0011).
+import { ready, visible } from '../../../screenshots/src/harness.ts';
 import { check } from '../check.ts';
-import { launchSmoke, ready, visible } from '../harness.ts';
+import { launchSmoke } from '../harness.ts';
 import { titleBarText, visibleChatElements } from '../ui.ts';
 
 export const agentsWindowChecks = [
   check('plain launch opens the Agents window with no sign-in or Copilot UI', async () => {
     const session = await launchSmoke();
     try {
-      const { app, window } = session;
-      await ready({ app, window });
+      const { window } = session;
+      await ready(session);
 
       await visible(window, '.part.titlebar', '.part.sidebar .wisp-threads', '.wisp-agents-no-host');
 

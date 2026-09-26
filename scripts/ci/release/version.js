@@ -93,7 +93,6 @@ function computeVersion(repoDir, env = process.env) {
 }
 
 module.exports = {
-  FIRST_VERSION,
   bumpLevel,
   compareVersions,
   computeVersion,

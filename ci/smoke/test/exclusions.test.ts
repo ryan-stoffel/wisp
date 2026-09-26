@@ -2,11 +2,6 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readExclusionLists } from '../src/exclusions.ts';
 
-// This is a real check against the committed overlay source (#94 wants a runtime check that survives
-// quoting or comma changes check-fork's own sed would miss), so it doubles as a regression test for the
-// parser: mixed quote styles, a missing trailing comma, or a trailing comment must not make it drop or
-// mis-split an id.
-
 test('reads every id from the committed exclusion lists', async () => {
   const lists = await readExclusionLists();
 

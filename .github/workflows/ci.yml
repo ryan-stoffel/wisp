@@ -144,9 +144,7 @@ jobs:
           key: ${{ steps.inputs.outputs.key }}
 
   # Builds the packaged Wisp.app for arm64, or restores the build of the same inputs from an
-  # earlier run (scripts/ci/README.md). Runs on every PR and push. x64 only ships in releases
-  # (#43) and nothing else in ci.yml checks it, so it builds separately, in app-x64 below, only on
-  # a push, and a PR's required ci check never waits on it (#177).
+  # earlier run (scripts/ci/README.md). x64 builds in app-x64 below, on a push only.
   app:
     runs-on: macos-26
     timeout-minutes: 90
@@ -213,9 +211,7 @@ jobs:
           path: ${{ env.ZIP }}
           key: ${{ steps.inputs.outputs.key }}
 
-  # Same steps as app, but for x64, and only on a push to develop or main (#177): a PR's required ci
-  # check must not wait on it. The ci job below treats a skipped app-x64 as success, since that's the
-  # normal outcome on a PR, but a failure here (which only happens on a push) still fails ci.
+  # Same steps as app, but for x64, and only on a push, so a PR's required ci check never waits on it.
   app-x64:
     if: github.event_name == 'push'
     runs-on: macos-26
@@ -283,11 +279,8 @@ jobs:
           path: ${{ env.ZIP }}
           key: ${{ steps.inputs.outputs.key }}
 
-  # Playwright Electron smoke tests against the packaged app (#13), restoring the arm64 zip the app job
-  # above just built or restored, the way screenshots.yml's capture job does. Running after app instead of
-  # alongside it means this restore is always a hit: app has already saved that key by the time this job
-  # starts, so smoke adds only its own runtime (about a minute), never a second app build. arm64 only,
-  # matching screenshots.yml's choice, since a bug this suite would catch is not architecture-specific.
+  # Playwright Electron smoke tests against the arm64 app. Running after app makes the restore always
+  # a hit, so this job never builds the app itself.
   smoke:
     runs-on: macos-26
     needs: [app]
@@ -330,20 +323,15 @@ jobs:
       - name: Run the smoke tests
         run: scripts/ci/smoke
 
-  # Playwright Electron tests against the packaged app and its bundled, real wispd (#66), restoring
-  # the same arm64 zip smoke does, for the same reason: app has already saved that key, so this is
-  # always a cache hit. Separate from smoke because these checks are slower (several app launches,
-  # a kill and reconnect, ssh) and depend on wispd actually running, where smoke deliberately keeps
-  # it out of every launch (ci/smoke/src/harness.ts).
+  # Playwright Electron tests against the arm64 app and its bundled, real wispd, restored as in
+  # smoke. Separate from smoke, which keeps wispd out of every launch, because these are slower.
   e2e:
     runs-on: macos-26
     needs: [app]
     timeout-minutes: 25
     env:
       ZIP: dist/editor/wisp-darwin-arm64.zip
-      # A GitHub-hosted macOS runner must support scripts/ci/ssh-localhost; here (unlike a
-      # developer's Mac) "ssh not ready" is a failure, not a skip, so a broken ssh setup fails the
-      # build instead of quietly dropping this coverage.
+      # Here, unlike on a developer's Mac, "ssh not ready" fails instead of skipping.
       WISP_E2E_REQUIRE_SSH: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -378,18 +366,12 @@ jobs:
             ci/screenshots/package-lock.json
             ci/e2e/package-lock.json
 
-      # scripts/ci/ssh-localhost (#95) sets up key-based ssh to localhost with its own throwaway
-      # key, skipping cleanly (never failing this job) wherever it can't run. scripts/ci/e2e runs
-      # it, then #95's own check-ssh-attach, then ci/e2e's Playwright checks, which skip their own
-      # ssh check the same way when ssh-localhost was skipped.
       - name: Run the end-to-end tests
         env:
-          # ssh.ts's ground-truth check (#224) saves here on a failed assertion; uploaded below.
+          # ssh.ts's ground-truth check saves here when it fails.
           WISP_E2E_DIAGNOSTICS_DIR: ${{ runner.temp }}/e2e-diagnostics
         run: scripts/ci/e2e
 
-      # Only ever has files when ssh.ts's ground-truth check failed (harness.ts's
-      # saveWispdDiagnostics is a no-op otherwise), so a passing run uploads nothing.
       - name: Upload wispd diagnostics from a failed ssh ground-truth check
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -437,8 +419,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      # app-x64 only runs on a push (#177), so it is normally "skipped" on a PR; that counts as
-      # success here. Every other job, and app-x64 itself when it does run, must be "success".
+      # app-x64 is skipped on every PR, which counts as success here.
       - name: Require every job to succeed, except a skipped app-x64
         env:
           NEEDS: ${{ toJSON(needs) }}

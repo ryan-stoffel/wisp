@@ -1,26 +1,20 @@
-// #94: assert at runtime that each id wisp excludes (editor/overlay/.../wisp/exclusions.ts and
-// .../excludedActions.ts) is really skipped, not just present in the list. readExclusionLists() parses the
-// committed source directly, so a renamed or mis-quoted id shows up here even if check-fork's own sed missed
-// it (#94's finding 1).
-//
-// Every one of the 58 ids gets one of four kinds of evidence, recorded below so the mapping itself is a
-// checked invariant: a new exclusion has to be triaged into this table or the suite fails on the count
-// mismatch, instead of silently getting no coverage.
+// Each id wisp excludes (editor/overlay/.../wisp/exclusions.ts and .../excludedActions.ts) is really
+// skipped at runtime, not just listed. Every id gets one of four kinds of evidence in the table below,
+// and a new exclusion fails the suite until it is triaged into the table:
 //
 //   dom      - it would render as an element whose own `id` attribute is the excluded id; assert absence.
 //   process  - it starts a utility process (the local Copilot agent host); assert app.getAppMetrics() has none.
 //   palette  - it (or its open command) would show as a Command Palette entry with recognizable text; assert
-//              that text does not appear. Search terms are picked to avoid #125's already-tracked, unrelated
-//              Copilot residue in the Agents window (upstream "Voice Input Mode" and "Chat: Open Chat (Agent)"
-//              commands, neither of which shares wording with the ids checked here).
+//              that text does not appear. Search terms avoid the unrelated Copilot residue of #125
+//              ("Voice Input Mode" and "Chat: Open Chat (Agent)").
 //   static   - no independent, externally observable effect: a background sync, a context key with no menu
 //              entry, or a contribution reachable only through another excluded surface (for example, the
 //              onboarding tours only ever launch from Automations, which is itself excluded and checked).
-//              check-fork's static guard (every id still exists upstream) is this bucket's only automated
-//              check today; #144 tracks giving it a real runtime signal.
+//              Only check-fork's guard that every id still exists upstream covers these (#144).
 import { check } from '../check.ts';
 import { readExclusionLists } from '../exclusions.ts';
-import { gitWorkspace, launchSmoke, ready, type SmokeSession } from '../harness.ts';
+import { ready, type Session } from '../../../screenshots/src/harness.ts';
+import { gitWorkspace, launchSmoke } from '../harness.ts';
 import { paletteCommands, presentElementIds, statusBarItems } from '../ui.ts';
 
 type Method = 'dom' | 'process' | 'palette' | 'static';
@@ -181,8 +175,8 @@ export const exclusionChecks = [
 
   check('the local agent host utility process never starts', async () => {
     const workspace = await gitWorkspace();
-    let agentsSession: SmokeSession | undefined;
-    let editorSession: SmokeSession | undefined;
+    let agentsSession: Session | undefined;
+    let editorSession: Session | undefined;
     try {
       agentsSession = await launchSmoke();
       await ready(agentsSession);
@@ -207,8 +201,8 @@ export const exclusionChecks = [
 
   check('excluded features have no matching command palette entry', async () => {
     const workspace = await gitWorkspace();
-    let editorSession: SmokeSession | undefined;
-    let agentsSession: SmokeSession | undefined;
+    let editorSession: Session | undefined;
+    let agentsSession: Session | undefined;
     try {
       const hits: string[] = [];
       for (const plan of palettePlan) {
@@ -233,7 +227,7 @@ export const exclusionChecks = [
   }),
 ];
 
-async function openReady(open: () => Promise<SmokeSession>): Promise<SmokeSession> {
+async function openReady(open: () => Promise<Session>): Promise<Session> {
   const session = await open();
   await ready(session);
   return session;
@@ -249,7 +243,7 @@ interface AppMetricsHandle {
   readonly app: { getAppMetrics(): ProcessMetricLike[] };
 }
 
-async function processNames(session: SmokeSession): Promise<string[]> {
+async function processNames(session: Session): Promise<string[]> {
   return session.app.evaluate((electron: AppMetricsHandle) =>
     electron.app
       .getAppMetrics()

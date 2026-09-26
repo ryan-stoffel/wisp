@@ -1,19 +1,13 @@
-// Clicking Sign in on a detected CLI in the Accounts view (#121) opens an integrated terminal
-// running that vendor's login command (decision record 0004, #115), over the local host's real
-// wispd -- the packaged app's bundled binary, started on demand (0010) since `wisp.host` defaults
-// to `local`. A fake `claude` on PATH answers wispd's own detection probe (#114) as installed and
-// signed in, and answers the terminal's own "claude auth login" by writing its argv to a proof
-// file. wisp itself never reads a sign-in terminal's output (0004); this check does, only to prove
-// which command actually ran, the same way editor.ts's terminal check proves a real command ran.
+// Sign in on a detected CLI in the Accounts view opens an integrated terminal running that vendor's
+// login command (0004), over the bundled wispd. The fake `claude` on PATH answers wispd's detection
+// as signed in, and its "auth login" writes its argv to a proof file, which proves which command ran.
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
-import { launch, type LaunchOptions } from '../../../screenshots/src/harness.ts';
+import { join } from 'node:path';
+import { fakeClaudeEnv, runWispCommand } from '../../../screenshots/src/agents.ts';
+import { appLaunchOptions, launch, ready } from '../../../screenshots/src/harness.ts';
 import { check } from '../check.ts';
-import { appLaunchOptions, ready } from '../harness.ts';
-
-const fakeCliDir = join(import.meta.dirname, '..', '..', 'fixtures', 'fake-cli');
 
 export const accountsChecks = [
   check('Sign in on a detected CLI opens a terminal running its login command', async () => {
@@ -21,32 +15,17 @@ export const accountsChecks = [
     const home = await mkdtemp(join(tmpdir(), 'wisp-smoke-home-'));
     const proofDir = await mkdtemp(join(tmpdir(), 'wisp-smoke-signin-'));
     const proofFile = join(proofDir, 'proof.txt');
-    const withFakeCli: LaunchOptions = {
-      ...options,
-      env: {
-        ...options.env,
-        HOME: home,
-        PATH: `${fakeCliDir}${delimiter}${process.env.PATH ?? ''}`,
-        WISP_SIGNIN_PROOF_FILE: proofFile,
-      },
-    };
     let step = 'launch';
-    const session = await launch(withFakeCli);
+    const session = await launch({
+      ...options,
+      env: { ...options.env, HOME: home, ...fakeClaudeEnv(), WISP_SIGNIN_PROOF_FILE: proofFile },
+    });
     try {
       const { window } = session;
       await ready(session);
 
       step = 'the Accounts view opens from the command palette';
-      await window.keyboard.press('ControlOrMeta+Shift+KeyP');
-      const paletteInput = window.locator('.quick-input-widget input');
-      await paletteInput.waitFor({ state: 'visible' });
-      await paletteInput.fill('>Wisp: Show Accounts');
-      const showAccounts = window
-        .locator('.quick-input-widget .monaco-list-row')
-        .filter({ hasText: 'Show Accounts' })
-        .first();
-      await showAccounts.waitFor({ state: 'visible', timeout: 20_000 });
-      await showAccounts.click();
+      await runWispCommand(window, 'Show Accounts');
       await window.locator('.wisp-accounts').waitFor({ state: 'visible' });
 
       step = 'wispd detects the fake claude as installed and signed in';
@@ -69,11 +48,7 @@ export const accountsChecks = [
 
       step = 'clicking Sign in opens a terminal that runs claude auth login';
       await signIn.click();
-      // The proof file is the real assertion: it can exist only if a terminal actually ran the
-      // fake claude, which needs no keyboard interaction and so no dependency on exactly how (or
-      // in which part of the Agents window's layout) the terminal itself renders. Cold: this is
-      // the first terminal in a freshly-launched app, so give it longer than editor.ts's own
-      // terminal check does for one opened by Ctrl+Backtick into an already-warm window.
+      // The first terminal in a fresh app starts cold, so this waits longer than editor.ts does.
       const deadline = Date.now() + 40_000;
       while (!existsSync(proofFile) && Date.now() < deadline) {
         await window.waitForTimeout(250);

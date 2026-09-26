@@ -40,7 +40,7 @@ test('returns the manifest and the PNGs it lists', async () => {
       results: [
         ...captured.results,
         { name: 'chat', title: 'Chat', status: 'failed', error: 'boom', file: 'chat.failed.png' },
-        { name: 'editor', title: 'Editor', status: 'not-available', reason: 'later' },
+        { name: 'editor', title: 'Editor', status: 'failed', error: 'no screenshot' },
       ],
     },
     { 'startup.png': png, 'chat.failed.png': png, 'stray.png': png },

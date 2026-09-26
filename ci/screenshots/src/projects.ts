@@ -1,5 +1,4 @@
-// The Agents window's host and project steps that several scenarios and smoke checks share: waiting for
-// the bundled wispd to connect, and creating a project the way a user does.
+// Host and project steps shared by the scenarios and the smoke and e2e checks.
 import { execFile } from 'node:child_process';
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -94,9 +93,8 @@ export async function createProject({ app, window, dir }: Pick<ScenarioContext, 
 }
 
 /**
- * What the window and its logs say when the Project tab never shows a new project, for a flake
- * that only a loaded runner hits (#183): where focus is, whether the row is selected, any
- * notification, and the renderer's and wispd's recent log lines.
+ * What the window and its logs say when the Project tab never shows a new project, a flake only a
+ * loaded runner hits: focus, the rows, any notification, and recent renderer and wispd log lines.
  */
 async function projectTabDiagnostics(app: ElectronApplication, window: Page): Promise<string> {
   const lines = ['Project tab diagnostics (#183):'];

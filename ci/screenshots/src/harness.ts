@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
-import { _electron, errors, type ElectronApplication, type Locator, type Page } from 'playwright-core';
+import { _electron, errors, type ElectronApplication, type Page } from 'playwright-core';
 
 export interface ScenarioContext {
   app: ElectronApplication;
@@ -18,10 +18,6 @@ export interface ScenarioContext {
   relaunch(): Promise<ScenarioContext>;
 }
 
-export interface NotAvailable {
-  notAvailable: string;
-}
-
 export interface Scenario {
   name: string;
   title: string;
@@ -30,35 +26,24 @@ export interface Scenario {
   settings?: Readonly<Record<string, unknown>>;
   /** Environment variables the app starts with, on top of the harness's own, such as a PATH with a fake CLI. */
   env?: (dir: string) => Readonly<Record<string, string>>;
-  run(context: ScenarioContext): Promise<Buffer | NotAvailable>;
+  run(context: ScenarioContext): Promise<Buffer>;
 }
 
 export type LaunchOptions = NonNullable<Parameters<typeof _electron.launch>[0]>;
 
 export interface Session extends ScenarioContext {
+  relaunch(): Promise<Session>;
   close(): Promise<void>;
-  /** wispd's data folder for this run (`WISPD_DATA_DIR`, daemon/src/paths.rs), so a caller can find its `wispd.lock` pid or drive it directly. */
+  /** wispd's data folder for this run (`WISPD_DATA_DIR`, daemon/src/paths.rs). */
   readonly wispdDataDir: string;
 }
 
 export const TIMEOUT_MS = 60_000;
-export const WINDOW_SIZE = { width: 1024, height: 640 };
+const WINDOW_SIZE = { width: 1024, height: 640 };
 
 const repoRoot = join(import.meta.dirname, '..', '..', '..');
-const workbenchSelector = '.monaco-workbench';
-const workbenchRestoredMark = 'code/didStartWorkbench';
 const appFlags = ['--skip-welcome', '--skip-release-notes', '--disable-workspace-trust', '--use-inmemory-secretstorage'];
 const execFileAsync = promisify(execFile);
-/** wispd's data folder (daemon/src/paths.rs). */
-const WISPD_DATA_DIR_ENV = 'WISPD_DATA_DIR';
-
-export function notAvailable(reason: string): NotAvailable {
-  return { notAvailable: reason };
-}
-
-export function isNotAvailable(value: Buffer | NotAvailable): value is NotAvailable {
-  return !Buffer.isBuffer(value);
-}
 
 export function screenshot(window: Page, timeout = TIMEOUT_MS): Promise<Buffer> {
   return window.screenshot({ animations: 'disabled', caret: 'hide', timeout });
@@ -67,18 +52,6 @@ export function screenshot(window: Page, timeout = TIMEOUT_MS): Promise<Buffer> 
 export async function visible(window: Page, ...selectors: string[]): Promise<void> {
   for (const selector of selectors) {
     await window.locator(selector).first().waitFor({ state: 'visible' });
-  }
-}
-
-export async function appears(locator: Locator, timeout: number): Promise<boolean> {
-  try {
-    await locator.first().waitFor({ state: 'visible', timeout });
-    return true;
-  } catch (error) {
-    if (error instanceof errors.TimeoutError) {
-      return false;
-    }
-    throw error;
   }
 }
 
@@ -126,13 +99,13 @@ export async function launch(options: LaunchOptions, scenario: Pick<Scenario, 'a
       ],
       // The app's bundled wispd starts on demand (0010). Its own data folder keeps it away from
       // the machine's real wispd, and lets close() stop the one this run started.
-      env: { ...inheritedEnv(), ...options.env, ...scenario.env?.(files), [WISPD_DATA_DIR_ENV]: wispdDataDir },
+      env: { ...(process.env as Record<string, string>), ...options.env, ...scenario.env?.(files), WISPD_DATA_DIR: wispdDataDir },
       timeout: TIMEOUT_MS,
     });
     app = started;
     const window = await firstRealWindow(started);
     window.setDefaultTimeout(TIMEOUT_MS);
-    const session: Session = {
+    return {
       app: started,
       window,
       dir: files,
@@ -145,7 +118,6 @@ export async function launch(options: LaunchOptions, scenario: Pick<Scenario, 'a
         return next;
       },
     };
-    return session;
   };
   try {
     await mkdir(files);
@@ -164,30 +136,20 @@ export async function launch(options: LaunchOptions, scenario: Pick<Scenario, 'a
 // The development build loads the -dev variants, so a local run of a check can drive it too.
 const entryPointUrl = /\/(workbench|sessions)(?:-dev)?\.html(?:[?#]|$)/;
 
-// app.firstWindow() trusts whichever BrowserWindow Electron creates first, at whatever URL it has at that
-// instant (usually still about:blank). On a cold launch that first window can be a transient page that closes
-// again before the caller gets to it, losing the window Playwright was watching (#13's Progress comment on a
-// flake #10 saw once). Instead, wait for a window whose navigation actually reaches the app's own HTML; a
-// transient window's predicate simply times out and Playwright keeps waiting for the real one. One wait, no retry.
+// app.firstWindow() can return a transient window that closes again on a cold launch, so this waits
+// for a window that actually navigates to the app's own HTML; any other window's predicate just fails.
 async function firstRealWindow(app: ElectronApplication): Promise<Page> {
   return app.waitForEvent('window', {
     timeout: TIMEOUT_MS,
-    predicate: async (page) => {
-      // Any failure here (a timeout, or the page closing first) means this particular window never
-      // became the real one; let Playwright keep waiting instead of failing the whole wait on it.
-      return page
-        .waitForURL(entryPointUrl, { timeout: TIMEOUT_MS })
-        .then(() => true)
-        .catch(() => false);
-    },
+    predicate: (page) => page.waitForURL(entryPointUrl, { timeout: TIMEOUT_MS }).then(() => true, () => false),
   });
 }
 
 export async function ready({ app, window }: Pick<ScenarioContext, 'app' | 'window'>): Promise<void> {
   await window.waitForURL((url) => url.protocol !== 'about:');
   await fitWindow(app, window);
-  await window.locator(workbenchSelector).waitFor();
-  await window.waitForFunction((mark) => performance.getEntriesByName(mark, 'mark').length > 0, workbenchRestoredMark);
+  await window.locator('.monaco-workbench').waitFor();
+  await window.waitForFunction(() => performance.getEntriesByName('code/didStartWorkbench', 'mark').length > 0);
   await window.evaluate(
     async ({ quietMs, limitMs, fontsMs }) => {
       await new Promise<void>((resolve) => {
@@ -273,10 +235,4 @@ async function stopWispd(dataDir: string): Promise<void> {
       return;
     }
   }
-}
-
-function inheritedEnv(): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
-  );
 }

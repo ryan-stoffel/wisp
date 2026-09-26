@@ -1,16 +1,6 @@
 import { mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import {
-  appLaunchOptions,
-  isNotAvailable,
-  launch,
-  ready,
-  screenshot,
-  type LaunchOptions,
-  type Scenario,
-  type ScenarioContext,
-  type Session,
-} from './harness.ts';
+import { appLaunchOptions, launch, ready, screenshot, type LaunchOptions, type Scenario, type ScenarioContext, type Session } from './harness.ts';
 import {
   capturedFile,
   failedFile,
@@ -93,13 +83,6 @@ async function capture(scenario: Scenario, options: LaunchOptions): Promise<Resu
       })(),
       scenarioTimeoutMs,
     );
-    if (isNotAvailable(shot)) {
-      const problem = textProblem(shot.notAvailable, LIMITS.reason);
-      if (problem) {
-        throw new Error(`notAvailable reason ${problem}: ${shot.notAvailable}`);
-      }
-      return { name, title, status: 'not-available', reason: shot.notAvailable };
-    }
     await writeFile(join(outDir, capturedFile(name)), shot);
     return { name, title, status: 'captured', file: capturedFile(name) };
   } catch (error) {
@@ -132,8 +115,6 @@ function describe(result: Result): string {
   switch (result.status) {
     case 'captured':
       return `captured ${result.file}`;
-    case 'not-available':
-      return `not available yet (${result.reason})`;
     case 'failed':
       return `failed: ${result.error}`;
     case 'pending':

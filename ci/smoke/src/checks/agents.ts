@@ -1,20 +1,15 @@
-// A subagent end to end (#105) over the local host's real wispd, the packaged app's bundled binary. The
-// agent is ci/smoke/fixtures/fake-cli/claude, first on PATH, which wispd detects and runs as Claude Code:
-// it answers a task by writing FAKE_AGENT_NOTES.md in its worktree, and a follow-up (a resumed session)
-// by echoing it. The check starts one with Wisp: Start Subagent, sees the Agents pill count it, opens its
-// row from the Agents panel, sees its output in its tab, and sends it a follow-up with the composer.
+// A subagent end to end over the bundled wispd, with the fake Claude Code first on PATH: Start
+// Subagent, the Agents pill and panel, its tab and output, and a follow-up from the composer.
 import { agentReply, agentsPill, agentTab, agentTask, chatShows, fakeClaudeEnv, openAgentsPanel, sendMessage, startSubagent } from '../../../screenshots/src/agents.ts';
-import { launch, type LaunchOptions } from '../../../screenshots/src/harness.ts';
+import { appLaunchOptions, launch, ready } from '../../../screenshots/src/harness.ts';
 import { createProject, projectName } from '../../../screenshots/src/projects.ts';
 import { check } from '../check.ts';
-import { appLaunchOptions, ready } from '../harness.ts';
 
 export const agentsChecks = [
   check('a subagent shows behind the Agents pill, opens as a tab, and takes a message', async () => {
     const options = await appLaunchOptions();
-    const withFakeCli: LaunchOptions = { ...options, env: { ...options.env, ...fakeClaudeEnv() } };
     let step = 'launch';
-    const session = await launch(withFakeCli);
+    const session = await launch({ ...options, env: { ...options.env, ...fakeClaudeEnv() } });
     try {
       const { window } = session;
       await ready(session);

@@ -102,8 +102,6 @@ function section(result: Result, images: Images | undefined): string[] {
   switch (result.status) {
     case 'captured':
       return [image(result.title, result.file, images)];
-    case 'not-available':
-      return [`Not available yet: ${result.reason}.`];
     case 'failed':
       return [
         `Failed: ${code(firstLine(result.error))}`,
@@ -123,7 +121,6 @@ function tally(results: readonly Result[]): string {
   const labels: Record<Result['status'], string> = {
     captured: 'captured',
     failed: 'failed',
-    'not-available': 'not available yet',
     pending: 'did not run',
   };
   const counts = new Map<Result['status'], number>();

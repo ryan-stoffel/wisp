@@ -1,23 +1,19 @@
-// Small UI helpers shared by the checks: driving the command palette and reading what is on screen.
-// Nothing here is scenario-specific; each check decides what to search for and what an empty result means.
+// UI helpers shared by the checks: the command palette and what is on screen.
 import type { Page } from 'playwright-core';
 
 const paletteInput = '.quick-input-widget input';
 
 /**
- * Opens the command palette, types `>query`, and returns the visible rows whose text actually contains
- * `query` (case-insensitive). The palette itself fuzzy-matches the query as a subsequence of letters, not a
- * substring, so most queries return commands that merely happen to contain the same letters in order (a
- * 4-letter query like "chat" matches "Change Tab Display Size"); filtering again here is what makes the
- * result mean what a caller expects it to mean.
+ * Opens the command palette, types `>query`, and returns the rows whose text contains `query`
+ * (case-insensitive). The palette fuzzy-matches letters in order ("chat" matches "Change Tab Display
+ * Size"), so the rows are filtered again here.
  */
 export async function paletteCommands(window: Page, query: string): Promise<string[]> {
   await window.keyboard.press('ControlOrMeta+Shift+KeyP');
   const input = window.locator(paletteInput);
   await input.waitFor({ state: 'visible' });
   await input.fill(`>${query}`);
-  // The list re-renders on a filter timer; there is no event to wait on, so give it a fixed, short settle
-  // window instead of a growing retry loop. 500ms is well over what the filter itself takes.
+  // The list re-renders on a filter timer with no event to wait on.
   await window.waitForTimeout(500);
   const rows = await window.evaluate(() => {
     function accessibleText(el: Element): string {

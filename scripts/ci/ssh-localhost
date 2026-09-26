@@ -1,24 +1,15 @@
 #!/bin/sh
-# Sets up key-based `ssh localhost` on a disposable GitHub-hosted macOS runner, for #95 and
-# ci/e2e's own ssh check (ci/e2e/src/checks/ssh.ts). It generates a throwaway client key and host
-# key, runs a user-level sshd of its own on a high port, and points a `Host localhost` block in
-# ~/.ssh/config at its own throwaway identity and known_hosts, so the editor's fixed ssh argv
-# (`ssh -T -o BatchMode=yes -o ConnectTimeout=10 -o ControlPath=none -- <host> wispd attach`,
-# decision record 0007) never needs its own -i or -o UserKnownHostsFile to use them.
+# Sets up key-based `ssh localhost` on a disposable GitHub-hosted macOS runner: a throwaway client
+# and host key, a user-level sshd on a high port, and a `Host localhost` block in ~/.ssh/config, so
+# the editor's fixed ssh argv (0007) needs no -i or UserKnownHostsFile of its own.
 #
-# Never runs outside a GitHub-hosted runner (a developer's Mac, or a self-hosted runner, keeps its
-# own ~/.ssh untouched: gating on CI=true alone is not enough, since developers and tools often
-# export that too), and never fails the build on its own: whatever happens, it writes
-# WISP_E2E_SSH_READY=true or =false plus a reason to <status-file>, and the caller
-# (scripts/ci/e2e, ci/e2e's ssh check) decides whether that is a skip or, with
-# WISP_E2E_REQUIRE_SSH=1, a failure. Readiness is proven by actually running `ssh localhost`, not
-# assumed from having started sshd.
+# It leaves any other machine's ~/.ssh alone and never fails on its own: it writes
+# WISP_E2E_SSH_READY=true or =false plus a reason to <status-file>, and the caller decides whether
+# that is a skip or, with WISP_E2E_REQUIRE_SSH=1, a failure.
 set -eu
 
 status_file=${1:?"usage: $0 <status-file>"}
-# Set once the user-level sshd actually starts, however this script ends up exiting, so the
-# caller (scripts/ci/e2e) can always stop it: an ephemeral runner would tear it down anyway, but
-# leaving it running past this script's own use of it is untidy on general principle.
+# Written to the status file once sshd starts, so scripts/ci/e2e can stop it.
 sshd_pid=""
 
 write_status() {
@@ -41,9 +32,7 @@ skip() {
 }
 
 [ "$(uname -s)" = "Darwin" ] || skip "not macOS"
-# GITHUB_ACTIONS and RUNNER_ENVIRONMENT are both set by Actions itself and not something a
-# developer's local CI=true export would set; RUNNER_ENVIRONMENT also keeps this off a self-hosted
-# runner, which is not disposable the way a GitHub-hosted one is.
+# Not CI=true, which developers export too; RUNNER_ENVIRONMENT also rules out self-hosted runners.
 [ "${GITHUB_ACTIONS:-}" = "true" ] || skip "not running in GitHub Actions"
 [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ] || skip "not a GitHub-hosted runner"
 command -v ssh >/dev/null 2>&1 || skip "no ssh on PATH"
@@ -56,7 +45,6 @@ known_hosts="$state_dir/known_hosts"
 : > "$known_hosts"
 ssh-keygen -t ed25519 -N '' -f "$identity" -C wisp-e2e-ci -q
 
-# An unprivileged, high port of our own; nothing else on a fresh runner should be using it.
 port=2222
 host_key="$state_dir/host_key"
 ssh-keygen -t ed25519 -N '' -f "$host_key" -q

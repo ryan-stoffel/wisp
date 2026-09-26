@@ -2,12 +2,7 @@
 set -eu
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
-want=$(cut -d. -f1 "$root/.nvmrc")
-have=$(node -p 'process.versions.node.split(".")[0]')
-if [ "$have" != "$want" ]; then
-  echo "${0##*/}: Node $want is required (.nvmrc pins $(cat "$root/.nvmrc")), but node is $(node --version)" >&2
-  exit 1
-fi
+node "$root/scripts/ci/release/node-version.js" "${0##*/}"
 
 cd "$root/ci/screenshots"
 set -x

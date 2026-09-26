@@ -1,31 +1,23 @@
 // Killing wispd mid-session: the chip shows disconnected, then reconnects on its own (the client's
-// backoff, wispdClient.ts), and the sidebar never doubles the project it already had (0007's
-// idempotent create plus a plain `project/list` on the new connection).
-import { check } from '../check.ts';
-import {
-  TIMEOUT_MS,
-  appLaunchOptions,
-  bundledWispdPath,
-  killWispd,
-  launchConnected,
-  projectWorkspace,
-  queryProjectsDirect,
-  ready,
-  readWispdPid,
-} from '../harness.ts';
-import { projectIdFromSession, waitForHostKind, waitForProjectRowSession, waitForSingleProjectRow } from '../wispUi.ts';
-import { createLocalProject, stubFolderPicker } from '../wispProject.ts';
+// backoff, wispdClient.ts), and the sidebar never doubles the project it already had.
+import { TIMEOUT_MS, appLaunchOptions, readWispdPid, ready } from '../../../screenshots/src/harness.ts';
+import { answerFolderPicker } from '../../../screenshots/src/projects.ts';
+import { check } from '../../../smoke/src/check.ts';
+import { gitWorkspace } from '../../../smoke/src/harness.ts';
+import { bundledWispd } from '../../../smoke/src/wispd.ts';
+import { killWispd, launchConnected, queryProjectsDirect } from '../harness.ts';
+import { createLocalProject, projectIdFromSession, waitForHostKind, waitForProjectRowSession, waitForSingleProjectRow } from '../wispUi.ts';
 
 export const reconnectChecks = [
   check('killing wispd mid-session shows disconnected, then reconnects with no duplicate projects', async () => {
-    const workspace = await projectWorkspace();
+    const workspace = await gitWorkspace();
     const session = await launchConnected();
     try {
       const { app, window } = session;
-      await ready({ app, window });
+      await ready(session);
       await waitForHostKind(window, ['connected'], TIMEOUT_MS);
 
-      await stubFolderPicker(app, workspace.folder);
+      await answerFolderPicker(app, workspace.folder);
       await createLocalProject(window);
       const beforeSession = await waitForSingleProjectRow(window, TIMEOUT_MS);
       const projectId = projectIdFromSession(beforeSession);
@@ -33,9 +25,7 @@ export const reconnectChecks = [
 
       await killWispd(session);
 
-      // wispHostStatus.ts's describeProblem reports 'error' for the disconnected state itself and
-      // for 'connecting' once it has a last problem to keep showing while it retries, so a lost,
-      // still-retrying connection is 'error' throughout, right up to the moment it reconnects.
+      // wispHostStatus.ts reports a lost, still-retrying connection as 'error' until it reconnects.
       const disconnected = await waitForHostKind(window, ['error'], TIMEOUT_MS);
       if (disconnected.kind !== 'error') {
         throw new Error(`host chip is ${JSON.stringify(disconnected)}, expected it to show a problem after wispd was killed`);
@@ -50,18 +40,14 @@ export const reconnectChecks = [
         throw new Error(`expected a new wispd process; before ${String(pidBefore)}, after ${String(pidAfter)}`);
       }
 
-      // Ground truth first: WispProjectsService (wispProjectsService.ts) keeps its old array across
-      // a reconnect until the resubscribe's resync lands and it re-lists, so the chip alone saying
-      // 'connected' does not prove the editor's own list has caught up yet. wispd's own store has
-      // no such lag once it has answered project/list at all.
-      const wispdPath = bundledWispdPath(await appLaunchOptions());
-      const direct = await queryProjectsDirect(wispdPath, session.wispdDataDir);
+      // Ground truth first: the editor keeps its old list until the resubscribe's resync lands, so
+      // a connected chip does not yet prove its list has caught up. wispd's own store has no lag.
+      const direct = await queryProjectsDirect(bundledWispd(await appLaunchOptions()), session.wispdDataDir);
       const directProject = direct[0];
       if (direct.length !== 1 || directProject?.id !== projectId) {
         throw new Error(`wispd itself lists ${JSON.stringify(direct)}, expected exactly the one project ${projectId}`);
       }
 
-      // Then the UI: wait for it to catch up to that same single project rather than reading it once.
       await waitForProjectRowSession(window, beforeSession, TIMEOUT_MS);
     } finally {
       await session.close();

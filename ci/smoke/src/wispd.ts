@@ -1,7 +1,5 @@
-// A minimal JSON-RPC client for wispd (0007), for checks that need wispd to be in some state before
-// they drive the app: it runs `wispd attach` and exchanges newline-delimited JSON over its stdio,
-// the same transport the editor uses. It speaks only what a check needs; wisp's own client lives in
-// the editor.
+// A minimal JSON-RPC client for wispd (0007) over `wispd attach`'s stdio, for checks that need
+// wispd in some state before they drive the app, or that read wispd's own state directly.
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { dirname, join } from 'node:path';
@@ -12,19 +10,11 @@ interface Pending {
   reject(error: Error): void;
 }
 
-export class WispdError extends Error {
-  readonly code: number;
-  readonly kind: string | undefined;
-
-  constructor(message: string, code: number, kind: string | undefined) {
-    super(message);
-    this.code = code;
-    this.kind = kind;
+/** The `wispd` inside a packaged app, from scripts/ci/app-launch's `executablePath` (`Wisp.app/Contents/MacOS/Wisp`). */
+export function bundledWispd({ executablePath }: { executablePath?: string }): string {
+  if (!executablePath) {
+    throw new Error('app-launch gave no executablePath');
   }
-}
-
-/** The `wispd` inside a packaged app, from the app's executable (`Wisp.app/Contents/MacOS/Wisp`). */
-export function bundledWispd(executablePath: string): string {
   return join(dirname(executablePath), '..', 'Resources', 'app', 'bin', 'wispd');
 }
 
@@ -60,9 +50,12 @@ export class Wispd {
     });
   }
 
-  /** Runs `wispd attach` with `env`, which starts wispd there if it isn't running, and initializes. */
-  static async attach(wispd: string, env: NodeJS.ProcessEnv): Promise<Wispd> {
-    const client = new Wispd(spawn(wispd, ['attach'], { env, stdio: 'pipe' }));
+  /**
+   * Runs `<command> attach` (or `command` with `args`, such as an ssh session running one) with
+   * `env`, which starts wispd there if it isn't running, and initializes.
+   */
+  static async attach(command: string, env: NodeJS.ProcessEnv, args: readonly string[] = ['attach']): Promise<Wispd> {
+    const client = new Wispd(spawn(command, args, { env, stdio: 'pipe' }));
     await client.request('initialize', {
       protocol: { min: 1, max: 1 },
       client: { name: 'wisp-smoke', version: '0.0.0' },
@@ -85,7 +78,7 @@ export class Wispd {
   }
 
   private receive(line: string): void {
-    let message: { id?: unknown; result?: unknown; error?: { code: number; message: string; data?: { kind?: string } } };
+    let message: { id?: unknown; result?: unknown; error?: { message: string } };
     try {
       message = JSON.parse(line) as typeof message;
     } catch {
@@ -100,7 +93,7 @@ export class Wispd {
     }
     this.pending.delete(message.id);
     if (message.error) {
-      pending.reject(new WispdError(message.error.message, message.error.code, message.error.data?.kind));
+      pending.reject(new Error(message.error.message));
     } else {
       pending.resolve(message.result);
     }

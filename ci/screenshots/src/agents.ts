@@ -1,7 +1,6 @@
-// Subagent steps for the scenarios and smoke checks of #105: start one on a project with the developer
-// command, open the Agents panel from the pill, open a subagent's tab, and message it. The agent is
-// ci/smoke/fixtures/fake-cli/claude, put first on PATH, so the app's own wispd runs it as Claude Code:
-// it writes a file in its worktree and answers a follow-up by echoing it.
+// Subagent steps shared by the scenarios and smoke checks. The agent is ci/smoke/fixtures/fake-cli/claude,
+// first on PATH, so the app's own wispd runs it as Claude Code: it writes a file in its worktree and
+// answers a follow-up by echoing it.
 import { delimiter, join } from 'node:path';
 import type { Page } from 'playwright-core';
 
@@ -20,38 +19,44 @@ export function fakeClaudeEnv(delaySeconds = 2): Record<string, string> {
   };
 }
 
-/** The palette's rows whose text contains `text`, once the list shows one. */
-async function pickRow(window: Page, text: string): Promise<void> {
+/** Clicks the first quick-input row whose text contains `text`, once the list shows one. */
+export async function pickRow(window: Page, text: string, timeout = 20_000): Promise<void> {
   const row = window.locator('.quick-input-widget .monaco-list-row').filter({ hasText: text }).first();
-  await row.waitFor({ state: 'visible', timeout: 20_000 });
+  await row.waitFor({ state: 'visible', timeout });
   await row.click();
+}
+
+/** Runs **Wisp: `command`** from the command palette. */
+export async function runWispCommand(window: Page, command: string, timeout = 20_000): Promise<void> {
+  await window.keyboard.press('ControlOrMeta+Shift+KeyP');
+  const input = window.locator('.quick-input-widget input');
+  await input.waitFor({ state: 'visible' });
+  await input.fill(`>Wisp: ${command}`);
+  await pickRow(window, command, timeout);
 }
 
 /**
  * Runs **Wisp: Start Subagent** on the open project: the task, then, since a fresh wispd has no
  * default account for agents, Claude Code. Waits for the subagent's tab, which opens on its own.
  */
-export async function startSubagent(window: Page, task = agentTask): Promise<void> {
-  await window.keyboard.press('ControlOrMeta+Shift+KeyP');
+export async function startSubagent(window: Page): Promise<void> {
+  await runWispCommand(window, 'Start Subagent');
   const input = window.locator('.quick-input-widget input');
   await input.waitFor({ state: 'visible' });
-  await input.fill('>Wisp: Start Subagent');
-  await pickRow(window, 'Start Subagent');
-  await input.waitFor({ state: 'visible' });
-  await input.fill(task);
+  await input.fill(agentTask);
   await input.press('Enter');
   await pickRow(window, 'Claude Code');
-  await agentTab(window, task).waitFor({ state: 'visible', timeout: 30_000 });
+  await agentTab(window).waitFor({ state: 'visible', timeout: 30_000 });
 }
 
 /** A chat tab next to the coordinator, by its title's start. */
-export function agentTab(window: Page, task = agentTask) {
-  return window.locator('[role="tab"]').filter({ hasText: task.slice(0, 16) }).first();
+export function agentTab(window: Page) {
+  return window.locator('[role="tab"]').filter({ hasText: agentTask.slice(0, 16) }).first();
 }
 
 /** Waits until the visible chat shows `text`. */
-export async function chatShows(window: Page, text: string, timeout = 60_000): Promise<void> {
-  await window.locator('.interactive-session .interactive-item-container').filter({ hasText: text }).first().waitFor({ state: 'visible', timeout });
+export async function chatShows(window: Page, text: string): Promise<void> {
+  await window.locator('.interactive-session .interactive-item-container').filter({ hasText: text }).first().waitFor({ state: 'visible', timeout: 60_000 });
 }
 
 /** The Agents pill above the coordinator's composer. */

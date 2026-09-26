@@ -10,7 +10,6 @@ export type Result = Base &
   (
     | { status: 'pending' }
     | { status: 'captured'; file: string }
-    | { status: 'not-available'; reason: string }
     | { status: 'failed'; error: string; file?: string }
   );
 
@@ -20,7 +19,7 @@ export interface Manifest {
 }
 
 export const MANIFEST_FILE = 'manifest.json';
-export const LIMITS = { results: 50, name: 64, title: 100, reason: 300, error: 20_000 };
+export const LIMITS = { results: 50, name: 64, title: 100, error: 20_000 };
 
 const namePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const textPattern = /^[A-Za-z0-9 ,.:;'"()/+&=_-]+$/;
@@ -98,14 +97,6 @@ function parseResult(entry: unknown, where: string, names: Set<string>): Result 
         throw new Error(`${where}.file must be ${capturedFile(name)}`);
       }
       return { name, title, status, file: capturedFile(name) };
-    case 'not-available': {
-      const { reason } = entry;
-      const badReason = typeof reason === 'string' ? textProblem(reason, LIMITS.reason) : 'is not a string';
-      if (badReason || typeof reason !== 'string') {
-        throw new Error(`${where}.reason ${badReason ?? ''}`);
-      }
-      return { name, title, status, reason };
-    }
     case 'failed': {
       const { error, file } = entry;
       if (typeof error !== 'string' || error.length > LIMITS.error) {
@@ -120,7 +111,7 @@ function parseResult(entry: unknown, where: string, names: Set<string>): Result 
       return { name, title, status, error, file };
     }
     default:
-      throw new Error(`${where}.status is not pending, captured, not-available, or failed`);
+      throw new Error(`${where}.status is not pending, captured, or failed`);
   }
 }
 

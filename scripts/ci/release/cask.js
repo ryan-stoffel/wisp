@@ -64,8 +64,8 @@ function render(template, values) {
   return lines.join('\n');
 }
 
-function renderCask(version, sha256ByArch, template = readFileSync(TEMPLATE_PATH, 'utf8')) {
-  return render(template, stanzas(version, sha256ByArch));
+function renderCask(version, sha256ByArch) {
+  return render(readFileSync(TEMPLATE_PATH, 'utf8'), stanzas(version, sha256ByArch));
 }
 
 function caskFromZips(version, files) {
@@ -86,4 +86,4 @@ function caskFromZips(version, files) {
   return renderCask(version, sha256ByArch);
 }
 
-module.exports = { TEMPLATE_PATH, caskFromZips, render, renderCask };
+module.exports = { caskFromZips, render, renderCask };

@@ -20,21 +20,20 @@ function render(overrides: Partial<CommentInput>): string {
   });
 }
 
-const mixed: Manifest = {
+const captured: Manifest = {
   results: [
     { name: 'startup', title: 'Startup', status: 'captured', file: 'startup.png' },
-    { name: 'editor-file-open', title: 'Editor with a file open', status: 'not-available', reason: 'needs the editor' },
+    { name: 'editor-file-open', title: 'Editor with a file open', status: 'captured', file: 'editor-file-open.png' },
   ],
 };
 
 test('starts with the marker and embeds captured images by commit SHA', () => {
-  const body = render({ manifest: mixed });
+  const body = render({ manifest: captured });
 
   assert.ok(body.startsWith(`${MARKER}\n## Screenshots`));
   assert.ok(body.includes(`![Startup](${base}/startup.png)`));
   assert.ok(body.includes('[`abcdef1`](https://github.com/o/r/pull/7/commits/' + headSha + ')'));
-  assert.ok(body.includes(': 1 captured, 1 not available yet.'));
-  assert.ok(body.includes('### Editor with a file open\n\nNot available yet: needs the editor.'));
+  assert.ok(body.includes(': 2 captured.'));
   assert.ok(!body.includes('[!CAUTION]'));
 });
 
@@ -43,7 +42,7 @@ test('a failed scenario shows its error and the screenshot taken when it failed'
   const body = render({
     manifest: {
       results: [
-        ...mixed.results,
+        ...captured.results,
         { name: 'coordinator-chat', title: 'Coordinator chat', status: 'failed', error, file: 'coordinator-chat.failed.png' },
       ],
     },
@@ -81,7 +80,7 @@ test('capture that stops early reports the error and the scenarios that did not 
 
 test('a timed out capture step counts the scenarios that did not run', () => {
   const body = render({
-    manifest: { results: [mixed.results[0] ?? assert.fail(), { name: 'x', title: 'X', status: 'pending' }] },
+    manifest: { results: [captured.results[0] ?? assert.fail(), { name: 'x', title: 'X', status: 'pending' }] },
     failedSteps: [{ id: 'capture', log: 'Error: The operation was canceled.' }],
   });
 
@@ -90,7 +89,7 @@ test('a timed out capture step counts the scenarios that did not run', () => {
 });
 
 test('a failed push keeps the results and says the images are missing', () => {
-  const body = render({ manifest: mixed, images: undefined, pushError: 'rejected' });
+  const body = render({ manifest: captured, images: undefined, pushError: 'rejected' });
 
   assert.ok(body.includes('pushing them to the ci-screenshots branch failed'));
   assert.ok(body.includes('### Startup\n\nCaptured, but the image was not pushed.'));

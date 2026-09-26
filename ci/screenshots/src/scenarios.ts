@@ -1,6 +1,6 @@
 import { cp } from 'node:fs/promises';
 import { join } from 'node:path';
-import { agentReply, agentTab, agentTask, chatShows, fakeClaudeEnv, openAgentsPanel, sendMessage, startSubagent } from './agents.ts';
+import { agentReply, agentTab, chatShows, fakeClaudeEnv, openAgentsPanel, sendMessage, startSubagent } from './agents.ts';
 import { screenshot, visible, type Scenario } from './harness.ts';
 import { connectedToThisMac, createProject, hostChip, hostChipIn, projectName, projectRow, projectTab } from './projects.ts';
 import { openNewChat, repoThreadRow, sendFirstMessage } from './threads.ts';
@@ -148,7 +148,7 @@ export const scenarios: readonly Scenario[] = [
       await createProject(context, { withCommit: true });
       await startSubagent(context.window);
       await chatShows(context.window, agentReply);
-      await agentTab(context.window, agentTask).click();
+      await agentTab(context.window).click();
       await sendMessage(context.window, 'also handle credit notes');
       await chatShows(context.window, 'Fake agent heard: also handle credit notes');
       return screenshot(context.window);

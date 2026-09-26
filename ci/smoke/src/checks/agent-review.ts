@@ -1,38 +1,20 @@
-// Review Agent Changes (#157) opens the multi-diff editor on a real agent run's commit, read over
-// wispd's agent/diff and agent/file through the wisp-agent: file system, never from the worktree.
-// The run is real too: the packaged app's own wispd runs the fake `claude` (fixtures/fake-cli) as a
-// worker, which writes FAKE_AGENT_NOTES.md, and wispd commits it. The check starts that run over its
-// own `wispd attach` to the same data folder, so it doesn't depend on the Agents panel's own flow.
-import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+// Review Agent Changes opens the multi-diff editor on a real agent run's commit, read over wispd's
+// agent/diff and agent/file, never from the worktree. The bundled wispd runs the fake `claude` as a
+// worker, which writes FAKE_AGENT_NOTES.md; the check starts that run over its own `wispd attach` to
+// the same data folder, so it doesn't depend on the Agents panel's flow.
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
-import { promisify } from 'node:util';
-import { launch, type LaunchOptions } from '../../../screenshots/src/harness.ts';
+import { join } from 'node:path';
+import { fakeClaudeEnv, pickRow, runWispCommand } from '../../../screenshots/src/agents.ts';
+import { appLaunchOptions, launch, ready } from '../../../screenshots/src/harness.ts';
+import { gitRepository } from '../../../screenshots/src/projects.ts';
 import { check } from '../check.ts';
-import { appLaunchOptions, ready } from '../harness.ts';
 import { bundledWispd, uuidV7, Wispd } from '../wispd.ts';
-
-const execFileAsync = promisify(execFile);
-const fakeCliDir = join(import.meta.dirname, '..', '..', 'fixtures', 'fake-cli');
 
 interface Run {
   readonly id: string;
   readonly status: string;
   readonly diff?: { readonly commit: string; readonly files: number };
-}
-
-/** A repository with one commit and its own identity, as a user's checkout would be. */
-async function repository(root: string): Promise<string> {
-  const repo = join(root, 'app');
-  const git = (...args: string[]) => execFileAsync('git', ['-C', repo, ...args], { env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1' } });
-  await execFileAsync('git', ['init', '-q', '-b', 'main', repo]);
-  await git('config', 'user.name', 'wisp smoke test');
-  await git('config', 'user.email', 'smoke@example.invalid');
-  await writeFile(join(repo, 'README.md'), '# App\n');
-  await git('add', '-A');
-  await git('commit', '-q', '-m', 'init');
-  return repo;
 }
 
 async function finishedRun(wispd: Wispd, runId: string): Promise<Run> {
@@ -55,26 +37,17 @@ export const agentReviewChecks = [
     const root = await mkdtemp(join(tmpdir(), 'wisp-smoke-review-'));
     const home = join(root, 'home');
     await mkdir(home);
-    const repo = await repository(root);
-    const env = {
-      ...options.env,
-      HOME: home,
-      PATH: `${fakeCliDir}${delimiter}${process.env.PATH ?? ''}`,
-      FAKE_CLAUDE_DELAY: '0',
-    };
-    const withFakeCli: LaunchOptions = { ...options, env };
+    const repo = await gitRepository(root, { withCommit: true });
+    const env = { ...options.env, HOME: home, ...fakeClaudeEnv(0) };
     let step = 'launch';
-    const session = await launch(withFakeCli);
+    const session = await launch({ ...options, env });
     let wispd: Wispd | undefined;
     try {
       const { window } = session;
       await ready(session);
 
       step = "wispd runs the fake worker, which writes FAKE_AGENT_NOTES.md, and commits the run's worktree";
-      if (!options.executablePath) {
-        throw new Error('app-launch gave no executablePath');
-      }
-      wispd = await Wispd.attach(bundledWispd(options.executablePath), {
+      wispd = await Wispd.attach(bundledWispd(options), {
         ...process.env,
         ...env,
         WISPD_DATA_DIR: session.wispdDataDir,
@@ -95,22 +68,8 @@ export const agentReviewChecks = [
       }
 
       step = 'Wisp: Review Agent Changes lists the run';
-      await window.keyboard.press('ControlOrMeta+Shift+KeyP');
-      const input = window.locator('.quick-input-widget input');
-      await input.waitFor({ state: 'visible' });
-      await input.fill('>Wisp: Review Agent Changes');
-      const command = window
-        .locator('.quick-input-widget .monaco-list-row')
-        .filter({ hasText: 'Review Agent Changes' })
-        .first();
-      await command.waitFor({ state: 'visible', timeout: 30_000 });
-      await command.click();
-      const pick = window
-        .locator('.quick-input-widget .monaco-list-row')
-        .filter({ hasText: 'Add a review note' })
-        .first();
-      await pick.waitFor({ state: 'visible', timeout: 30_000 });
-      await pick.click();
+      await runWispCommand(window, 'Review Agent Changes', 30_000);
+      await pickRow(window, 'Add a review note', 30_000);
 
       step = 'the multi-diff editor shows FAKE_AGENT_NOTES.md with its added lines';
       const entry = window.locator('.multiDiffEntry').filter({ hasText: 'FAKE_AGENT_NOTES.md' }).first();

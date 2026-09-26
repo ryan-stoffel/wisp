@@ -1,12 +1,11 @@
-// `wisp <folder>` opens the editor window (workbench.html). One launch drives every M0 capability in
-// sequence -- the file tree, editing, search, Source Control, and a terminal -- plus the "no Chat UI"
-// acceptance criterion, since they share the same window and a second launch would double the job's runtime
-// for no benefit. Selectors and the overall shape follow what #10's own ad hoc Playwright run against this
-// build already proved out (its Handoff comment on #10).
+// `wisp <folder>` opens the editor window. One launch drives the file tree, editing, search, Source
+// Control, a terminal, and the "no Chat UI" check in sequence, since a launch per step would
+// multiply the job's runtime.
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { ready } from '../../../screenshots/src/harness.ts';
 import { check } from '../check.ts';
-import { gitWorkspace, launchSmoke, ready } from '../harness.ts';
+import { gitWorkspace, launchSmoke } from '../harness.ts';
 import { paletteCommands, visibleChatElements } from '../ui.ts';
 
 export const editorChecks = [
@@ -17,8 +16,8 @@ export const editorChecks = [
       const session = await launchSmoke([workspace.folder]);
       let step = 'launch';
       try {
-        const { app, window } = session;
-        await ready({ app, window });
+        const { window } = session;
+        await ready(session);
 
         step = 'explorer opens a file from the tree';
         const explorer = window.locator('.explorer-folders-view');
