@@ -7,21 +7,28 @@ import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
+import { TestConfigurationService } from '../../../configuration/test/common/testConfigurationService.js';
 import { IWispdService, IWispdSubscribeOptions, WispdChannel, WispdChannelClient, WispdError, WispdMethod, WispdState, WispdSubscriptionMessage, WispdUnavailableError } from '../../common/wispd.js';
+import { WISP_HOST_SETTING, wispdTarget } from '../../common/wispdConfiguration.js';
 import { generateUuidV7 } from '../../common/uuidv7.js';
 
 suite('WispdChannel', () => {
 
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function client(service: Partial<IWispdService>): WispdChannelClient {
-		const server = new WispdChannel(service as IWispdService);
+	function client(service: Partial<IWispdService>, configuration = new TestConfigurationService()): WispdChannelClient {
+		const server = new WispdChannel({ onDidChangeState: Event.None, ...service } as IWispdService);
 		// IPC passes plain data, so the round trip goes through JSON as the real channel would.
 		const channel: IChannel = {
 			call: async (command, arg, token) => JSON.parse(JSON.stringify(await server.call(undefined, command, arg, token)) ?? 'null'),
 			listen: (event, arg) => server.listen(undefined, event, arg),
 		};
-		return new WispdChannelClient(channel);
+		return store.add(new WispdChannelClient(channel, configuration));
+	}
+
+	function switchHost(configuration: TestConfigurationService, host: string): void {
+		configuration.setUserConfiguration(WISP_HOST_SETTING, host);
+		configuration.onDidChangeConfigurationEmitter.fire({ affectedKeys: new Set([WISP_HOST_SETTING]), affectsConfiguration: (key: string) => key === WISP_HOST_SETTING } as never);
 	}
 
 	test('results come through', async () => {
@@ -85,6 +92,66 @@ suite('WispdChannel', () => {
 
 		assert.deepStrictEqual(options, { after: 3, project: 'p' });
 		assert.deepStrictEqual(seen, ['connecting', 'resync']);
+	});
+
+	test('every request and state query names the window\'s host (#219)', async () => {
+		const targets: Array<string | undefined> = [];
+		const configuration = new TestConfigurationService({ [WISP_HOST_SETTING]: 'mac-mini' });
+		const service = client({
+			async request(_method: WispdMethod, _params: unknown, _token?: CancellationToken, target?: string) {
+				targets.push(target);
+				return {} as never;
+			},
+			async getState(target?: string) {
+				targets.push(target);
+				return { kind: 'connecting', command: 'ssh', attempt: 1, target };
+			},
+		}, configuration);
+
+		await service.request('project/list', {});
+		await service.getState();
+		assert.deepStrictEqual(targets, [wispdTarget('mac-mini', ''), wispdTarget('mac-mini', '')]);
+	});
+
+	test('a state for another host shows as connecting to the window\'s host', async () => {
+		const states = store.add(new Emitter<WispdState>());
+		const configuration = new TestConfigurationService({ [WISP_HOST_SETTING]: 'mac-mini' });
+		const service = client({ onDidChangeState: states.event }, configuration);
+		const seen: WispdState[] = [];
+		store.add(service.onDidChangeState(state => seen.push(state)));
+
+		const connected: WispdState = { kind: 'connected', command: '/Applications/Wisp.app/bin/wispd attach', wispd: '0.1.0', protocol: 1, logId: 'log-1', capabilities: {}, maxFrameBytes: 8388608, target: 'local' };
+		states.fire(connected);
+		const onMacMini: WispdState = { ...connected, command: 'ssh -T -- mac-mini wispd attach', target: wispdTarget('mac-mini', '') };
+		states.fire(onMacMini);
+
+		assert.deepStrictEqual(seen, [
+			{ kind: 'connecting', command: 'ssh -- mac-mini wispd attach', attempt: 1, target: wispdTarget('mac-mini', '') },
+			onMacMini,
+		]);
+	});
+
+	test('a host change in the window shows as connecting at once, and asks the shared process to catch up', async () => {
+		const states = store.add(new Emitter<WispdState>());
+		const asked: Array<string | undefined> = [];
+		const configuration = new TestConfigurationService({ [WISP_HOST_SETTING]: 'local' });
+		const connected: WispdState = { kind: 'connected', command: 'wispd attach', wispd: '0.1.0', protocol: 1, logId: 'log-1', capabilities: {}, maxFrameBytes: 8388608, target: 'local' };
+		const service = client({
+			onDidChangeState: states.event,
+			async getState(target?: string) {
+				asked.push(target);
+				return connected;
+			},
+		}, configuration);
+		states.fire(connected);
+		const seen: string[] = [];
+		store.add(service.onDidChangeState(state => seen.push(`${state.kind} ${state.target}`)));
+
+		switchHost(configuration, 'mac-mini');
+		await Promise.resolve();
+
+		assert.deepStrictEqual(seen, [`connecting ${wispdTarget('mac-mini', '')}`]);
+		assert.deepStrictEqual(asked, [wispdTarget('mac-mini', '')]);
 	});
 });
 

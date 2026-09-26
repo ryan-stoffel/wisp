@@ -58,6 +58,33 @@ export function isLocalHost(host: unknown): boolean {
 export const WISP_REMOTE_WISPD_PATH_SETTING = 'wisp.remoteWispdPath';
 
 /**
+ * A key for the wispd that `wisp.host` and `wisp.remoteWispdPath` name: `local`, or the trimmed
+ * destination and path. A window and the shared process each read these settings on their own
+ * schedule, so they compare keys before acting on each other's connection (#219).
+ */
+export function wispdTarget(host: unknown, remoteWispdPath: unknown): string {
+	if (isLocalHost(host)) {
+		return WISP_HOST_LOCAL;
+	}
+	const path = typeof remoteWispdPath === 'string' ? remoteWispdPath.trim() : '';
+	return JSON.stringify([(host as string).trim(), path]);
+}
+
+/** Whether a configuration change can change {@link wispdTarget}. */
+export function affectsWispdTarget(event: { affectsConfiguration(key: string): boolean }): boolean {
+	return event.affectsConfiguration(WISP_HOST_SETTING) || event.affectsConfiguration(WISP_REMOTE_WISPD_PATH_SETTING);
+}
+
+/** Roughly the command that reaches a target's wispd, for a state that describes it before the shared process has. */
+export function describeWispdTarget(target: string): string {
+	if (target === WISP_HOST_LOCAL) {
+		return 'wispd attach';
+	}
+	const [host, path] = JSON.parse(target) as [string, string];
+	return `ssh -- ${host} ${path || 'wispd'} attach`;
+}
+
+/**
  * Where the editor's wispd is, and how to reach it there. Both are application-scoped: a remote
  * host is a property of this Mac, not of whatever repo happens to be open, so a workspace's
  * `.vscode/settings.json` can't set them (decision record 0007). Imported from `node/wispdService.ts`

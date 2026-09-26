@@ -3,9 +3,12 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { CancellationToken } from '../../../base/common/cancellation.js';
-import { Event } from '../../../base/common/event.js';
+import { Emitter, Event } from '../../../base/common/event.js';
+import { Disposable } from '../../../base/common/lifecycle.js';
 import { IChannel, IServerChannel } from '../../../base/parts/ipc/common/ipc.js';
+import { IConfigurationService } from '../../configuration/common/configuration.js';
 import { createDecorator } from '../../instantiation/common/instantiation.js';
+import { affectsWispdTarget, describeWispdTarget, WISP_HOST_SETTING, WISP_REMOTE_WISPD_PATH_SETTING, wispdTarget } from './wispdConfiguration.js';
 import type { Capabilities, ErrorKind, EventsEventParams, JsonValue, LogId, ProjectId, ProtocolRange, WispRequests } from './wispProtocol.js';
 
 export const WISPD_CHANNEL_NAME = 'wispd';
@@ -49,7 +52,15 @@ export type WispdDisconnectReason =
 	| 'frameTooLarge'
 	| 'protocolError';
 
-export type WispdState =
+export type WispdState = WispdConnectionState & {
+	/**
+	 * The `wispdTarget` of the settings this state's connection was made for. The shared process
+	 * sets it, so a window can tell a state for its own host from one for the host it just left.
+	 */
+	readonly target?: string;
+};
+
+type WispdConnectionState =
 	| {
 		readonly kind: 'connecting';
 		/** The command that reaches wispd, such as `/Applications/Wisp.app/.../wispd attach`. */
@@ -128,7 +139,11 @@ export interface IWispdService {
 
 	readonly onDidChangeState: Event<WispdState>;
 
-	getState(): Promise<WispdState>;
+	/**
+	 * `target` is for the window's channel client, which passes its own settings' `wispdTarget`;
+	 * the shared process then catches up with those settings first. Other callers leave it out.
+	 */
+	getState(target?: string): Promise<WispdState>;
 
 	/**
 	 * Reconnects now, without waiting for the backoff. This is the only way out of `incompatible`,
@@ -145,8 +160,11 @@ export interface IWispdService {
 	 *
 	 * Fails with a `WispdError` when wispd answers with an error, and with a
 	 * `WispdUnavailableError` when there is no connection to send it on.
+	 *
+	 * `target` is for the window's channel client, which passes its own settings' `wispdTarget`: the
+	 * request then goes only to that host's wispd, or fails unsent (#219). Other callers leave it out.
 	 */
-	request<M extends WispdMethod>(method: M, params: WispRequests[M]['params'], token?: CancellationToken): Promise<WispRequests[M]['result']>;
+	request<M extends WispdMethod>(method: M, params: WispRequests[M]['params'], token?: CancellationToken, target?: string): Promise<WispRequests[M]['result']>;
 
 	/**
 	 * Listening subscribes, and removing the last listener unsubscribes. Events arrive in `seq`
@@ -195,13 +213,13 @@ export class WispdChannel implements IServerChannel {
 
 	async call<T>(_ctx: unknown, command: string, arg?: unknown, token?: CancellationToken): Promise<T> {
 		switch (command) {
-			case 'getState': return await this.service.getState() as T;
+			case 'getState': return await this.service.getState(typeof arg === 'string' ? arg : undefined) as T;
 			case 'retry': return await this.service.retry() as T;
 			case 'request': {
-				const [method, params] = arg as [WispdMethod, never];
+				const [method, params, target] = arg as [WispdMethod, never, string | undefined];
 				let outcome: RequestOutcome;
 				try {
-					outcome = { type: 'result', result: await this.service.request(method, params, token) };
+					outcome = { type: 'result', result: await this.service.request(method, params, token, target) };
 				} catch (error) {
 					if (error instanceof WispdError) {
 						outcome = { type: 'error', code: error.code, message: error.message, kind: error.kind, detail: error.detail };
@@ -218,17 +236,61 @@ export class WispdChannel implements IServerChannel {
 	}
 }
 
-export class WispdChannelClient implements IWispdService {
+/**
+ * A window's `IWispdService`. The window and the shared process each read `wisp.host` on their own
+ * schedule, so right after a host switch one of them is behind (#219). This client keeps the
+ * window to the host its own settings name: it sends their target with every request, which the
+ * shared process refuses to send anywhere else, and it shows a state for another target as
+ * `connecting` to its own.
+ */
+export class WispdChannelClient extends Disposable implements IWispdService {
 	declare readonly _serviceBrand: undefined;
 
-	readonly onDidChangeState: Event<WispdState>;
+	private readonly _onDidChangeState = this._register(new Emitter<WispdState>());
+	readonly onDidChangeState: Event<WispdState> = this._onDidChangeState.event;
 
-	constructor(private readonly channel: IChannel) {
-		this.onDidChangeState = this.channel.listen<WispdState>('onDidChangeState');
+	private target: string;
+	/** The shared process's latest state, which may be for another target. */
+	private remote: WispdState | undefined;
+	/** Counts state events, so a slow `getState` answer can't replace a newer event. */
+	private remoteEvents = 0;
+	private lastFired: string | undefined;
+
+	constructor(
+		private readonly channel: IChannel,
+		@IConfigurationService configurationService: IConfigurationService,
+	) {
+		super();
+		const readTarget = () => wispdTarget(configurationService.getValue(WISP_HOST_SETTING), configurationService.getValue(WISP_REMOTE_WISPD_PATH_SETTING));
+		this.target = readTarget();
+		this._register(this.channel.listen<WispdState>('onDidChangeState')(state => {
+			this.remoteEvents++;
+			this.setRemote(state);
+		}));
+		this._register(configurationService.onDidChangeConfiguration(event => {
+			if (!affectsWispdTarget(event)) {
+				return;
+			}
+			const target = readTarget();
+			if (target === this.target) {
+				return;
+			}
+			this.target = target;
+			if (this.remote) {
+				this.fire(this.remote);
+			}
+			// The shared process catches up now instead of when its own file watcher fires.
+			this.getState().catch(() => { /* The shared process is gone; the window is closing. */ });
+		}));
 	}
 
-	getState(): Promise<WispdState> {
-		return this.channel.call('getState');
+	async getState(): Promise<WispdState> {
+		const events = this.remoteEvents;
+		const state = await this.channel.call<WispdState>('getState', this.target);
+		if (events === this.remoteEvents) {
+			this.setRemote(state);
+		}
+		return this.forTarget(this.remote ?? state);
 	}
 
 	retry(): Promise<void> {
@@ -236,7 +298,7 @@ export class WispdChannelClient implements IWispdService {
 	}
 
 	async request<M extends WispdMethod>(method: M, params: WispRequests[M]['params'], token?: CancellationToken): Promise<WispRequests[M]['result']> {
-		const outcome = await this.channel.call<RequestOutcome>('request', [method, params], token);
+		const outcome = await this.channel.call<RequestOutcome>('request', [method, params, this.target], token);
 		switch (outcome.type) {
 			case 'result': return outcome.result as WispRequests[M]['result'];
 			case 'error': throw new WispdError(outcome.code, outcome.message, outcome.kind, outcome.detail);
@@ -246,6 +308,29 @@ export class WispdChannelClient implements IWispdService {
 
 	subscribe(options: IWispdSubscribeOptions): Event<WispdSubscriptionMessage> {
 		return this.channel.listen('subscribe', options);
+	}
+
+	private setRemote(state: WispdState): void {
+		this.remote = state;
+		this.fire(state);
+	}
+
+	/** Fires the state as this window sees it, unless that is what it fired last. */
+	private fire(remote: WispdState): void {
+		const state = this.forTarget(remote);
+		const key = JSON.stringify(state);
+		if (key !== this.lastFired) {
+			this.lastFired = key;
+			this._onDidChangeState.fire(state);
+		}
+	}
+
+	/** A state for another host means this window's host hasn't been reached yet. */
+	private forTarget(state: WispdState): WispdState {
+		if (state.target === undefined || state.target === this.target) {
+			return state;
+		}
+		return { kind: 'connecting', command: describeWispdTarget(this.target), attempt: 1, target: this.target };
 	}
 }
 
