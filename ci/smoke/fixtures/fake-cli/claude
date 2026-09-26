@@ -1,0 +1,23 @@
+#!/bin/sh
+# A fake `claude` CLI for the sign-in smoke check (#115). wispd's own detection (#114) runs
+# "claude auth status" to decide whether the CLI is installed and signed in; this always answers
+# signed in, so the Accounts view's Sign in action is enabled. The smoke check itself does not run
+# that command -- clicking Sign in runs "claude auth login" in an integrated terminal, and this
+# script answers that by writing its own argv to $WISP_SIGNIN_PROOF_FILE, standing in for a
+# completed login. wisp never reads this file; only the smoke check does, to prove which command
+# the terminal ran.
+case "${1:-} ${2:-}" in
+  "auth status")
+    printf '{"loggedIn":true,"subscriptionType":"Test Plan"}'
+    exit 0
+    ;;
+  "auth login")
+    if [ -n "${WISP_SIGNIN_PROOF_FILE:-}" ]; then
+      printf '%s\n' "$*" >"$WISP_SIGNIN_PROOF_FILE"
+    fi
+    exit 0
+    ;;
+  *)
+    exit 1
+    ;;
+esac
