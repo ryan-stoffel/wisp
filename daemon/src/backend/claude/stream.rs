@@ -17,7 +17,7 @@ use crate::backend::event::{
 
 /// A `major.minor.patch` version, for comparing. Anything after the patch number, such as a
 /// pre-release tag, is ignored.
-pub(super) fn version(text: &str) -> Option<(u64, u64, u64)> {
+pub(crate) fn version(text: &str) -> Option<(u64, u64, u64)> {
     let mut parts = text.splitn(3, '.');
     let number = |part: Option<&str>| {
         let digits: String = part?.chars().take_while(char::is_ascii_digit).collect();

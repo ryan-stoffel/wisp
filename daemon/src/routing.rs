@@ -12,8 +12,8 @@
 //!
 //! # What owns calling this, and how
 //!
-//! Nothing in wispd calls `resolve`, `start`, `snapshot`, or `check` yet; this module only
-//! produces the values their eventual caller needs (see #119's decision record, 0012):
+//! #156's runner (`crate::agents`) calls `resolve` and `start` for workers; nothing calls
+//! `snapshot` or `check` yet. Who owns what (see #119's decision record, 0012):
 //!
 //! - #156 (the M3 runner, workers only) calls `resolve` and `start` for a worker's
 //!   `workspace-write` run, maps [`Event::AccountFallback`] to an `agent/*` notification, and
@@ -49,6 +49,18 @@ use crate::keystore::KeyStore;
 #[derive(Clone, Default)]
 pub struct BackendRegistry {
     by_provider: HashMap<Provider, Arc<dyn Backend>>,
+}
+
+impl std::fmt::Debug for BackendRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_map()
+            .entries(
+                self.by_provider
+                    .iter()
+                    .map(|(provider, backend)| (provider, backend.name())),
+            )
+            .finish()
+    }
 }
 
 impl BackendRegistry {
@@ -174,6 +186,13 @@ impl Resolved {
             Selection::Subscription { backend } => backend.clone(),
             Selection::Key { id } => id.to_string(),
         }
+    }
+
+    /// The backend that will run it, to check what it can do before starting (#156). Reading
+    /// it can't change the policy [`start`] enforces.
+    #[must_use]
+    pub fn backend(&self) -> &dyn Backend {
+        self.backend.as_ref()
     }
 
     /// The role this run is for.

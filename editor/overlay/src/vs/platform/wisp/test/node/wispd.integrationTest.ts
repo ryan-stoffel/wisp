@@ -138,25 +138,28 @@ suite('wispd (integration)', function () {
 		assert.strictEqual(factory.transports.length, 2);
 	});
 
-	test('a restarted wispd is reached again, and its new log means resync', async () => {
+	test('a restarted wispd is reached again, and its stored log continues without a resync', async () => {
 		const { client: first } = client();
 		first.start();
 		const before = await whenState(first, 'connected');
 		const one = generateUuidV7();
 		await first.request('project/create', { id: one, name: 'one', repoPath });
 		const events = collect(first, { after: 0, logId: before.logId });
-		await events.when(messages => messages.length > 0, 'the replayed project');
+		await events.when(messages => createdIds(messages).includes(one), 'the replayed project');
 
 		await stopDaemon(dataDir);
 		await whenState(first, 'disconnected');
 		const after = await whenState(first, 'connected');
-		assert.notStrictEqual(after.logId, before.logId, 'M1 keeps its log in memory, so a new wispd has a new log');
+		assert.strictEqual(after.logId, before.logId, 'wispd stores its event log (decision 0014), so a new wispd keeps it');
 
-		await events.when(messages => messages.some(message => message.type === 'resync'), 'resync');
-		assert.deepStrictEqual(events.messages.at(-1), { type: 'resync', reason: 'logIdChanged' });
+		const two = generateUuidV7();
+		await first.request('project/create', { id: two, name: 'two', repoPath });
+		await events.when(messages => createdIds(messages).includes(two), 'project two, after the restart');
+		assert.deepStrictEqual(createdIds(events.messages), [one, two]);
+		assert.ok(!events.messages.some(message => message.type === 'resync'), 'the subscription resumed where it was');
 
 		const listed = await first.request('project/list', {});
-		assert.deepStrictEqual(listed.projects.map(project => project.id), [one], 'projects outlive wispd');
+		assert.deepStrictEqual(listed.projects.map(project => project.id), [one, two], 'projects outlive wispd');
 	});
 });
 

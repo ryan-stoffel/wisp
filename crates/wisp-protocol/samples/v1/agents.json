@@ -1,0 +1,809 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "events/subscribe",
+    "params": {
+      "after": 0,
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "subscription": "01a0d34a-5860-7ee2-a66a-aef2367abe02"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "agent/start",
+    "params": {
+      "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "prompt": "Add a README that explains how to build the app.",
+      "policy": "workspaceWrite"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "result": {
+      "run": {
+        "id": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+        "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+        "prompt": "Add a README that explains how to build the app.",
+        "policy": "workspaceWrite",
+        "status": "running",
+        "backend": "claude",
+        "accountId": "claude",
+        "createdAt": "2026-09-25T12:00:00Z",
+        "updatedAt": "2026-09-25T12:00:01Z",
+        "branch": "wisp/1a2b3c4d",
+        "worktreePath": "/Users/me/Library/Application Support/wisp/worktrees/app-5e6f7a8b/01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0d34a-5860-7ee2-a66a-aef2367abe02",
+      "seq": 1,
+      "time": "2026-09-25T12:00:00Z",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "event": {
+        "kind": "agent.started",
+        "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+        "run": {
+          "id": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+          "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+          "prompt": "Add a README that explains how to build the app.",
+          "policy": "workspaceWrite",
+          "status": "starting",
+          "backend": "claude",
+          "accountId": "claude",
+          "createdAt": "2026-09-25T12:00:00Z",
+          "updatedAt": "2026-09-25T12:00:00Z"
+        }
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0d34a-5860-7ee2-a66a-aef2367abe02",
+      "seq": 2,
+      "time": "2026-09-25T12:00:01Z",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "event": {
+        "kind": "agent.updated",
+        "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+        "state": {
+          "status": "running",
+          "accountId": "claude",
+          "updatedAt": "2026-09-25T12:00:01Z"
+        }
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0d34a-5860-7ee2-a66a-aef2367abe02",
+      "seq": 3,
+      "time": "2026-09-25T12:00:02Z",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "event": {
+        "kind": "agent.output",
+        "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+        "items": [
+          {
+            "kind": "sessionStarted",
+            "sessionId": "session-7f3a",
+            "model": "claude-opus-4-5"
+          },
+          {
+            "kind": "turnStarted"
+          },
+          {
+            "kind": "textDelta",
+            "messageId": "msg_1",
+            "text": "I'll add "
+          },
+          {
+            "kind": "text",
+            "messageId": "msg_1",
+            "text": "I'll add a README and note the build steps in shared context."
+          },
+          {
+            "kind": "reasoning",
+            "text": "The build uses cargo and npm."
+          },
+          {
+            "kind": "todoList",
+            "items": [
+              {
+                "text": "Write README.md",
+                "status": "inProgress"
+              },
+              {
+                "text": "Note build steps",
+                "status": "pending"
+              },
+              {
+                "text": "Read the build scripts",
+                "status": "completed"
+              }
+            ]
+          },
+          {
+            "kind": "toolCall",
+            "callId": "toolu_1",
+            "name": "Write",
+            "input": {
+              "file_path": "README.md",
+              "content": "# App\n"
+            }
+          },
+          {
+            "kind": "toolResult",
+            "callId": "toolu_1",
+            "status": "ok",
+            "output": "File created"
+          },
+          {
+            "kind": "toolCall",
+            "callId": "toolu_2",
+            "name": "Bash",
+            "input": {
+              "truncated": true,
+              "bytes": 90210
+            }
+          },
+          {
+            "kind": "toolResult",
+            "callId": "toolu_2",
+            "status": "denied"
+          },
+          {
+            "kind": "toolResult",
+            "callId": "toolu_3",
+            "status": "error",
+            "output": "command failed"
+          },
+          {
+            "kind": "notice",
+            "detail": "Retrying after an overloaded response"
+          },
+          {
+            "kind": "usage",
+            "model": "claude-opus-4-5",
+            "inputTokens": 1200,
+            "outputTokens": 340,
+            "cacheReadTokens": 500,
+            "cacheWriteTokens": 0,
+            "costUsdMicros": 45000
+          },
+          {
+            "kind": "usage",
+            "inputTokens": 10,
+            "outputTokens": 2,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0
+          },
+          {
+            "kind": "warning",
+            "detail": "skipped a malformed line"
+          },
+          {
+            "kind": "turnFinished",
+            "result": "Added README.md."
+          }
+        ]
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0d34a-5860-7ee2-a66a-aef2367abe02",
+      "seq": 4,
+      "time": "2026-09-25T12:00:02Z",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "event": {
+        "kind": "agent.updated",
+        "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+        "state": {
+          "status": "running",
+          "accountId": "claude",
+          "sessionId": "session-7f3a",
+          "updatedAt": "2026-09-25T12:00:02Z"
+        }
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "agent/send",
+    "params": {
+      "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+      "turnId": "01a0d361-2b3c-7d4e-9f50-6a7b8c9d0e11",
+      "text": "Also mention the tests."
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "result": {
+      "run": {
+        "id": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+        "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+        "prompt": "Add a README that explains how to build the app.",
+        "policy": "workspaceWrite",
+        "status": "running",
+        "backend": "claude",
+        "accountId": "claude",
+        "createdAt": "2026-09-25T12:00:00Z",
+        "updatedAt": "2026-09-25T12:00:02Z",
+        "sessionId": "session-7f3a",
+        "branch": "wisp/1a2b3c4d",
+        "worktreePath": "/Users/me/Library/Application Support/wisp/worktrees/app-5e6f7a8b/01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0d34a-5860-7ee2-a66a-aef2367abe02",
+      "seq": 5,
+      "time": "2026-09-25T12:00:30Z",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "event": {
+        "kind": "agent.output",
+        "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+        "items": [
+          {
+            "kind": "turnStarted",
+            "turnId": "01a0d361-2b3c-7d4e-9f50-6a7b8c9d0e11"
+          },
+          {
+            "kind": "turnFinished",
+            "turnId": "01a0d361-2b3c-7d4e-9f50-6a7b8c9d0e11",
+            "result": "Mentioned the tests."
+          },
+          {
+            "kind": "followUpDropped",
+            "turnId": "01a0d361-2b3c-7d4e-9f50-6a7b8c9d0e11"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0d34a-5860-7ee2-a66a-aef2367abe02",
+      "seq": 6,
+      "time": "2026-09-25T12:03:10Z",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "event": {
+        "kind": "agent.finished",
+        "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+        "outcome": {
+          "status": "completed",
+          "result": "Mentioned the tests."
+        }
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0d34a-5860-7ee2-a66a-aef2367abe02",
+      "seq": 7,
+      "time": "2026-09-25T12:03:10Z",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "event": {
+        "kind": "agent.diffReady",
+        "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+        "diff": {
+          "commit": "9b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c",
+          "files": 2,
+          "insertions": 41,
+          "deletions": 3
+        }
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0d34a-5860-7ee2-a66a-aef2367abe02",
+      "seq": 8,
+      "time": "2026-09-25T12:03:10Z",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "event": {
+        "kind": "agent.updated",
+        "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+        "state": {
+          "status": "completed",
+          "accountId": "claude",
+          "sessionId": "session-7f3a",
+          "diff": {
+            "commit": "9b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c",
+            "files": 2,
+            "insertions": 41,
+            "deletions": 3
+          },
+          "updatedAt": "2026-09-25T12:03:10Z"
+        }
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "agent/start",
+    "params": {
+      "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "prompt": "Add a README that explains how to build the app.",
+      "policy": "workspaceWrite"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "result": {
+      "run": {
+        "id": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+        "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+        "prompt": "Add a README that explains how to build the app.",
+        "policy": "workspaceWrite",
+        "status": "completed",
+        "backend": "claude",
+        "accountId": "claude",
+        "createdAt": "2026-09-25T12:00:00Z",
+        "updatedAt": "2026-09-25T12:03:10Z",
+        "sessionId": "session-7f3a",
+        "diff": {
+          "commit": "9b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c",
+          "files": 2,
+          "insertions": 41,
+          "deletions": 3
+        },
+        "branch": "wisp/1a2b3c4d",
+        "worktreePath": "/Users/me/Library/Application Support/wisp/worktrees/app-5e6f7a8b/01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "method": "agent/start",
+    "params": {
+      "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "prompt": "Something else",
+      "policy": "workspaceWrite",
+      "account": {
+        "kind": "key",
+        "id": "01a0d34b-3c4d-7e5f-a061-7b8c9d0e1f22"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "error": {
+      "code": -32000,
+      "message": "run 01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01 exists with a different project, prompt, account, or policy",
+      "data": {
+        "kind": "idConflict"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 6,
+    "method": "agent/list",
+    "params": {
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 6,
+    "result": {
+      "runs": [
+        {
+          "id": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+          "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+          "prompt": "Add a README that explains how to build the app.",
+          "policy": "workspaceWrite",
+          "status": "completed",
+          "backend": "claude",
+          "accountId": "claude",
+          "createdAt": "2026-09-25T12:00:00Z",
+          "updatedAt": "2026-09-25T12:03:10Z",
+          "sessionId": "session-7f3a",
+          "diff": {
+            "commit": "9b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c",
+            "files": 2,
+            "insertions": 41,
+            "deletions": 3
+          },
+          "branch": "wisp/1a2b3c4d",
+          "worktreePath": "/Users/me/Library/Application Support/wisp/worktrees/app-5e6f7a8b/01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01"
+        }
+      ],
+      "seq": 8
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 7,
+    "method": "agent/list",
+    "params": {}
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 7,
+    "result": {
+      "runs": [
+        {
+          "id": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+          "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+          "prompt": "Add a README that explains how to build the app.",
+          "policy": "workspaceWrite",
+          "status": "completed",
+          "backend": "claude",
+          "accountId": "claude",
+          "createdAt": "2026-09-25T12:00:00Z",
+          "updatedAt": "2026-09-25T12:03:10Z",
+          "sessionId": "session-7f3a",
+          "diff": {
+            "commit": "9b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c",
+            "files": 2,
+            "insertions": 41,
+            "deletions": 3
+          },
+          "branch": "wisp/1a2b3c4d",
+          "worktreePath": "/Users/me/Library/Application Support/wisp/worktrees/app-5e6f7a8b/01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01"
+        }
+      ],
+      "seq": 8
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 8,
+    "method": "agent/events",
+    "params": {
+      "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+      "after": 0,
+      "limit": 2
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 8,
+    "result": {
+      "events": [
+        {
+          "seq": 1,
+          "time": "2026-09-25T12:00:00Z",
+          "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+          "event": {
+            "kind": "agent.started",
+            "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+            "run": {
+              "id": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+              "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+              "prompt": "Add a README that explains how to build the app.",
+              "policy": "workspaceWrite",
+              "status": "starting",
+              "backend": "claude",
+              "accountId": "claude",
+              "createdAt": "2026-09-25T12:00:00Z",
+              "updatedAt": "2026-09-25T12:00:00Z"
+            }
+          }
+        },
+        {
+          "seq": 2,
+          "time": "2026-09-25T12:00:01Z",
+          "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+          "event": {
+            "kind": "agent.updated",
+            "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+            "state": {
+              "status": "running",
+              "accountId": "claude",
+              "updatedAt": "2026-09-25T12:00:01Z"
+            }
+          }
+        }
+      ],
+      "more": true
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 9,
+    "method": "agent/events",
+    "params": {
+      "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+      "after": 8
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 9,
+    "result": {
+      "events": [],
+      "more": false
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 10,
+    "method": "agent/cancel",
+    "params": {
+      "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 10,
+    "result": {
+      "run": {
+        "id": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+        "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+        "prompt": "Add a README that explains how to build the app.",
+        "policy": "workspaceWrite",
+        "status": "completed",
+        "backend": "claude",
+        "accountId": "claude",
+        "createdAt": "2026-09-25T12:00:00Z",
+        "updatedAt": "2026-09-25T12:03:10Z",
+        "sessionId": "session-7f3a",
+        "diff": {
+          "commit": "9b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c",
+          "files": 2,
+          "insertions": 41,
+          "deletions": 3
+        },
+        "branch": "wisp/1a2b3c4d",
+        "worktreePath": "/Users/me/Library/Application Support/wisp/worktrees/app-5e6f7a8b/01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 11,
+    "method": "agent/cancel",
+    "params": {
+      "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e02"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 11,
+    "error": {
+      "code": -32000,
+      "message": "no agent run has id 01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e02",
+      "data": {
+        "kind": "runNotFound"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 12,
+    "method": "agent/start",
+    "params": {
+      "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e02",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "prompt": "Fix the flaky test",
+      "policy": "workspaceWrite",
+      "account": {
+        "kind": "subscription",
+        "backend": "claude"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 12,
+    "error": {
+      "code": -32000,
+      "message": "Claude Code 2.1.200 can't run a sandboxed worker; update Claude Code to 2.1.248 or later",
+      "data": {
+        "kind": "workerUnavailable"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 13,
+    "method": "agent/start",
+    "params": {
+      "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e02",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "prompt": "Fix the flaky test",
+      "policy": "workspaceWrite"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 13,
+    "error": {
+      "code": -32000,
+      "message": "/Users/me/src/app has uncommitted changes that a new worktree would not include; commit or stash them, or create the worktree from an explicit base",
+      "data": {
+        "kind": "worktreeFailed"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 14,
+    "method": "agent/send",
+    "params": {
+      "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e02",
+      "turnId": "01a0d361-2b3c-7d4e-9f50-6a7b8c9d0e11",
+      "text": "Try again"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 14,
+    "error": {
+      "code": -32000,
+      "message": "run 01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e02 ended before its CLI reported a session, so it can't be resumed",
+      "data": {
+        "kind": "runNotResumable"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0d34a-5860-7ee2-a66a-aef2367abe02",
+      "seq": 9,
+      "time": "2026-09-25T12:10:00Z",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "event": {
+        "kind": "agent.accountFallback",
+        "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+        "fromAccount": "claude",
+        "toAccount": "01a0d34b-3c4d-7e5f-a061-7b8c9d0e1f22",
+        "reason": "rateLimited"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0d34a-5860-7ee2-a66a-aef2367abe02",
+      "seq": 10,
+      "time": "2026-09-25T12:11:00Z",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "event": {
+        "kind": "agent.finished",
+        "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+        "outcome": {
+          "status": "cancelled"
+        }
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0d34a-5860-7ee2-a66a-aef2367abe02",
+      "seq": 11,
+      "time": "2026-09-25T12:12:00Z",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "event": {
+        "kind": "agent.finished",
+        "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+        "outcome": {
+          "status": "failed",
+          "failure": "commitFailed",
+          "message": "/Users/me/src/app has no git identity configured (user.name and user.email); set one before an agent can commit there"
+        }
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0d34a-5860-7ee2-a66a-aef2367abe02",
+      "seq": 12,
+      "time": "2026-09-25T12:13:00Z",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "event": {
+        "kind": "agent.finished",
+        "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+        "outcome": {
+          "status": "interrupted"
+        }
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0d34a-5860-7ee2-a66a-aef2367abe02",
+      "seq": 13,
+      "time": "2026-09-25T12:13:00Z",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "event": {
+        "kind": "agent.updated",
+        "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+        "state": {
+          "status": "interrupted",
+          "accountId": "claude",
+          "sessionId": "session-7f3a",
+          "updatedAt": "2026-09-25T12:00:00Z"
+        }
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0d34a-5860-7ee2-a66a-aef2367abe02",
+      "seq": 14,
+      "time": "2026-09-25T12:14:00Z",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "event": {
+        "kind": "agent.updated",
+        "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+        "state": {
+          "status": "failed",
+          "accountId": "claude",
+          "error": "the CLI exited with code 1",
+          "updatedAt": "2026-09-25T12:00:00Z"
+        }
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0d34a-5860-7ee2-a66a-aef2367abe02",
+      "seq": 15,
+      "time": "2026-09-25T12:15:00Z",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "event": {
+        "kind": "agent.updated",
+        "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+        "state": {
+          "status": "cancelled",
+          "accountId": "claude",
+          "updatedAt": "2026-09-25T12:00:00Z"
+        }
+      }
+    }
+  }
+]

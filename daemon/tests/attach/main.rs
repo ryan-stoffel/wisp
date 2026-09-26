@@ -171,10 +171,15 @@ async fn attach_exits_when_wispd_stops_and_the_next_one_starts_wispd_again() {
 
     let mut attach = Attach::spawn(dir.path());
     let second = attach.initialize().await;
-    assert_ne!(second.log_id, first.log_id, "a new wispd");
+    let second_serve = serve_pid(dir.path()).unwrap();
+    assert_ne!(second_serve, serve, "a new wispd");
+    assert_eq!(
+        second.log_id, first.log_id,
+        "the event log is stored, so it outlives wispd (decision 0014)"
+    );
 
     // A crash: the socket file stays behind, and nothing listens on it.
-    let serve = serve_pid(dir.path()).unwrap();
+    let serve = second_serve;
     rustix::process::kill_process(serve, Signal::KILL).unwrap();
     let exited = attach.exit().await;
     assert!(exited.status.success(), "{exited:?}");
@@ -183,7 +188,8 @@ async fn attach_exits_when_wispd_stops_and_the_next_one_starts_wispd_again() {
 
     let mut attach = Attach::spawn(dir.path());
     let third = attach.initialize().await;
-    assert_ne!(third.log_id, second.log_id, "a new wispd");
+    assert_ne!(serve_pid(dir.path()).unwrap(), serve, "a new wispd");
+    assert_eq!(third.log_id, second.log_id);
     attach.close_stdin();
     assert!(attach.exit().await.status.success());
 }

@@ -27,9 +27,12 @@
 //!   falls a failed subscription run back to a key account, and checks a coordinator's turn
 //!   against the no-write policy (#119).
 //! - [`worktree`]: creates, inspects, and removes the git worktrees agent runs use (#154).
+//! - `agents`: the M3 runner behind `agent/*` (#156): starts a worker in its worktree, streams
+//!   its events, commits its changes, and resumes it after a restart.
 
 #![warn(missing_docs)]
 
+mod agents;
 pub mod attach;
 pub mod backend;
 mod context;

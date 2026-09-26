@@ -260,7 +260,23 @@ async fn probe_claude(launcher: &Launcher, timeout: Duration) -> DetectedCli {
         Ok(ran) => apply_json_status(&mut detected, &ran),
         Err(note) => detected.note = Some(note),
     }
+    // #156 refuses a worker on a Claude Code older than the sandbox needs, so the version must be
+    // known; `auth status` doesn't always report it, and `--version` does ("2.1.281 (Claude
+    // Code)").
+    if detected.version.is_none()
+        && let Ok(ran) = run(launcher, "claude", &["--version"], timeout).await
+        && ran.exit_code == Some(0)
+    {
+        detected.version = version_from_banner(&ran.stdout);
+    }
     detected
+}
+
+/// The version number that starts a `--version` banner, such as `2.1.281` in `2.1.281 (Claude
+/// Code)`.
+fn version_from_banner(stdout: &str) -> Option<String> {
+    let word = stdout.split_whitespace().next()?;
+    crate::backend::claude::parse_version(word).map(|_| word.to_owned())
 }
 
 async fn probe_codex(launcher: &Launcher, timeout: Duration) -> DetectedCli {

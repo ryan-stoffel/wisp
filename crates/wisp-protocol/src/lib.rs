@@ -54,7 +54,12 @@ pub use account::{
     AccountsKeysListResult, AccountsKeysRemoveParams, AccountsKeysRemoveResult, KeyAccount,
     Provider, RawKey,
 };
-pub use agent::{RunId, TurnId};
+pub use agent::{
+    AgentCancelParams, AgentEventsParams, AgentEventsResult, AgentFailureKind, AgentListParams,
+    AgentListResult, AgentOutcome, AgentOutputItem, AgentPolicy, AgentRun, AgentRunResult,
+    AgentRunState, AgentSendParams, AgentStartParams, AgentStatus, AgentTodoItem, AgentTodoStatus,
+    AgentToolStatus, DiffSummary, LoggedEvent, RunId, TurnId,
+};
 pub use cli_account::{
     AccountsListParams, AccountsListResult, AccountsRefreshParams, AccountsRefreshResult, AuthKind,
     CliKind, DetectedCli,
