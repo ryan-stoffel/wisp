@@ -38,14 +38,16 @@
 
 ### Store
 
-Migration 9 adds `repos` and `threads`. Version 8 is #157's. Migrations now apply every version that isn't recorded, not only those above the newest, so two branches can each add one and land in either order.
+Migration 9 adds `repos` and `threads`; version 8 is #157's. Migrations now apply every version that isn't recorded, not only those above the newest, so two branches that each add one can land in either order.
 
 ### Editor
 
 - `IWispThreadsService` keeps `thread/list` current from the host-level events. `IWispAgentsService` also follows each repo entry's runs, as it follows each project's.
 - A thread is a `wisp.thread` session. Its main chat is its run's `wisp.agent` chat, with no tool origin, so #105's transcript, composer, and Stop work as they do for a subagent. A thread in a repository has that repository as its workspace. A thread with no repo is a quick chat, with no workspace.
 - **New Chat** opens upstream's new-session composer. The provider offers `wisp.thread`, quick chats (the picker's "No workspace" choice starts a thread with no repo), and a browse action that picks a repository on the host.
-- Archive, unarchive, and delete go through the provider to wispd.
+- **The Changes tab** lists the files of the thread's latest commit, from `agent/diff` (#157), with `wisp-agent:` URIs that #157's file system serves. It lists them again when a new commit arrives.
+- **The composer footer** shows the agent's worktree branch and the host, for a thread's chat and for a subagent's.
+- Archive, unarchive, and delete go through the provider to wispd. The sidebar row's context menu offers Archive and Delete.
 
 ## Rejected
 
@@ -60,5 +62,5 @@ Migration 9 adds `repos` and `threads`. Version 8 is #157's. Migrations now appl
 
 - Anything that lists runs without a project, such as `agent/list {}`, now returns threads' runs as well. Their `project` is a repo entry's id, which `project/list` doesn't know.
 - The coordinator (M4) can later offer a thread's repository as a project without moving the thread.
-- The Changes tab for a thread follows whatever #194 does for a subagent's `IChat.changes`.
+- A subagent's `IChat.changes` is still #194's. A thread's chat already fills it from `agent/diff`, which #194 can reuse.
 - Nothing prunes threads or repo entries yet. Deleting is the user's, and #207 covers pruning runs.
