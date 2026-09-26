@@ -1,0 +1,19 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ryan Stoffel <stoffel.thomas.ryan@gmail.com>
+Date: Fri, 25 Sep 2026 20:13:55 -0700
+Subject: [PATCH] branding: call subagents Agents in the pill
+
+
+diff --git a/src/vs/sessions/contrib/chat/browser/sessionBackgroundActivitiesControl.ts b/src/vs/sessions/contrib/chat/browser/sessionBackgroundActivitiesControl.ts
+index b65710b94a97d784e46b7a32225eb5740d2a517d..a0e1cac3bc56d42aade51d579d4708fdb811463e 100644
+--- a/src/vs/sessions/contrib/chat/browser/sessionBackgroundActivitiesControl.ts
++++ b/src/vs/sessions/contrib/chat/browser/sessionBackgroundActivitiesControl.ts
+@@ -50,7 +50,7 @@ export class SessionBackgroundActivitiesControl extends Disposable {
+ 					? this._collectSubagents(currentSession, currentChat, reader)
+ 					: [];
+ 			return subagents.length > 0
+-				? [{ title: localize('backgroundActivities.subagents', "Subagents"), entries: subagents }]
++				? [{ title: localize('backgroundActivities.subagents', "Agents"), entries: subagents }]
+ 				: [];
+ 		});
+ 

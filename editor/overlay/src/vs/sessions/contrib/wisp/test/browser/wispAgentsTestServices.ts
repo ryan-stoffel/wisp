@@ -23,6 +23,7 @@ import { ISessionsService } from '../../../../services/sessions/browser/sessions
 import { ISession } from '../../../../services/sessions/common/session.js';
 import { ISessionsProvider } from '../../../../services/sessions/common/sessionsProvider.js';
 import { ISessionsChangeEvent, ISessionsManagementService } from '../../../../services/sessions/common/sessionsManagement.js';
+import { IWispAgentsService, WispAgentsService } from '../../../providers/wisp/browser/wispAgentsService.js';
 import { WispSessionsProvider } from '../../../providers/wisp/browser/wispSessionsProvider.js';
 import { IWispProjectsService, WispProjectsService } from '../../../providers/wisp/browser/wispProjectsService.js';
 import { IWispHostStatusService, WispHostStatusService } from '../../browser/wispHostStatusService.js';
@@ -80,6 +81,7 @@ export interface IAgentsWindowServices {
 	readonly configuration: TestConfigurationService;
 	readonly hostStatus: WispHostStatusService;
 	readonly projects: WispProjectsService;
+	readonly agents: WispAgentsService;
 	readonly provider: WispSessionsProvider;
 	/** The session `ISessionsService.activeSession` reports. */
 	readonly active: ReturnType<typeof observableValue<ISession | undefined>>;
@@ -93,7 +95,7 @@ function environment(isSessionsWindow: boolean): IWorkbenchEnvironmentService {
 
 /**
  * Upstream's workbench test services, with a test wispd and wisp's own services on top: the host
- * status, the projects, and the sessions provider, which `ISessionsManagementService` reads.
+ * status, the projects, the agent runs, and the sessions provider, which `ISessionsManagementService` reads.
  */
 export function agentsWindowServices(disposables: Pick<DisposableStore, 'add'>, isSessionsWindow: boolean, host = 'local'): IAgentsWindowServices {
 	const configuration = new TestConfigurationService({ [WISP_HOST_SETTING]: host });
@@ -114,13 +116,15 @@ export function agentsWindowServices(disposables: Pick<DisposableStore, 'add'>, 
 	instantiationService.stub(IWispHostStatusService, hostStatus);
 	const projects = disposables.add(instantiationService.createInstance(WispProjectsService));
 	instantiationService.stub(IWispProjectsService, projects);
+	const agents = disposables.add(instantiationService.createInstance(WispAgentsService));
+	instantiationService.stub(IWispAgentsService, agents);
 	const provider = disposables.add(instantiationService.createInstance(WispSessionsProvider));
 	instantiationService.stub(ISessionsManagementService, disposables.add(new TestSessionsManagementService(provider)) as unknown as ISessionsManagementService);
 	const active = observableValue<ISession | undefined>('active', undefined);
 	const opened: URI[] = [];
 	instantiationService.stub(ISessionsService, { activeSession: active, openSession: async (resource: URI) => { opened.push(resource); } } as unknown as ISessionsService);
 	instantiationService.stub(ISessionsProvidersService, disposables.add(new TestSessionsProvidersService()));
-	return { instantiationService, viewDescriptorService, commands, wispd, configuration, hostStatus, projects, provider, active, opened };
+	return { instantiationService, viewDescriptorService, commands, wispd, configuration, hostStatus, projects, agents, provider, active, opened };
 }
 
 /** Lets promises that are already settled run their callbacks. */

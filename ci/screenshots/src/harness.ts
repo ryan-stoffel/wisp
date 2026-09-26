@@ -28,6 +28,8 @@ export interface Scenario {
   args?: (dir: string) => Promise<readonly string[]>;
   /** User settings to start with, written to the throwaway profile's settings.json. */
   settings?: Readonly<Record<string, unknown>>;
+  /** Environment variables the app starts with, on top of the harness's own, such as a PATH with a fake CLI. */
+  env?: (dir: string) => Readonly<Record<string, string>>;
   run(context: ScenarioContext): Promise<Buffer | NotAvailable>;
 }
 
@@ -91,7 +93,7 @@ export async function appLaunchOptions(): Promise<LaunchOptions> {
   }
 }
 
-export async function launch(options: LaunchOptions, scenario: Pick<Scenario, 'args' | 'settings'> = {}): Promise<Session> {
+export async function launch(options: LaunchOptions, scenario: Pick<Scenario, 'args' | 'settings' | 'env'> = {}): Promise<Session> {
   const root = await mkdtemp(join(tmpdir(), 'wisp-screenshots-'));
   const wispdDataDir = join(root, 'wispd');
   const files = join(root, 'files');
@@ -124,7 +126,7 @@ export async function launch(options: LaunchOptions, scenario: Pick<Scenario, 'a
       ],
       // The app's bundled wispd starts on demand (0010). Its own data folder keeps it away from
       // the machine's real wispd, and lets close() stop the one this run started.
-      env: { ...inheritedEnv(), ...options.env, [WISPD_DATA_DIR_ENV]: wispdDataDir },
+      env: { ...inheritedEnv(), ...options.env, ...scenario.env?.(files), [WISPD_DATA_DIR_ENV]: wispdDataDir },
       timeout: TIMEOUT_MS,
     });
     app = started;
@@ -159,7 +161,8 @@ export async function launch(options: LaunchOptions, scenario: Pick<Scenario, 'a
   }
 }
 
-const entryPointUrl = /\/(workbench|sessions)\.html(?:[?#]|$)/;
+// The development build loads the -dev variants, so a local run of a check can drive it too.
+const entryPointUrl = /\/(workbench|sessions)(?:-dev)?\.html(?:[?#]|$)/;
 
 // app.firstWindow() trusts whichever BrowserWindow Electron creates first, at whatever URL it has at that
 // instant (usually still about:blank). On a cold launch that first window can be a transient page that closes
