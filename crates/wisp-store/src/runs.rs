@@ -33,6 +33,21 @@ pub struct RunState {
     pub files_changed: Option<u64>,
     pub insertions: Option<u64>,
     pub deletions: Option<u64>,
+    /// How `agent/accept` merged the run, once it did (#157).
+    pub accept: Option<RunAccept>,
+}
+
+/// What `agent/accept` did for a run (#157).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunAccept {
+    /// The accept's client-generated id, for its idempotency.
+    pub id: Uuid,
+    /// The commit the project's branch points at afterward.
+    pub commit: String,
+    /// The branch it went into.
+    pub into: String,
+    /// `fastForward`, `merge`, or `upToDate`.
+    pub how: String,
 }
 
 /// A run row.
@@ -47,7 +62,8 @@ pub struct Run {
 
 const COLUMNS: &str = "id, project_id, prompt, requested_account, policy, backend, account_id, \
                        status, session_id, error, commit_sha, files_changed, insertions, \
-                       deletions, created_at, updated_at";
+                       deletions, created_at, updated_at, accept_id, merge_commit, \
+                       merge_into, merge_how";
 
 struct RawRun {
     id: String,
@@ -66,6 +82,10 @@ struct RawRun {
     deletions: Option<u64>,
     created_at: String,
     updated_at: String,
+    accept_id: Option<String>,
+    merge_commit: Option<String>,
+    merge_into: Option<String>,
+    merge_how: Option<String>,
 }
 
 impl RawRun {
@@ -87,10 +107,28 @@ impl RawRun {
             deletions: row.get(13)?,
             created_at: row.get(14)?,
             updated_at: row.get(15)?,
+            accept_id: row.get(16)?,
+            merge_commit: row.get(17)?,
+            merge_into: row.get(18)?,
+            merge_how: row.get(19)?,
         })
     }
 
     fn into_run(self) -> Result<Run, StoreError> {
+        let accept = match (
+            self.accept_id,
+            self.merge_commit,
+            self.merge_into,
+            self.merge_how,
+        ) {
+            (Some(id), Some(commit), Some(into), Some(how)) => Some(RunAccept {
+                id: Uuid::parse_str(&id)?,
+                commit,
+                into,
+                how,
+            }),
+            _ => None,
+        };
         Ok(Run {
             id: Uuid::parse_str(&self.id)?,
             fields: RunFields {
@@ -109,6 +147,7 @@ impl RawRun {
                 files_changed: self.files_changed,
                 insertions: self.insertions,
                 deletions: self.deletions,
+                accept,
             },
             created_at: timestamp::parse(&self.created_at)?,
             updated_at: timestamp::parse(&self.updated_at)?,
@@ -202,29 +241,59 @@ impl Store {
     ///
     /// [`StoreError::NotFound`] if no run has `id`, or a database error.
     pub fn update_run(&self, id: Uuid, state: &RunState) -> Result<Run, StoreError> {
-        let changed = self.conn.execute(
-            "UPDATE runs SET status = ?2, account_id = ?3, session_id = ?4, error = ?5,
-                             commit_sha = ?6, files_changed = ?7, insertions = ?8,
-                             deletions = ?9, updated_at = ?10
-             WHERE id = ?1",
-            params![
-                id.to_string(),
-                state.status,
-                state.account_id,
-                state.session_id,
-                state.error,
-                state.commit_sha,
-                state.files_changed,
-                state.insertions,
-                state.deletions,
-                timestamp::now(),
-            ],
-        )?;
-        if changed == 0 {
-            return Err(StoreError::NotFound { id });
-        }
-        fetch(&self.conn, id)?.ok_or(StoreError::NotFound { id })
+        update(&self.conn, id, state)
     }
+
+    /// Replaces accepted run `id`'s state and deletes its worktree's row, in one transaction:
+    /// `agent/accept` removed the worktree and its branch (#157).
+    ///
+    /// # Errors
+    ///
+    /// [`StoreError::NotFound`] if no run has `id`, in which case nothing is written, or a
+    /// database error.
+    pub fn accept_run(&mut self, id: Uuid, state: &RunState) -> Result<Run, StoreError> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let run = update(&tx, id, state)?;
+        tx.execute(
+            "DELETE FROM worktrees WHERE id = ?1",
+            params![id.to_string()],
+        )?;
+        tx.commit()?;
+        Ok(run)
+    }
+}
+
+fn update(conn: &Connection, id: Uuid, state: &RunState) -> Result<Run, StoreError> {
+    let accept = state.accept.as_ref();
+    let changed = conn.execute(
+        "UPDATE runs SET status = ?2, account_id = ?3, session_id = ?4, error = ?5,
+                         commit_sha = ?6, files_changed = ?7, insertions = ?8,
+                         deletions = ?9, updated_at = ?10, accept_id = ?11,
+                         merge_commit = ?12, merge_into = ?13, merge_how = ?14
+         WHERE id = ?1",
+        params![
+            id.to_string(),
+            state.status,
+            state.account_id,
+            state.session_id,
+            state.error,
+            state.commit_sha,
+            state.files_changed,
+            state.insertions,
+            state.deletions,
+            timestamp::now(),
+            accept.map(|accept| accept.id.to_string()),
+            accept.map(|accept| accept.commit.as_str()),
+            accept.map(|accept| accept.into.as_str()),
+            accept.map(|accept| accept.how.as_str()),
+        ],
+    )?;
+    if changed == 0 {
+        return Err(StoreError::NotFound { id });
+    }
+    fetch(conn, id)?.ok_or(StoreError::NotFound { id })
 }
 
 pub(crate) fn insert_run(

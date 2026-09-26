@@ -7,6 +7,7 @@
 
 import '../../../../platform/wisp/common/wispdConfiguration.js';
 import '../../../../platform/wisp/electron-browser/wispdService.js';
+import '../browser/wispAgentReview.js';
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import Severity from '../../../../base/common/severity.js';

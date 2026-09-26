@@ -134,6 +134,28 @@ export type WispRequests = {
 	 */
 	"agent/events": { params: AgentEventsParams, result: AgentEventsResult },
 	/**
+	 * `agent/diff`: the files that differ between a run's base and its latest commit, each
+	 * with its stats and a size-capped unified diff (#157). Gated on the `agentReview`
+	 * capability, like every review method.
+	 */
+	"agent/diff": { params: AgentDiffParams, result: AgentDiffResult },
+	/**
+	 * `agent/file`: one file of a run's diff, on its base or head side, base64-encoded and
+	 * size-capped, for a diff editor.
+	 */
+	"agent/file": { params: AgentFileParams, result: AgentFileResult },
+	/**
+	 * `agent/accept`: merges a run's commit into the project repository's current branch on
+	 * the host, fast-forward when possible, then removes its worktree and branch. Never
+	 * pushes. Idempotent on its client-generated id.
+	 */
+	"agent/accept": { params: AgentAcceptParams, result: AgentAcceptResult },
+	/**
+	 * `agent/requestChanges`: the reviewer's follow-up to a run, sent as `agent/send` sends
+	 * a message. Idempotent on its client-generated turn id.
+	 */
+	"agent/requestChanges": { params: AgentRequestChangesParams, result: AgentRunResult },
+	/**
 	 * `thread/list`: every repo entry and normal thread, and the `seq` the list reflects
 	 * (#110). Gated on the `threads` capability, like every `thread/*` and `repo/*` method.
 	 */
@@ -1076,7 +1098,7 @@ export type AgentRun = {
  * A newer wispd may send a status this version does not know; treat it as unknown, and don't
  * end a `switch` over this type in an exhaustiveness assertion.
  */
-export type AgentStatus = "starting" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
+export type AgentStatus = "starting" | "running" | "completed" | "failed" | "cancelled" | "interrupted" | "accepted";
 
 /**
  * The commit wispd made for a run, compared with the commit its worktree was created from.
@@ -1288,7 +1310,15 @@ export type WispEvent = { "kind": "project.created",
 	/**
 	 * The commit and its stats against the worktree's base.
 	 */
-	diff: DiffSummary, } | { "kind": "repo.added",
+	diff: DiffSummary, } | { "kind": "agent.accepted",
+	/**
+	 * The run's id.
+	 */
+	runId: RunId,
+	/**
+	 * What happened to the project's repository.
+	 */
+	merge: AgentMerge, } | { "kind": "repo.added",
 	/**
 	 * The entry.
 	 */
@@ -1317,6 +1347,32 @@ export type WispEvent = { "kind": "project.created",
  * A newer wispd may send a kind this version does not know; treat it as unknown.
  */
 export type AgentFailureKind = "notSignedIn" | "rateLimited" | "policyViolation" | "unexpectedApiKey" | "vendorError" | "crashed" | "spawnFailed" | "commitFailed" | "internal";
+
+/**
+ * What `agent/accept` did to the project's repository.
+ */
+export type AgentMerge = {
+	/**
+	 * The commit the branch points at now: the run's commit, or wispd's merge commit.
+	 */
+	commit: string,
+	/**
+	 * The branch it went into, such as `main`: the repository's current branch when the run
+	 * was accepted.
+	 */
+	into: string,
+	/**
+	 * How.
+	 */
+	how: AgentMergeKind,
+};
+
+/**
+ * How `agent/accept` brought a run's commit into the project's branch.
+ *
+ * A newer wispd may send a value this version does not know; treat it as unknown.
+ */
+export type AgentMergeKind = "fastForward" | "merge" | "upToDate";
 
 /**
  * How one CLI process of a run ended.
@@ -1570,6 +1626,239 @@ export type Thread = {
 };
 
 /**
+ * Params of `agent/diff`.
+ */
+export type AgentDiffParams = {
+	/**
+	 * The run.
+	 */
+	runId: RunId,
+};
+
+/**
+ * Result of `agent/diff`.
+ */
+export type AgentDiffResult = {
+	/**
+	 * The commit the run's worktree was created from: the `base` side.
+	 */
+	base: string,
+	/**
+	 * The run's latest commit: the `head` side, and what `agent/accept` merges. Equal to `base`
+	 * until wispd has committed something for the run.
+	 */
+	head: string,
+	/**
+	 * The files that differ, ordered by path.
+	 */
+	files: Array<AgentDiffFile>,
+	/**
+	 * Totals over every changed file.
+	 */
+	stats: AgentDiffStats,
+	/**
+	 * Whether `files` was cut short because the run changed more files than one answer lists.
+	 */
+	truncated: boolean,
+};
+
+/**
+ * One file that differs between the run's base and its latest commit.
+ */
+export type AgentDiffFile = {
+	/**
+	 * Its path on the head side, relative to the repository root. For a deleted file, its path
+	 * on the base side.
+	 */
+	path: string,
+	/**
+	 * Its path on the base side, for a rename or a copy.
+	 */
+	oldPath?: string,
+	/**
+	 * How it changed.
+	 */
+	status: AgentFileStatus,
+	/**
+	 * Lines added. 0 for a binary file.
+	 */
+	insertions: number,
+	/**
+	 * Lines removed. 0 for a binary file.
+	 */
+	deletions: number,
+	/**
+	 * Whether git treats it as binary. A binary file has no `diff`.
+	 */
+	binary: boolean,
+	/**
+	 * Its unified diff, starting at its `diff --git` line. Absent for a binary file, and for
+	 * every file after the result's diffs reached their total size cap; read those files with
+	 * `agent/file` instead.
+	 */
+	diff?: string,
+	/**
+	 * Whether `diff` was cut short at the per-file size cap.
+	 */
+	diffTruncated: boolean,
+};
+
+/**
+ * How a file differs from the base.
+ *
+ * A newer wispd may send a status this version does not know; treat it as modified.
+ */
+export type AgentFileStatus = "added" | "modified" | "deleted" | "renamed" | "copied" | "typeChanged";
+
+/**
+ * Totals of an `agent/diff`, over every file, including files left out of `files`.
+ */
+export type AgentDiffStats = {
+	/**
+	 * Files changed.
+	 */
+	files: number,
+	/**
+	 * Lines added.
+	 */
+	insertions: number,
+	/**
+	 * Lines removed.
+	 */
+	deletions: number,
+};
+
+/**
+ * Params of `agent/file`.
+ */
+export type AgentFileParams = {
+	/**
+	 * The run.
+	 */
+	runId: RunId,
+	/**
+	 * The file's path, relative to the repository root, as `agent/diff` lists it: no leading
+	 * `/`, no `.` or `..` or empty component, no backslash, and nothing under `.git`.
+	 */
+	path: string,
+	/**
+	 * Which side to read.
+	 */
+	side: AgentFileSide,
+	/**
+	 * Whether to leave the content out and answer only `exists` and `size`, as a file system's
+	 * `stat` needs. Absent means false.
+	 */
+	sizeOnly?: boolean,
+};
+
+/**
+ * Which side of a run's diff to read.
+ *
+ * A newer client may send a side this version does not know; wispd refuses it.
+ */
+export type AgentFileSide = "base" | "head";
+
+/**
+ * Result of `agent/file`.
+ */
+export type AgentFileResult = {
+	/**
+	 * The path as asked.
+	 */
+	path: string,
+	/**
+	 * The side as asked.
+	 */
+	side: AgentFileSide,
+	/**
+	 * The commit it was read from.
+	 */
+	commit: string,
+	/**
+	 * Whether the file exists on that side. An added file has no base side, and a deleted file
+	 * no head side.
+	 */
+	exists: boolean,
+	/**
+	 * Its size in bytes, when it exists.
+	 */
+	size?: number,
+	/**
+	 * Its exact content, base64-encoded, when it exists, is not too large, and `sizeOnly` was not
+	 * asked. A symlink's
+	 * content is its target, as git stores it; it is never followed.
+	 */
+	content?: string,
+	/**
+	 * Whether it is over `agent/file`'s size cap, so `content` is absent.
+	 */
+	tooLarge: boolean,
+};
+
+/**
+ * Params of `agent/accept`.
+ *
+ * Idempotent on `id`: accepting an accepted run again with the same id returns the same result;
+ * with another id it fails with `runAccepted`.
+ */
+export type AgentAcceptParams = {
+	/**
+	 * The run.
+	 */
+	runId: RunId,
+	/**
+	 * The accept's id, a version 7 UUID generated by the client.
+	 */
+	id: AcceptId,
+	/**
+	 * The commit the user reviewed, `agent/diff`'s `head`. When it is given and the run has
+	 * committed since, the accept fails with `mergeRefused` instead of merging changes nobody
+	 * reviewed.
+	 */
+	commit?: string,
+};
+
+/**
+ * An `agent/accept`'s id: a version 7 UUID that the client generates once and sends again on
+ * every retry, so a retry after a lost connection gets the same answer.
+ */
+export type AcceptId = string;
+
+/**
+ * Result of `agent/accept`.
+ */
+export type AgentAcceptResult = {
+	/**
+	 * The run, now `accepted`.
+	 */
+	run: AgentRun,
+	/**
+	 * What happened to the project's repository.
+	 */
+	merge: AgentMerge,
+};
+
+/**
+ * Params of `agent/requestChanges`: the reviewer's follow-up to a run, sent to it as
+ * `agent/send` sends a message, and idempotent on `turnId` the same way.
+ */
+export type AgentRequestChangesParams = {
+	/**
+	 * The run.
+	 */
+	runId: RunId,
+	/**
+	 * The message's id, a version 7 UUID generated by the client.
+	 */
+	turnId: TurnId,
+	/**
+	 * What to change.
+	 */
+	text: string,
+};
+
+/**
  * Params of `thread/list`.
  */
 export type ThreadListParams = Record<symbol, never>;
@@ -1768,7 +2057,7 @@ export type ErrorData = {
  * A newer wispd may send kinds that are not listed here. Treat those as unknown errors, so a
  * `switch` over this type must not end in an exhaustiveness assertion.
  */
-export type ErrorKind = "notInitialized" | "incompatibleProtocol" | "resyncRequired" | "projectNotFound" | "accountNotFound" | "keychainUnavailable" | "idConflict" | "contextNotFound" | "contextTooLarge" | "notARepository" | "runNotFound" | "runNotResumable" | "workerUnavailable" | "worktreeFailed" | "repoNotFound" | "threadNotFound" | "runActive";
+export type ErrorKind = "notInitialized" | "incompatibleProtocol" | "resyncRequired" | "projectNotFound" | "accountNotFound" | "keychainUnavailable" | "idConflict" | "contextNotFound" | "contextTooLarge" | "notARepository" | "runNotFound" | "runNotResumable" | "workerUnavailable" | "worktreeFailed" | "runAccepted" | "mergeRefused" | "mergeConflict" | "repoNotFound" | "threadNotFound" | "runActive";
 
 /**
  * The `detail` of `incompatibleProtocol`. Its shape never changes, so every editor can read it

@@ -164,9 +164,17 @@ const MIGRATIONS: &[Migration] = &[
         );
         CREATE INDEX events_run ON events (run_id, seq);",
     },
-    // Normal threads (#110, decision 0017). Version 8 is #157's accepted runs, which may land
-    // on develop before or after this one; `run` applies every missing version, so either order
-    // works.
+    // Accepting a run (#157): `agent/accept`'s client-generated id, for its idempotency, and what
+    // the merge did to the project's repository (`merge_how` is `fastForward`, `merge`, or
+    // `upToDate`). All NULL until the run is accepted.
+    Migration {
+        version: 8,
+        sql: "ALTER TABLE runs ADD COLUMN accept_id TEXT;
+        ALTER TABLE runs ADD COLUMN merge_commit TEXT;
+        ALTER TABLE runs ADD COLUMN merge_into TEXT;
+        ALTER TABLE runs ADD COLUMN merge_how TEXT;",
+    },
+    // Normal threads (#110, decision 0017).
     //
     // - `repos`: lightweight repo entries that normal threads run in, one per canonical path.
     //   `scratch` marks wispd's own entry for threads with no repo.

@@ -15,6 +15,7 @@
 
 mod actor;
 mod convert;
+pub(crate) mod review;
 pub(crate) mod worker;
 
 use std::collections::HashMap;
@@ -30,8 +31,8 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 use wisp_protocol::jsonrpc::ErrorObject;
 use wisp_protocol::{
-    AccountChoice, AgentOutcome, AgentRun, AgentRunState, AgentSendParams, AgentStartParams,
-    ErrorKind, ProjectId, Role, RunId, WispEvent,
+    AccountChoice, AgentAcceptParams, AgentAcceptResult, AgentOutcome, AgentRun, AgentRunState,
+    AgentSendParams, AgentStartParams, ErrorKind, ProjectId, Role, RunId, WispEvent,
 };
 use wisp_store::{RunFields, RunState, StoreError, WorktreeFields};
 
@@ -157,6 +158,13 @@ pub(crate) fn store_error(error: &StoreError) -> ErrorObject {
 
 fn run_not_found(id: RunId) -> ErrorObject {
     ErrorObject::wisp(ErrorKind::RunNotFound, format!("no agent run has id {id}"))
+}
+
+pub(crate) fn run_accepted(id: RunId) -> ErrorObject {
+    ErrorObject::wisp(
+        ErrorKind::RunAccepted,
+        format!("run {id} was accepted; its worktree and branch are gone"),
+    )
 }
 
 fn requested_account(account: Option<&AccountChoice>) -> Option<String> {
@@ -481,7 +489,7 @@ pub(crate) async fn create(daemon: Arc<Daemon>, new: NewRun) -> Result<CreatedRu
     }
     info!(run = %run_id, project = %project, backend = %row.fields.backend, thread = is_thread, "created an agent run");
 
-    let mut actor = Actor::new(Arc::clone(&daemon), row, worktree);
+    let mut actor = Actor::new(Arc::clone(&daemon), row, Some(worktree));
     let task = match &thread {
         Some(thread) => worker::thread_prompt(
             &prompt,
@@ -547,23 +555,23 @@ async fn actor_for(daemon: &Arc<Daemon>, id: RunId) -> Result<mpsc::Sender<Comma
             .get_run(id.into())
             .map_err(|e| store_error(&e))?
             .ok_or_else(|| run_not_found(id))?;
-        let worktree = db
-            .get_worktree(id.into())
-            .map_err(|e| store_error(&e))?
-            .ok_or_else(|| {
-                ErrorObject::internal_error(format!("run {id} has no recorded worktree"))
-            })?;
+        let worktree = db.get_worktree(id.into()).map_err(|e| store_error(&e))?;
+        if worktree.is_none() && row.state.status != convert::ACCEPTED {
+            return Err(ErrorObject::internal_error(format!(
+                "run {id} has no recorded worktree"
+            )));
+        }
         Ok((row, worktree))
     })
     .await?;
     Ok(agents.spawn(Actor::new(Arc::clone(daemon), row, worktree)))
 }
 
-async fn ask(
+async fn ask<T>(
     daemon: &Arc<Daemon>,
     id: RunId,
-    command: impl FnOnce(oneshot::Sender<Result<AgentRun, ErrorObject>>) -> Command,
-) -> Result<AgentRun, ErrorObject> {
+    command: impl FnOnce(oneshot::Sender<Result<T, ErrorObject>>) -> Command,
+) -> Result<T, ErrorObject> {
     let actor = actor_for(daemon, id).await?;
     let (reply, answer) = oneshot::channel();
     let stopping = || ErrorObject::internal_error("wispd is stopping");
@@ -597,6 +605,21 @@ pub(crate) async fn cancel(daemon: Arc<Daemon>, id: RunId) -> Result<AgentRun, E
 /// Whether a stored run's CLI is starting or running.
 pub(crate) fn is_active(row: &wisp_store::Run) -> bool {
     row.state.status == convert::STARTING || row.state.status == convert::RUNNING
+}
+
+/// `agent/accept`: through the run's actor, so it never races the run's own CLI or commit.
+pub(crate) async fn accept(
+    daemon: Arc<Daemon>,
+    params: AgentAcceptParams,
+) -> Result<AgentAcceptResult, ErrorObject> {
+    let AgentAcceptParams { run_id, id, commit } = params;
+    let (run, merge) = ask(&daemon, run_id, |reply| Command::Accept {
+        id,
+        reviewed: commit,
+        reply,
+    })
+    .await?;
+    Ok(AgentAcceptResult { run, merge })
 }
 
 /// Marks every run the store still has as `starting` or `running` as `interrupted`: wispd

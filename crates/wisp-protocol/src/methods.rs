@@ -29,16 +29,18 @@ use crate::{
     AccountsDefaultsGetParams, AccountsDefaultsGetResult, AccountsDefaultsSetParams,
     AccountsKeysAddParams, AccountsKeysAddResult, AccountsKeysListParams, AccountsKeysListResult,
     AccountsKeysRemoveParams, AccountsKeysRemoveResult, AccountsListParams, AccountsListResult,
-    AccountsRefreshParams, AccountsRefreshResult, AgentCancelParams, AgentEventsParams,
-    AgentEventsResult, AgentListParams, AgentListResult, AgentRunResult, AgentSendParams,
-    AgentStartParams, ContextListParams, ContextListResult, ContextReadParams, ContextReadResult,
-    ContextWriteParams, ContextWriteResult, EventsEventParams, EventsSubscribeParams,
-    EventsSubscribeResult, EventsUnsubscribeParams, EventsUnsubscribeResult, HostHealthParams,
-    HostHealthResult, HostVersionParams, HostVersionResult, InitializeParams, InitializeResult,
-    ProjectCreateParams, ProjectCreateResult, ProjectListParams, ProjectListResult, RepoAddParams,
-    RepoAddResult, ThreadArchiveParams, ThreadArchiveResult, ThreadDeleteParams,
-    ThreadDeleteResult, ThreadListParams, ThreadListResult, ThreadStartParams, ThreadStartResult,
-    UsageGetParams, UsageGetResult,
+    AccountsRefreshParams, AccountsRefreshResult, AgentAcceptParams, AgentAcceptResult,
+    AgentCancelParams, AgentDiffParams, AgentDiffResult, AgentEventsParams, AgentEventsResult,
+    AgentFileParams, AgentFileResult, AgentListParams, AgentListResult, AgentRequestChangesParams,
+    AgentRunResult, AgentSendParams, AgentStartParams, ContextListParams, ContextListResult,
+    ContextReadParams, ContextReadResult, ContextWriteParams, ContextWriteResult,
+    EventsEventParams, EventsSubscribeParams, EventsSubscribeResult, EventsUnsubscribeParams,
+    EventsUnsubscribeResult, HostHealthParams, HostHealthResult, HostVersionParams,
+    HostVersionResult, InitializeParams, InitializeResult, ProjectCreateParams,
+    ProjectCreateResult, ProjectListParams, ProjectListResult, RepoAddParams, RepoAddResult,
+    ThreadArchiveParams, ThreadArchiveResult, ThreadDeleteParams, ThreadDeleteResult,
+    ThreadListParams, ThreadListResult, ThreadStartParams, ThreadStartResult, UsageGetParams,
+    UsageGetResult,
 };
 
 /// A method that is called with a request and answered with a response.
@@ -176,6 +178,20 @@ method_table! {
         AgentList = "agent/list": AgentListParams => AgentListResult;
         /// `agent/events`: one run's events from wispd's log, a page at a time.
         AgentEvents = "agent/events": AgentEventsParams => AgentEventsResult;
+        /// `agent/diff`: the files that differ between a run's base and its latest commit, each
+        /// with its stats and a size-capped unified diff (#157). Gated on the `agentReview`
+        /// capability, like every review method.
+        AgentDiff = "agent/diff": AgentDiffParams => AgentDiffResult;
+        /// `agent/file`: one file of a run's diff, on its base or head side, base64-encoded and
+        /// size-capped, for a diff editor.
+        AgentFile = "agent/file": AgentFileParams => AgentFileResult;
+        /// `agent/accept`: merges a run's commit into the project repository's current branch on
+        /// the host, fast-forward when possible, then removes its worktree and branch. Never
+        /// pushes. Idempotent on its client-generated id.
+        AgentAccept = "agent/accept": AgentAcceptParams => AgentAcceptResult;
+        /// `agent/requestChanges`: the reviewer's follow-up to a run, sent as `agent/send` sends
+        /// a message. Idempotent on its client-generated turn id.
+        AgentRequestChanges = "agent/requestChanges": AgentRequestChangesParams => AgentRunResult;
         /// `thread/list`: every repo entry and normal thread, and the `seq` the list reflects
         /// (#110). Gated on the `threads` capability, like every `thread/*` and `repo/*` method.
         ThreadList = "thread/list": ThreadListParams => ThreadListResult;
@@ -252,6 +268,10 @@ mod tests {
                 "agent/cancel",
                 "agent/list",
                 "agent/events",
+                "agent/diff",
+                "agent/file",
+                "agent/accept",
+                "agent/requestChanges",
                 "thread/list",
                 "repo/add",
                 "thread/start",

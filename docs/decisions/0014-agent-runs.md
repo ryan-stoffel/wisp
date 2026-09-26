@@ -1,8 +1,8 @@
 # 0014: Agent runs in wispd
 
-- Status: accepted
+- Status: accepted; review and accept added by #157
 - Date: 2026-09-25
-- Issue: #156
+- Issue: #156, #157 (review and accept), #68 (what Accept does), #191 (no hooks in the user's checkout)
 
 ## Context
 
@@ -34,6 +34,27 @@ M3's done-when is one subagent that completes a task in a worktree and writes to
 - **One actor task per run** takes commands and backend events in one loop. It charges usage to the run's current account, which changes on `AccountFallback` (0012).
 - **When a CLI process ends,** wispd commits the worktree on the run's branch with `commit_all` (#166: pinned git folder, no hooks), whatever the outcome, and reports the commit's stats against the worktree's base. A failed commit fails the run with `commitFailed`.
 - **When wispd stops,** it cancels running CLIs and records their runs `interrupted`, without committing. **When wispd starts,** any run still `starting` or `running` (a crash) becomes `interrupted`. Both resume through `agent/send` by their session id, on the account the session ended on (after any fallback), not the worker role's current default; if that account is gone, or now runs on another backend, `agent/send` fails with `runNotResumable`.
+
+### Review and accept (#157, #68)
+
+Added by #157, behind a new `agentReview` capability. What a client reviews is exactly what Accept merges: the run's latest commit (`run.diff.commit`) against its worktree's base. The uncommitted edits of a running agent can't be reviewed; wispd commits them when its CLI ends.
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `agent/diff` | `{runId}` | `{base, head, files, stats, truncated}`: per file its status, stats, and a unified diff capped at 256 KiB, with 4 MiB in all, 2 MiB of file list, and 3,000 files listed. Caps count JSON-escaped size, so the answer fits 0007's 8 MiB frame |
+| `agent/file` | `{runId, path, side: "base" \| "head", sizeOnly?}` | `{commit, exists, size?, content?, tooLarge}`: base64 content, capped at 4 MiB; `sizeOnly` leaves it out, for a file system's `stat` |
+| `agent/accept` | `{runId, id, commit?}` | `{run, merge: {commit, into, how: fastForward \| merge \| upToDate}}` |
+| `agent/requestChanges` | `{runId, turnId, text}` | `{run}`, sent as `agent/send` sends a message |
+
+- **Reads** come from git's objects (`ls-tree` and `cat-file` on the commit), through #166's pinned and hardened worktree calls, and never from the worktree's files. So a symlink comes back as its target text and is never followed, and a path through a symlinked folder doesn't exist. `path` must be relative, with no empty, `.`, or `..` component, no backslash or NUL, and nothing under `.git`, and it is matched literally.
+- **Accept** (#68's default) merges the run's commit into the current branch of the project's checkout on the host, and never pushes. It refuses, with nothing changed (`mergeRefused`), when the run is running or has no commit, when HEAD is detached, when a merge, rebase, cherry-pick, revert, or am is in progress, when uncommitted changes (staged, unstaged, or untracked) touch a path the merge changes, when any file, ignored ones included, sits where the merge adds one, or when `commit` isn't the run's latest commit. When the branch has moved on, `git merge-tree --write-tree` builds the merge in the object store, a conflict refuses with `mergeConflict` and names the files, and a clean result becomes an unsigned merge commit. The branch and working tree then move with `git merge --ff-only --no-overwrite-ignore <result>`, which keeps unrelated uncommitted changes and never overwrites an ignored file such as `.env`. Then wispd removes the worktree and branch, records the run `accepted`, and emits `agent.accepted {runId, merge}` and `agent.updated`. `id` makes a retry after a lost connection return the same answer, even after a restart. An accepted run fails `agent/diff`, `agent/file`, and `agent/send` with `runAccepted`.
+- **The user's own git setup** applies to Accept's git calls, which run in the user's checkout: global config, filters such as Git LFS's, merge drivers, and identity. The merged commit's `.gitattributes` decides which files go through which of the user's filters, and `.lfsconfig` can name the LFS server, exactly as when the user runs `git merge` themselves. No code the agent wrote runs that way, only the user's own filter programs, so this is accepted.
+- **A failed checkout puts back only what git wrote.** `merge --ff-only` can stop part way, when one of those filters fails (a required LFS smudge that can't download) or when git can't move the branch after checking out. Minutes can pass between the overlap check and that failure, and the user, an editor, or another git can write files meanwhile. So wispd never restores from a stale check:
+  - When git failed on `index.lock`, another git holds the index and git wrote nothing, so wispd refuses and changes nothing.
+  - When the 5-minute timeout stopped git, git leaves `index.lock` behind. wispd changes nothing and says so, naming the lock and the files that may be partly updated. It doesn't remove the lock, because it can't tell it from a live one.
+  - Otherwise, for each path the merge changes, wispd compares the working tree (hashed as `git add` would) with the merge's version and HEAD's. A file that still holds exactly the merge's version is put back, index and working tree, with `git restore --source=HEAD --staged --worktree`, `.gitattributes` first. A file the merge added is removed, along with folders left empty. A file that holds HEAD's version needs nothing. A file that holds neither was written by someone else, so it is left alone and named in the error.
+  - Refusing up front whenever `.gitattributes` changes was rejected: agents edit it legitimately, and a failing filter doesn't need an agent to be involved.
+- **No git call wispd makes runs a repository hook.** Every call in the user's checkout, including Accept, `worktree add`, `worktree remove`, `branch -D`, and `worktree prune`, runs with `-c core.hooksPath=/dev/null`, like the worktree-scoped calls (#166). Once a run is accepted, the checkout's hooks can include files the worker wrote, because `core.hooksPath` often names a tracked folder (husky). A `post-merge`, `post-checkout`, or `reference-transaction` hook would otherwise run the worker's code unsandboxed in wispd: on the merge, on the branch deletion right after it, or on the next `agent/start` (0013: review is the last gate). Someone who relies on a hook, such as a post-merge install, runs it themselves.
 
 ### The event log is stored
 

@@ -43,6 +43,7 @@ mod id;
 pub mod jsonrpc;
 pub mod methods;
 mod project;
+mod review;
 mod thread;
 pub mod typescript;
 mod usage;
@@ -88,6 +89,11 @@ pub use id::InvalidId;
 pub use project::{
     Project, ProjectCreateParams, ProjectCreateResult, ProjectId, ProjectListParams,
     ProjectListResult,
+};
+pub use review::{
+    AcceptId, AgentAcceptParams, AgentAcceptResult, AgentDiffFile, AgentDiffParams,
+    AgentDiffResult, AgentDiffStats, AgentFileParams, AgentFileResult, AgentFileSide,
+    AgentFileStatus, AgentMerge, AgentMergeKind, AgentRequestChangesParams,
 };
 pub use thread::{
     Repo, RepoAddParams, RepoAddResult, RepoId, Thread, ThreadArchiveParams, ThreadArchiveResult,

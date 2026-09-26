@@ -1,0 +1,417 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "agent/diff",
+    "params": {
+      "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "base": "4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b",
+      "head": "9b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c",
+      "files": [
+        {
+          "path": "README.md",
+          "status": "added",
+          "insertions": 2,
+          "deletions": 0,
+          "binary": false,
+          "diff": "diff --git a/README.md b/README.md\nnew file mode 100644\nindex 0000000..3b18e51\n--- /dev/null\n+++ b/README.md\n@@ -0,0 +1,2 @@\n+# App\n+Run `make` to build it.\n",
+          "diffTruncated": false
+        },
+        {
+          "path": "src/render.ts",
+          "oldPath": "src/invoice.ts",
+          "status": "renamed",
+          "insertions": 1,
+          "deletions": 1,
+          "binary": false,
+          "diff": "diff --git a/src/invoice.ts b/src/render.ts\nsimilarity index 90%\nrename from src/invoice.ts\nrename to src/render.ts\n",
+          "diffTruncated": true
+        },
+        {
+          "path": "assets/logo.png",
+          "status": "modified",
+          "insertions": 0,
+          "deletions": 0,
+          "binary": true,
+          "diffTruncated": false
+        },
+        {
+          "path": "old.txt",
+          "status": "deleted",
+          "insertions": 0,
+          "deletions": 2,
+          "binary": false,
+          "diffTruncated": false
+        },
+        {
+          "path": "copy.ts",
+          "oldPath": "src/render.ts",
+          "status": "copied",
+          "insertions": 0,
+          "deletions": 0,
+          "binary": false,
+          "diffTruncated": false
+        },
+        {
+          "path": "link",
+          "status": "typeChanged",
+          "insertions": 1,
+          "deletions": 1,
+          "binary": false,
+          "diffTruncated": false
+        }
+      ],
+      "stats": {
+        "files": 7,
+        "insertions": 5,
+        "deletions": 4
+      },
+      "truncated": true
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "agent/file",
+    "params": {
+      "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+      "path": "README.md",
+      "side": "head"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "result": {
+      "path": "README.md",
+      "side": "head",
+      "commit": "9b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c",
+      "exists": true,
+      "size": 30,
+      "content": "IyBBcHAKUnVuIGBtYWtlYCB0byBidWlsZCBpdC4K",
+      "tooLarge": false
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "agent/file",
+    "params": {
+      "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+      "path": "README.md",
+      "side": "base"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "result": {
+      "path": "README.md",
+      "side": "base",
+      "commit": "4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b",
+      "exists": false,
+      "tooLarge": false
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "agent/file",
+    "params": {
+      "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+      "path": "assets/video.mov",
+      "side": "head"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "result": {
+      "path": "assets/video.mov",
+      "side": "head",
+      "commit": "9b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c",
+      "exists": true,
+      "size": 52428800,
+      "tooLarge": true
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "method": "agent/file",
+    "params": {
+      "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+      "path": "../../.ssh/id_ed25519",
+      "side": "head"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "error": {
+      "code": -32602,
+      "message": "Invalid params: path \"../../.ssh/id_ed25519\" must not have an empty, \".\", or \"..\" component"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 6,
+    "method": "agent/requestChanges",
+    "params": {
+      "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+      "turnId": "01a0d361-0a1b-7c2d-8e3f-4a5b6c7d8e04",
+      "text": "Mention the Node version the build needs."
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 6,
+    "result": {
+      "run": {
+        "id": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+        "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+        "prompt": "Add a README that explains how to build the app.",
+        "policy": "workspaceWrite",
+        "status": "running",
+        "backend": "claude",
+        "accountId": "claude",
+        "createdAt": "2026-09-25T12:00:00Z",
+        "updatedAt": "2026-09-25T12:10:00Z",
+        "branch": "wisp/1a2b3c4d",
+        "worktreePath": "/Users/me/Library/Application Support/wisp/worktrees/app-5e6f7a8b/01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+        "sessionId": "5b1e3c9a-8f2d-4c6e-9a1b-3d7f0e2c4a68",
+        "diff": {
+          "commit": "9b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c",
+          "files": 7,
+          "insertions": 5,
+          "deletions": 4
+        }
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 7,
+    "method": "agent/accept",
+    "params": {
+      "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+      "id": "01a0d362-0a1b-7c2d-8e3f-4a5b6c7d8e05"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 7,
+    "error": {
+      "code": -32000,
+      "message": "run 01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01 is still running; wait for it to finish, or cancel it, then accept",
+      "data": {
+        "kind": "mergeRefused"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 8,
+    "method": "agent/accept",
+    "params": {
+      "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+      "id": "01a0d362-0a1b-7c2d-8e3f-4a5b6c7d8e06",
+      "commit": "0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 8,
+    "error": {
+      "code": -32000,
+      "message": "the agent's changes conflict with main in src/render.ts; ask the agent to update its branch, or merge it yourself",
+      "data": {
+        "kind": "mergeConflict"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 9,
+    "method": "agent/accept",
+    "params": {
+      "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+      "id": "01a0d362-0a1b-7c2d-8e3f-4a5b6c7d8e07",
+      "commit": "0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 9,
+    "result": {
+      "run": {
+        "id": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+        "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+        "prompt": "Add a README that explains how to build the app.",
+        "policy": "workspaceWrite",
+        "status": "accepted",
+        "backend": "claude",
+        "accountId": "claude",
+        "createdAt": "2026-09-25T12:00:00Z",
+        "updatedAt": "2026-09-25T12:20:00Z",
+        "sessionId": "5b1e3c9a-8f2d-4c6e-9a1b-3d7f0e2c4a68",
+        "diff": {
+          "commit": "0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d",
+          "files": 7,
+          "insertions": 6,
+          "deletions": 4
+        }
+      },
+      "merge": {
+        "commit": "7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f",
+        "into": "main",
+        "how": "merge"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0d34a-5860-7ee2-a66a-aef2367abe02",
+      "seq": 31,
+      "time": "2026-09-25T12:20:00Z",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "event": {
+        "kind": "agent.accepted",
+        "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+        "merge": {
+          "commit": "7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f",
+          "into": "main",
+          "how": "merge"
+        }
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0d34a-5860-7ee2-a66a-aef2367abe02",
+      "seq": 32,
+      "time": "2026-09-25T12:20:00Z",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "event": {
+        "kind": "agent.updated",
+        "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+        "state": {
+          "status": "accepted",
+          "accountId": "claude",
+          "sessionId": "5b1e3c9a-8f2d-4c6e-9a1b-3d7f0e2c4a68",
+          "diff": {
+            "commit": "0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d",
+            "files": 7,
+            "insertions": 6,
+            "deletions": 4
+          },
+          "updatedAt": "2026-09-25T12:20:00Z"
+        }
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 10,
+    "method": "agent/accept",
+    "params": {
+      "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01",
+      "id": "01a0d362-0a1b-7c2d-8e3f-4a5b6c7d8e08"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 10,
+    "error": {
+      "code": -32000,
+      "message": "run 01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e01 was accepted; its worktree and branch are gone",
+      "data": {
+        "kind": "runAccepted"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 11,
+    "method": "agent/accept",
+    "params": {
+      "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e02",
+      "id": "01a0d362-0a1b-7c2d-8e3f-4a5b6c7d8e09"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 11,
+    "result": {
+      "run": {
+        "id": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e02",
+        "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+        "prompt": "Fix the typo in the footer.",
+        "policy": "workspaceWrite",
+        "status": "accepted",
+        "backend": "claude",
+        "accountId": "claude",
+        "createdAt": "2026-09-25T12:30:00Z",
+        "updatedAt": "2026-09-25T12:40:00Z",
+        "diff": {
+          "commit": "1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a",
+          "files": 1,
+          "insertions": 1,
+          "deletions": 1
+        }
+      },
+      "merge": {
+        "commit": "1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a",
+        "into": "main",
+        "how": "fastForward"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 12,
+    "method": "agent/accept",
+    "params": {
+      "runId": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e03",
+      "id": "01a0d362-0a1b-7c2d-8e3f-4a5b6c7d8e0a"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 12,
+    "result": {
+      "run": {
+        "id": "01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e03",
+        "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+        "prompt": "Update the changelog.",
+        "policy": "workspaceWrite",
+        "status": "accepted",
+        "backend": "claude",
+        "accountId": "claude",
+        "createdAt": "2026-09-25T12:30:00Z",
+        "updatedAt": "2026-09-25T12:41:00Z",
+        "diff": {
+          "commit": "2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b",
+          "files": 1,
+          "insertions": 3,
+          "deletions": 0
+        }
+      },
+      "merge": {
+        "commit": "8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d",
+        "into": "main",
+        "how": "upToDate"
+      }
+    }
+  }
+]

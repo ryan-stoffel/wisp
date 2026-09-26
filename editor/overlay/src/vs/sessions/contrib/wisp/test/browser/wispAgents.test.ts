@@ -165,6 +165,7 @@ suite('wisp: agents', () => {
 			assert.deepStrictEqual(read({ status: 'failed' }), [SessionStatus.Error, 'diamond', 'Failed', false]);
 			assert.deepStrictEqual(read({ status: 'cancelled' }), [SessionStatus.Completed, 'square', 'Stopped', false]);
 			assert.deepStrictEqual(read({ status: 'interrupted' }), [SessionStatus.Completed, 'square', 'Interrupted', false]);
+			assert.deepStrictEqual(read({ status: 'accepted', diff: { commit: 'a', files: 2, insertions: 3, deletions: 1 } }), [SessionStatus.Completed, 'done', 'Done', false], 'an accepted run is done, not waiting for review (#157)');
 			assert.deepStrictEqual(read({ status: 'paused' as AgentRun['status'] }), [SessionStatus.Completed, 'square', 'paused', false], 'a status a newer wispd sends reads as itself');
 		});
 

@@ -60,6 +60,9 @@ pub enum AgentStatus {
     Cancelled,
     /// wispd stopped while it ran. `agent/send` resumes it when it has a `sessionId`.
     Interrupted,
+    /// `agent/accept` merged its changes into the project's branch and removed its worktree and
+    /// branch. It takes no more messages.
+    Accepted,
     /// A status this version does not know yet.
     #[serde(other)]
     #[ts(skip)]

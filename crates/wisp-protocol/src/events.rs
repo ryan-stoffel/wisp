@@ -4,8 +4,8 @@ use ts_rs::TS;
 
 use crate::id::uuid_v7_id;
 use crate::{
-    AgentFailureKind, AgentOutcome, AgentOutputItem, AgentRun, AgentRunState, ContextFile,
-    DiffSummary, Project, ProjectId, Repo, RepoId, RunId, Thread,
+    AgentFailureKind, AgentMerge, AgentOutcome, AgentOutputItem, AgentRun, AgentRunState,
+    ContextFile, DiffSummary, Project, ProjectId, Repo, RepoId, RunId, Thread,
 };
 
 uuid_v7_id! {
@@ -153,6 +153,15 @@ pub enum WispEvent {
         run_id: RunId,
         /// The commit and its stats against the worktree's base.
         diff: DiffSummary,
+    },
+    /// `agent/accept` merged a run's commit into the project's branch on the host (#157). The
+    /// run's worktree and branch are gone; an `agent.updated` with status `accepted` follows.
+    #[serde(rename = "agent.accepted")]
+    AgentAccepted {
+        /// The run's id.
+        run_id: RunId,
+        /// What happened to the project's repository.
+        merge: AgentMerge,
     },
     /// `repo/add` registered a repository for normal threads, or wispd made its scratch entry
     /// (#110). Host-level.

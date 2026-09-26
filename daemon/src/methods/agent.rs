@@ -5,8 +5,10 @@ use std::sync::Arc;
 
 use wisp_protocol::jsonrpc::ErrorObject;
 use wisp_protocol::{
-    AgentCancelParams, AgentEventsParams, AgentEventsResult, AgentListParams, AgentListResult,
-    AgentPolicy, AgentRunResult, AgentSendParams, AgentStartParams, ErrorKind, LoggedEvent,
+    AgentAcceptParams, AgentAcceptResult, AgentCancelParams, AgentDiffParams, AgentDiffResult,
+    AgentEventsParams, AgentEventsResult, AgentFileParams, AgentFileResult, AgentListParams,
+    AgentListResult, AgentPolicy, AgentRequestChangesParams, AgentRunResult, AgentSendParams,
+    AgentStartParams, ErrorKind, LoggedEvent,
 };
 
 use super::Context;
@@ -115,6 +117,53 @@ pub(crate) async fn list(
         .map(|(row, worktree)| agents::snapshot(row, worktree.as_ref()))
         .collect::<Result<_, _>>()?;
     Ok(AgentListResult { runs, seq })
+}
+
+pub(crate) async fn diff(
+    context: &Context,
+    params: AgentDiffParams,
+) -> Result<AgentDiffResult, ErrorObject> {
+    agents::review::diff(&context.daemon, params.run_id).await
+}
+
+pub(crate) async fn file(
+    context: &Context,
+    params: AgentFileParams,
+) -> Result<AgentFileResult, ErrorObject> {
+    agents::review::file(&context.daemon, params).await
+}
+
+pub(crate) async fn accept(
+    context: &Context,
+    params: AgentAcceptParams,
+) -> Result<AgentAcceptResult, ErrorObject> {
+    let daemon = Arc::clone(&context.daemon);
+    context
+        .daemon
+        .agents
+        .detached(agents::accept(daemon, params))
+        .await
+}
+
+/// `agent/requestChanges`: the reviewer's follow-up, sent the way `agent/send` sends one.
+pub(crate) async fn request_changes(
+    context: &Context,
+    params: AgentRequestChangesParams,
+) -> Result<AgentRunResult, ErrorObject> {
+    let AgentRequestChangesParams {
+        run_id,
+        turn_id,
+        text,
+    } = params;
+    send(
+        context,
+        AgentSendParams {
+            run_id,
+            turn_id,
+            text,
+        },
+    )
+    .await
 }
 
 pub(crate) async fn events(
