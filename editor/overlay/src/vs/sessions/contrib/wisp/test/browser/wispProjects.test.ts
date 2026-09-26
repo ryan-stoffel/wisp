@@ -528,11 +528,11 @@ suite('wisp: projects', () => {
 			], 'screen readers hear whether each fact is done, not just the mark');
 		});
 
-		test('the composer footer shows the branch and host in wisp.project threads only', () => {
+		test('the composer footer shows the branch and host in projects and agents\' chats only', () => {
 			const items = MenuRegistry.getMenuItems(MenuId.ChatInputSecondary).filter(item => 'command' in item && (item.command.id === WISP_COMPOSER_BRANCH_ACTION || item.command.id === WISP_COMPOSER_HOST_ACTION));
 			assert.deepStrictEqual(items.map(item => 'command' in item ? item.command.id : ''), [WISP_COMPOSER_BRANCH_ACTION, WISP_COMPOSER_HOST_ACTION]);
 			for (const item of items) {
-				assert.strictEqual(item.when?.serialize(), `chatSessionType == '${WISP_PROJECT_SESSION_TYPE}'`);
+				assert.strictEqual(item.when?.serialize(), `chatSessionType == 'wisp.agent' || chatSessionType == '${WISP_PROJECT_SESSION_TYPE}'`);
 			}
 		});
 

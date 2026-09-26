@@ -29,6 +29,8 @@
 //! - [`worktree`]: creates, inspects, and removes the git worktrees agent runs use (#154).
 //! - `agents`: the M3 runner behind `agent/*` (#156): starts a worker in its worktree, streams
 //!   its events, commits its changes, and resumes it after a restart.
+//! - `threads`: normal threads behind `thread/*` and `repo/*` (#110): runs with no coordinator
+//!   that belong to a repo entry, or to a scratch repository for a thread with no repo.
 
 #![warn(missing_docs)]
 
@@ -49,6 +51,7 @@ pub mod server;
 pub mod service;
 mod spawn;
 mod store;
+mod threads;
 pub mod usage;
 pub mod worktree;
 
