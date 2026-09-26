@@ -145,7 +145,11 @@ impl Store {
         rows.map(|row| row?.into_event()).collect()
     }
 
-    /// Run `run_id`'s events after `after`, oldest first, at most `limit` of them.
+    /// Run `run_id`'s events after `after`, oldest first: at most `limit` of them, and no more
+    /// than `max_bytes` of payload, but always at least one when any exists. The flag says
+    /// whether more events follow the last one returned.
+    ///
+    /// Rows are read one at a time, so a page never loads more than it returns plus one.
     ///
     /// # Errors
     ///
@@ -155,16 +159,36 @@ impl Store {
         run_id: Uuid,
         after: u64,
         limit: usize,
-    ) -> Result<Vec<StoredEvent>, StoreError> {
+        max_bytes: usize,
+    ) -> Result<(Vec<StoredEvent>, bool), StoreError> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT {COLUMNS} FROM events WHERE run_id = ?1 AND seq > ?2
-             ORDER BY seq ASC LIMIT ?3"
+            "SELECT {COLUMNS} FROM events WHERE run_id = ?1 AND seq > ?2 ORDER BY seq ASC"
         ))?;
-        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let rows = stmt.query_map(
-            params![run_id.to_string(), after, limit],
-            RawEvent::from_row,
-        )?;
-        rows.map(|row| row?.into_event()).collect()
+        let rows = stmt.query_map(params![run_id.to_string(), after], RawEvent::from_row)?;
+        let mut events = Vec::new();
+        let mut bytes = 0_usize;
+        for row in rows {
+            let event = row?.into_event()?;
+            let full = events.len() >= limit.max(1)
+                || (!events.is_empty() && bytes + event.payload.len() > max_bytes);
+            if full {
+                return Ok((events, true));
+            }
+            bytes += event.payload.len();
+            events.push(event);
+        }
+        Ok((events, false))
+    }
+
+    /// Forgets the log's id, so the next [`Store::event_log_id`] stores a new one. The event log
+    /// calls it after an event failed to be stored: the log then has a hole, and possibly a
+    /// `seq` a later wispd would give out again, so clients must resync rather than trust it.
+    ///
+    /// # Errors
+    ///
+    /// A database error.
+    pub fn reset_event_log_id(&self) -> Result<(), StoreError> {
+        self.conn.execute("DELETE FROM log_meta", [])?;
+        Ok(())
     }
 }

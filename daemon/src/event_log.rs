@@ -160,6 +160,11 @@ impl EventLog {
             };
             if let Err(error) = db.append_event(&stored) {
                 error!(seq, %error, "could not store an event; it is delivered but not kept");
+                // The stored log now has a hole, and a later wispd could give this `seq` out
+                // again. A new `logId` on the next start makes every client resync instead.
+                if let Err(error) = db.reset_event_log_id() {
+                    error!(%error, "could not mark the event log to start over");
+                }
             }
         }
         inner.events.push_back(Arc::new(Entry {
@@ -175,29 +180,41 @@ impl EventLog {
         seq
     }
 
-    /// Up to `limit` of `run`'s events after `after`, oldest first: from the database, or from
-    /// memory for a log that has none.
+    /// `run`'s events after `after`, oldest first, from the database, or from memory for a log
+    /// that has none: at most `limit` of them and about `max_bytes` of event JSON, but always at
+    /// least one when any exists, so a page fits in a frame and paging always moves on. The
+    /// flag says whether more follow.
     pub fn run_events(
         &self,
         run: RunId,
         after: u64,
         limit: usize,
-    ) -> Result<Vec<Arc<Entry>>, StoreError> {
+        max_bytes: usize,
+    ) -> Result<(Vec<Arc<Entry>>, bool), StoreError> {
         let inner = self.inner();
-        match &inner.db {
-            Some(db) => Ok(db
-                .run_events(run.into(), after, limit)?
-                .into_iter()
-                .map(|stored| Arc::new(entry(&stored)))
-                .collect()),
-            None => Ok(inner
-                .events
+        if let Some(db) = &inner.db {
+            let (stored, more) = db.run_events(run.into(), after, limit, max_bytes)?;
+            let entries = stored
                 .iter()
-                .filter(|entry| entry.seq > after && run_of(&entry.event) == Some(run))
-                .take(limit)
-                .cloned()
-                .collect()),
+                .map(|stored| Arc::new(entry(stored)))
+                .collect();
+            return Ok((entries, more));
         }
+        let mut entries = Vec::new();
+        let mut bytes = 0;
+        for entry in inner
+            .events
+            .iter()
+            .filter(|entry| entry.seq > after && run_of(&entry.event) == Some(run))
+        {
+            let size = serde_json::to_string(&entry.event).map_or(0, |json| json.len());
+            if entries.len() >= limit.max(1) || (!entries.is_empty() && bytes + size > max_bytes) {
+                return Ok((entries, true));
+            }
+            bytes += size;
+            entries.push(Arc::clone(entry));
+        }
+        Ok((entries, false))
     }
 
     /// Whether the events after `after` can all still be replayed.
@@ -227,7 +244,8 @@ impl EventLog {
         }
     }
 
-    // The index of the first event after `after`.
+    // The index of the first event after `after`. `seq`s increase but may have gaps: an event
+    // that failed to be stored is missing from a log reloaded after a restart.
     fn start(&self, events: &VecDeque<Arc<Entry>>, after: u64) -> Result<usize, Gone> {
         let head = self.head();
         if after > head {
@@ -237,7 +255,7 @@ impl EventLog {
         if after + 1 < oldest {
             return Err(Gone::Dropped);
         }
-        usize::try_from(after + 1 - oldest).map_err(|_| Gone::Dropped)
+        Ok(events.partition_point(|event| event.seq <= after))
     }
 
     fn inner(&self) -> MutexGuard<'_, Inner> {
@@ -349,14 +367,17 @@ mod tests {
         let (event, _) = reopened.next(1, Some(project)).unwrap();
         assert_eq!(event.unwrap().event, finished(run));
         assert_eq!(append(&reopened, None), 4);
-        let seqs: Vec<u64> = reopened
-            .run_events(run, 0, 10)
-            .unwrap()
-            .iter()
-            .map(|entry| entry.seq)
-            .collect();
+        let (entries, more) = reopened.run_events(run, 0, 10, usize::MAX).unwrap();
+        let seqs: Vec<u64> = entries.iter().map(|entry| entry.seq).collect();
         assert_eq!(seqs, [2]);
-        assert!(reopened.run_events(run, 2, 10).unwrap().is_empty());
+        assert!(!more);
+        assert!(
+            reopened
+                .run_events(run, 2, 10, usize::MAX)
+                .unwrap()
+                .0
+                .is_empty()
+        );
     }
 
     #[test]
@@ -368,7 +389,61 @@ mod tests {
         let run = RunId::generate();
         log.append(jiff::Timestamp::now(), None, finished(run));
         assert_eq!(log.head(), 1);
-        assert_eq!(log.run_events(run, 0, 10).unwrap().len(), 1);
+        log.append(jiff::Timestamp::now(), None, finished(run));
+        assert_eq!(log.run_events(run, 0, 10, usize::MAX).unwrap().0.len(), 2);
+        let (page, more) = log.run_events(run, 0, 10, 1).unwrap();
+        assert_eq!(
+            (page.len(), more),
+            (1, true),
+            "the byte budget applies in memory too"
+        );
+    }
+
+    #[test]
+    fn replay_skips_nothing_across_a_gap_in_seq() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wispd.sqlite3");
+        let first = EventLog::open(&path, 10);
+        for _ in 0..4 {
+            append(&first, None);
+        }
+        let id = first.id();
+        drop(first);
+        // An event that was never stored leaves a hole, as a failed insert would.
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute("DELETE FROM events WHERE seq = 2", []).unwrap();
+        drop(db);
+
+        let reopened = EventLog::open(&path, 10);
+        assert_eq!(reopened.id(), id);
+        let mut delivered = Vec::new();
+        let mut after = 0;
+        while let (Some(entry), seq) = reopened.next(after, None).unwrap() {
+            delivered.push(entry.seq);
+            after = seq;
+        }
+        assert_eq!(delivered, [1, 3, 4]);
+        assert_eq!(reopened.next(2, None).unwrap().0.unwrap().seq, 3);
+    }
+
+    #[test]
+    fn a_failed_insert_gives_the_log_a_new_id_on_the_next_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wispd.sqlite3");
+        let log = EventLog::open(&path, 10);
+        append(&log, None);
+        let id = log.id();
+        // A row already holding the next `seq` makes the insert fail.
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute(
+            "INSERT INTO events (seq, time, kind, payload) VALUES (2, '2026-09-25T12:00:00Z', 'x', '{}')",
+            [],
+        )
+        .unwrap();
+        drop(db);
+        assert_eq!(append(&log, None), 2, "still delivered");
+        drop(log);
+        assert_ne!(EventLog::open(&path, 10).id(), id);
     }
 
     #[test]

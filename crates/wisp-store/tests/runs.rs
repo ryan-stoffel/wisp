@@ -134,11 +134,112 @@ fn events_append_and_read_back_by_head_tail_and_run() {
     assert_eq!(store.latest_events(2).unwrap(), events[3..]);
     assert_eq!(store.latest_events(100).unwrap(), events);
 
-    let seqs = |events: Vec<StoredEvent>| events.iter().map(|e| e.seq).collect::<Vec<_>>();
-    assert_eq!(seqs(store.run_events(run, 0, 100).unwrap()), [1, 3, 5]);
-    assert_eq!(seqs(store.run_events(run, 1, 1).unwrap()), [3]);
-    assert!(store.run_events(run, 5, 100).unwrap().is_empty());
-    assert_eq!(store.run_events(run, 0, 1).unwrap()[0], events[0]);
+    let page = |after, limit, bytes| {
+        let (events, more) = store.run_events(run, after, limit, bytes).unwrap();
+        (events.iter().map(|e| e.seq).collect::<Vec<_>>(), more)
+    };
+    assert_eq!(page(0, 100, usize::MAX), (vec![1, 3, 5], false));
+    assert_eq!(page(1, 1, usize::MAX), (vec![3], true));
+    assert_eq!(page(5, 100, usize::MAX), (vec![], false));
+    assert_eq!(
+        store.run_events(run, 0, 1, usize::MAX).unwrap().0[0],
+        events[0]
+    );
+}
+
+#[test]
+fn a_page_of_run_events_stops_at_its_byte_budget_but_never_comes_back_empty() {
+    let (_dir, store) = open();
+    let run = Uuid::now_v7();
+    for seq in 1..=10 {
+        let mut big = event(seq, Some(run));
+        big.payload = "x".repeat(1000);
+        store.append_event(&big).unwrap();
+    }
+    let (first, more) = store.run_events(run, 0, 500, 2500).unwrap();
+    assert_eq!(first.len(), 2, "a third would pass 2500 bytes");
+    assert!(more);
+    let (tiny, more) = store.run_events(run, 0, 500, 10).unwrap();
+    assert_eq!(
+        tiny.len(),
+        1,
+        "one event even when it alone is over the budget"
+    );
+    assert!(more);
+
+    let mut after = 0;
+    let mut seen = Vec::new();
+    loop {
+        let (events, more) = store.run_events(run, after, 500, 2500).unwrap();
+        after = events.last().unwrap().seq;
+        seen.extend(events.iter().map(|e| e.seq));
+        if !more {
+            break;
+        }
+    }
+    assert_eq!(seen, (1..=10).collect::<Vec<_>>());
+}
+
+fn worktree_fields() -> WorktreeFields {
+    WorktreeFields {
+        repo_path: "/src/app".to_owned(),
+        path: "/data/worktrees/app/run".to_owned(),
+        branch: "wisp/abcd1234".to_owned(),
+        base: "abc".to_owned(),
+        git_dir: "/src/app/.git/worktrees/run".to_owned(),
+    }
+}
+
+#[test]
+fn a_run_and_its_worktree_are_created_together_or_not_at_all() {
+    let (_dir, mut store) = open();
+    let id = Uuid::now_v7();
+    let (run, worktree) = store
+        .create_run_with_worktree(id, &fields(Uuid::now_v7()), &starting(), &worktree_fields())
+        .unwrap();
+    assert_eq!(store.get_run(id).unwrap(), Some(run));
+    assert_eq!(store.get_worktree(id).unwrap(), Some(worktree));
+
+    // A worktree row already there makes the run's insert roll back with it.
+    let taken = Uuid::now_v7();
+    store.create_worktree(taken, &worktree_fields()).unwrap();
+    assert!(matches!(
+        store.create_run_with_worktree(
+            taken,
+            &fields(Uuid::now_v7()),
+            &starting(),
+            &worktree_fields()
+        ),
+        Err(StoreError::IdConflict { .. })
+    ));
+    assert_eq!(store.get_run(taken).unwrap(), None);
+
+    // A run row already there leaves no new worktree row behind.
+    let run_only = Uuid::now_v7();
+    store
+        .create_run(run_only, &fields(Uuid::now_v7()), &starting())
+        .unwrap();
+    assert!(
+        store
+            .create_run_with_worktree(
+                run_only,
+                &fields(Uuid::now_v7()),
+                &starting(),
+                &worktree_fields()
+            )
+            .is_err()
+    );
+    assert_eq!(store.get_worktree(run_only).unwrap(), None);
+}
+
+#[test]
+fn resetting_the_log_id_makes_the_next_one_new() {
+    let (_dir, store) = open();
+    let first = store.event_log_id(Uuid::now_v7()).unwrap();
+    store.reset_event_log_id().unwrap();
+    let second = Uuid::now_v7();
+    assert_eq!(store.event_log_id(second).unwrap(), second);
+    assert_ne!(second, first);
 }
 
 #[test]
