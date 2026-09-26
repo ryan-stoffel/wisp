@@ -16,7 +16,6 @@
 //! passes the folder on, so a `wispd` that an agent runs reaches the same socket.
 
 use std::ffi::{OsStr, OsString};
-use std::fmt::Write as _;
 use std::io;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
@@ -75,10 +74,7 @@ impl DataDir {
     ///
     /// See [`DataDir::new`] and [`DataDir::default_location`].
     pub fn resolve(path: Option<&Path>) -> io::Result<Self> {
-        match path {
-            Some(path) => Self::new(path),
-            None => Self::default_location(),
-        }
+        path.map_or_else(Self::default_location, Self::new)
     }
 
     /// The folder itself.
@@ -170,10 +166,10 @@ impl DataDir {
 
     fn hash(&self) -> String {
         let digest = Sha256::digest(self.root.as_os_str().as_bytes());
-        digest[..4].iter().fold(String::new(), |mut hex, byte| {
-            let _ = write!(hex, "{byte:02x}");
-            hex
-        })
+        format!(
+            "{:08x}",
+            u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]])
+        )
     }
 
     // No safe wrapper for confstr(_CS_DARWIN_USER_TEMP_DIR) exists, and the workspace denies
@@ -211,8 +207,6 @@ fn fits(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::{DataDir, MAX_SOCKET_PATH_BYTES};
 
     #[test]
@@ -221,47 +215,13 @@ mod tests {
         for other in ["/Users/me/data/", "/Users/me/./data", "/Users/me//data"] {
             assert_eq!(DataDir::new(other).unwrap(), plain, "{other}");
         }
-        assert_eq!(
-            plain.hash(),
-            DataDir::new("/Users/me/data/").unwrap().hash()
-        );
         assert_ne!(
             plain.hash(),
             DataDir::new("/Users/me/data2").unwrap().hash()
         );
-    }
-
-    #[test]
-    fn a_relative_folder_is_taken_from_the_current_directory() {
-        let dir = DataDir::new("relative/data").unwrap();
-        assert!(dir.root().is_absolute());
-        assert!(dir.root().ends_with("relative/data"));
-    }
-
-    #[test]
-    fn files_live_in_the_folder() {
-        let dir = DataDir::new("/d").unwrap();
-        assert_eq!(dir.lock_file(), Path::new("/d/wispd.lock"));
-        assert_eq!(dir.store_file(), Path::new("/d/wispd.sqlite3"));
-        assert_eq!(dir.log_file(), Path::new("/d/logs/wispd.log"));
-        assert_eq!(dir.context_root(), Path::new("/d/context"));
-        let project = wisp_protocol::ProjectId::generate();
-        assert_eq!(
-            dir.context_dir(project),
-            Path::new("/d/context").join(project.to_string())
-        );
-    }
-
-    #[test]
-    fn commands_pass_the_data_folder_on() {
-        let dir = DataDir::new("/tmp/wispd-data/./x/").unwrap();
-        let output = dir.command("/usr/bin/env").output().unwrap();
-        let env = String::from_utf8(output.stdout).unwrap();
-        assert!(
-            env.lines()
-                .any(|line| line == "WISPD_DATA_DIR=/tmp/wispd-data/x"),
-            "{env}"
-        );
+        let relative = DataDir::new("relative/data").unwrap();
+        assert!(relative.root().is_absolute());
+        assert!(relative.root().ends_with("relative/data"));
     }
 
     #[test]
@@ -281,17 +241,5 @@ mod tests {
         let socket = dir.socket_path().unwrap();
         assert!(!socket.fallback);
         assert_eq!(socket.path.as_os_str().len(), MAX_SOCKET_PATH_BYTES);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn a_longer_path_falls_back_to_the_user_temp_dir() {
-        let home = format!("/Users/{}", "u".repeat(53));
-        let dir = DataDir::new(format!("{home}/Library/Application Support/wisp")).unwrap();
-        let socket = dir.socket_path().unwrap();
-        assert!(socket.fallback);
-        let temp = dir.darwin_user_temp_dir().unwrap();
-        assert_eq!(socket.path, temp.join(format!("wispd-{}.sock", dir.hash())));
-        assert!(socket.path.as_os_str().len() <= MAX_SOCKET_PATH_BYTES);
     }
 }

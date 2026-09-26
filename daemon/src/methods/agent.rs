@@ -5,10 +5,9 @@ use std::sync::Arc;
 
 use wisp_protocol::jsonrpc::ErrorObject;
 use wisp_protocol::{
-    AgentAcceptParams, AgentAcceptResult, AgentCancelParams, AgentDiffParams, AgentDiffResult,
-    AgentEventsParams, AgentEventsResult, AgentFileParams, AgentFileResult, AgentListParams,
-    AgentListResult, AgentPolicy, AgentRequestChangesParams, AgentRunResult, AgentSendParams,
-    AgentStartParams, ErrorKind, LoggedEvent,
+    AgentAcceptParams, AgentAcceptResult, AgentCancelParams, AgentEventsParams, AgentEventsResult,
+    AgentListParams, AgentListResult, AgentPolicy, AgentRequestChangesParams, AgentRunResult,
+    AgentSendParams, AgentStartParams, ErrorKind, LoggedEvent,
 };
 
 use super::Context;
@@ -39,9 +38,6 @@ pub(super) fn check_text(name: &str, text: &str) -> Result<(), ErrorObject> {
     Ok(())
 }
 
-// The runner's work runs detached from the request (`Agents::detached`), so a dropped
-// connection or a `$/cancelRequest` never leaves a run half created.
-
 pub(crate) async fn start(
     context: &Context,
     params: AgentStartParams,
@@ -52,11 +48,8 @@ pub(crate) async fn start(
         ));
     }
     check_text("prompt", &params.prompt)?;
-    let daemon = Arc::clone(&context.daemon);
     let run = context
-        .daemon
-        .agents
-        .detached(agents::start(daemon, params))
+        .detached(|daemon| agents::start(daemon, params))
         .await?;
     Ok(AgentRunResult { run })
 }
@@ -66,11 +59,8 @@ pub(crate) async fn send(
     params: AgentSendParams,
 ) -> Result<AgentRunResult, ErrorObject> {
     check_text("text", &params.text)?;
-    let daemon = Arc::clone(&context.daemon);
     let run = context
-        .daemon
-        .agents
-        .detached(agents::send(daemon, params))
+        .detached(|daemon| agents::send(daemon, params))
         .await?;
     Ok(AgentRunResult { run })
 }
@@ -79,11 +69,8 @@ pub(crate) async fn cancel(
     context: &Context,
     params: AgentCancelParams,
 ) -> Result<AgentRunResult, ErrorObject> {
-    let daemon = Arc::clone(&context.daemon);
     let run = context
-        .daemon
-        .agents
-        .detached(agents::cancel(daemon, params.run_id))
+        .detached(|daemon| agents::cancel(daemon, params.run_id))
         .await?;
     Ok(AgentRunResult { run })
 }
@@ -119,29 +106,12 @@ pub(crate) async fn list(
     Ok(AgentListResult { runs, seq })
 }
 
-pub(crate) async fn diff(
-    context: &Context,
-    params: AgentDiffParams,
-) -> Result<AgentDiffResult, ErrorObject> {
-    agents::review::diff(&context.daemon, params.run_id).await
-}
-
-pub(crate) async fn file(
-    context: &Context,
-    params: AgentFileParams,
-) -> Result<AgentFileResult, ErrorObject> {
-    agents::review::file(&context.daemon, params).await
-}
-
 pub(crate) async fn accept(
     context: &Context,
     params: AgentAcceptParams,
 ) -> Result<AgentAcceptResult, ErrorObject> {
-    let daemon = Arc::clone(&context.daemon);
     context
-        .daemon
-        .agents
-        .detached(agents::accept(daemon, params))
+        .detached(|daemon| agents::accept(daemon, params))
         .await
 }
 

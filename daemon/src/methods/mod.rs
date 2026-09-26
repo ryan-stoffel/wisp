@@ -1,9 +1,6 @@
 //! The methods wispd answers, one module per group, routed through `wisp_protocol`'s method
-//! table so every params and result type is the protocol's own.
-//!
-//! Each capability gets a module here (M3 `agents`: `agent.rs` and `context.rs`; M4
-//! `coordinator`; #110 `threads`: `thread.rs`), and `host.rs` advertises the capability in
-//! `initialize`.
+//! table so every params and result type is the protocol's own. `host.rs` advertises each
+//! group's capability in `initialize`.
 
 mod accounts;
 mod agent;
@@ -35,6 +32,7 @@ pub(crate) use defaults::read_defaults;
 pub(crate) use events::{Cursor, Cursors};
 pub(crate) use host::{Session, initialize, os_version};
 
+use crate::agents::review;
 use crate::server::Daemon;
 
 /// What a request handler has to work with.
@@ -42,6 +40,21 @@ pub(crate) struct Context {
     pub daemon: Arc<Daemon>,
     /// Cancelled by `$/cancelRequest`, or when the connection closes.
     pub cancel: CancellationToken,
+}
+
+impl Context {
+    /// Runs `task` detached from the request (`Agents::detached`), so a dropped connection or a
+    /// `$/cancelRequest` never leaves its work half done.
+    async fn detached<T, F>(&self, task: impl FnOnce(Arc<Daemon>) -> F) -> Result<T, ErrorObject>
+    where
+        T: Send + 'static,
+        F: Future<Output = Result<T, ErrorObject>> + Send + 'static,
+    {
+        self.daemon
+            .agents
+            .detached(task(Arc::clone(&self.daemon)))
+            .await
+    }
 }
 
 /// What the connection's writer sends for a request.
@@ -114,7 +127,9 @@ pub(crate) async fn dispatch(context: Context, request: Request) -> Reply {
         name if name.starts_with("agent/") => agent_method(&context, &request)
             .await
             .unwrap_or_else(|| Err(ErrorObject::method_not_found(name))),
-        name if thread::handles(name) => thread::dispatch(&context, &request).await,
+        name if name.starts_with("thread/") || name.starts_with("repo/") => {
+            thread::dispatch(&context, &request).await
+        }
         EventsSubscribe::NAME => {
             let subscribed = match request.params() {
                 Ok(params) => events::subscribe(&context, params).await,
@@ -166,8 +181,12 @@ async fn agent_method(context: &Context, request: &Request) -> Option<Result<Val
         AgentEvents::NAME => {
             handle::<AgentEvents, _, _>(request, |p| agent::events(context, p)).await
         }
-        AgentDiff::NAME => handle::<AgentDiff, _, _>(request, |p| agent::diff(context, p)).await,
-        AgentFile::NAME => handle::<AgentFile, _, _>(request, |p| agent::file(context, p)).await,
+        AgentDiff::NAME => {
+            handle::<AgentDiff, _, _>(request, |p| review::diff(&context.daemon, p.run_id)).await
+        }
+        AgentFile::NAME => {
+            handle::<AgentFile, _, _>(request, |p| review::file(&context.daemon, p)).await
+        }
         AgentAccept::NAME => {
             handle::<AgentAccept, _, _>(request, |p| agent::accept(context, p)).await
         }

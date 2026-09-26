@@ -15,14 +15,6 @@ use crate::service::{self, DEFAULT_LABEL, LAUNCHCTL};
 
 const POLL: Duration = Duration::from_millis(10);
 
-/// The service target of the agent under [`DEFAULT_LABEL`] for the user `uid`:
-/// `gui/<uid>/<label>`. launchd loads it into the user's GUI domain, where the Keychain is
-/// reachable (0004).
-#[must_use]
-pub fn service_target(uid: u32) -> String {
-    format!("gui/{uid}/{DEFAULT_LABEL}")
-}
-
 /// A launch agent that `attach` can start.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LaunchAgent {
@@ -47,7 +39,8 @@ impl LaunchAgent {
             .is_file()
             .then(|| Self {
                 launchctl: PathBuf::from(LAUNCHCTL),
-                service: service_target(rustix::process::getuid().as_raw()),
+                // The user's GUI domain, where the Keychain is reachable (0004).
+                service: format!("gui/{}/{DEFAULT_LABEL}", rustix::process::getuid().as_raw()),
             })
     }
 
@@ -108,16 +101,8 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
 
-    use super::{LaunchAgent, service_target};
+    use super::LaunchAgent;
     use crate::paths::DataDir;
-
-    #[test]
-    fn the_service_target_is_the_default_label_in_the_gui_domain() {
-        assert_eq!(
-            service_target(501),
-            "gui/501/io.github.ryan-stoffel.wisp.wispd"
-        );
-    }
 
     #[test]
     fn another_data_folder_never_uses_the_launch_agent() {
@@ -139,29 +124,15 @@ mod tests {
         }
     }
 
-    fn soon() -> Instant {
-        Instant::now() + Duration::from_secs(10)
-    }
-
     #[test]
-    fn kickstart_runs_launchctl_and_reports_its_failure() {
+    fn a_failed_kickstart_reports_what_launchctl_printed() {
         let dir = tempfile::tempdir().unwrap();
-        let args = dir.path().join("args");
-        let ok = agent(fake_launchctl(
-            dir.path(),
-            &format!("echo \"$@\" > '{}'", args.display()),
-        ));
-        ok.kickstart(soon()).unwrap();
-        assert_eq!(
-            fs::read_to_string(&args).unwrap(),
-            "kickstart gui/501/test\n"
-        );
-
         let failing = agent(fake_launchctl(
             dir.path(),
             "echo 'Could not find service' >&2; exit 113",
         ));
-        let error = failing.kickstart(soon()).unwrap_err().to_string();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let error = failing.kickstart(deadline).unwrap_err().to_string();
         assert!(error.contains("Could not find service"), "{error}");
         assert!(error.contains("113"), "{error}");
     }

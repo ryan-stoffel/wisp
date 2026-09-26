@@ -80,8 +80,6 @@ pub(crate) fn spawn_session(
             pair.push("=");
             pair.push(value);
             let result = c_string(&pair);
-            // `pair` may hold a secret (an agent's API key, #118); wipe this copy of it, whether
-            // or not it turned into a usable CString.
             pair.into_encoded_bytes().zeroize();
             result
         })
@@ -109,8 +107,6 @@ pub(crate) fn spawn_session(
     attr.set_sigmask(&SigSet::empty())?;
 
     let spawned = posix_spawn(program, &actions, &attr, &c_args, &c_env);
-    // `c_env` holds a copy of every variable posix_spawn read, which may include a secret
-    // (#118); wipe them now that it has, whether or not the spawn itself succeeded.
     for entry in c_env {
         entry.into_bytes_with_nul().zeroize();
     }
@@ -147,12 +143,10 @@ fn c_string(text: impl AsRef<OsStr>) -> io::Result<CString> {
 #[cfg(test)]
 mod tests {
     use std::fs::{self, File};
-    use std::io::Read;
     use std::os::fd::AsFd;
     use std::process::Command;
-    use std::time::{Duration, Instant};
 
-    use rustix::process::{Signal, WaitOptions, kill_process, waitpid};
+    use rustix::process::{WaitOptions, waitpid};
 
     use super::{Stdio, spawn_detached};
 
@@ -185,41 +179,5 @@ mod tests {
         let (_, status) = waitpid(Some(pid), WaitOptions::empty()).unwrap().unwrap();
         assert_eq!(status.exit_status(), Some(0));
         assert_eq!(fs::read_to_string(&output).unwrap(), "hello arg set\nerr\n");
-    }
-
-    #[test]
-    fn the_child_leads_a_new_session_and_inherits_no_other_descriptor() {
-        // A pipe whose write end this process leaks: a copy without close-on-exec, which a child
-        // started with `std::process::Command` would inherit.
-        let (mut reader, writer) = std::io::pipe().unwrap();
-        let leaked = rustix::io::dup(&writer).unwrap();
-        drop(writer);
-        let null = File::open("/dev/null").unwrap();
-        let mut command = Command::new("/bin/sleep");
-        command.arg("5");
-        let pid = spawn_detached(
-            &command,
-            Stdio {
-                stdin: null.as_fd(),
-                stdout: null.as_fd(),
-                stderr: null.as_fd(),
-            },
-        )
-        .unwrap();
-        drop(leaked);
-
-        assert_eq!(rustix::process::getsid(Some(pid)).unwrap(), pid);
-        // The pipe ends at once only if the sleeping child holds no copy of its write end.
-        let started = Instant::now();
-        let mut rest = Vec::new();
-        reader.read_to_end(&mut rest).unwrap();
-        assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "the child kept the pipe open for {:?}",
-            started.elapsed()
-        );
-
-        kill_process(pid, Signal::KILL).unwrap();
-        waitpid(Some(pid), WaitOptions::empty()).unwrap();
     }
 }

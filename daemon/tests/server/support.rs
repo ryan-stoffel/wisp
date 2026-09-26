@@ -3,9 +3,11 @@
 //! Every test gets its own data folder under `/tmp`, which keeps socket paths well under macOS's
 //! 103-byte limit and keeps tests away from the real data folder.
 
+use std::collections::VecDeque;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
@@ -18,12 +20,19 @@ use tokio::time::{Instant, sleep, timeout};
 use tokio_util::codec::Framed;
 use wisp_protocol::framing::FrameCodec;
 use wisp_protocol::jsonrpc::{ErrorObject, Message, Notification, Request, RequestId, Response};
-use wisp_protocol::methods::{Initialize, NotificationMethod, RequestMethod};
-use wisp_protocol::{
-    Capabilities, ClientInfo, ErrorKind, InitializeParams, InitializeResult, ProjectCreateParams,
-    ProjectId, ProtocolRange,
+use wisp_protocol::methods::{
+    EventsEvent, EventsSubscribe, Initialize, NotificationMethod, RequestMethod,
 };
+use wisp_protocol::{
+    AgentStatus, Capabilities, ClientInfo, ErrorKind, EventsEventParams, EventsSubscribeParams,
+    InitializeParams, InitializeResult, ProjectCreateParams, ProjectId, ProtocolRange, Provider,
+    WispEvent,
+};
+use wispd::backend::Event;
+use wispd::backend::fake::{FakeBackend, Script, Step};
+use wispd::backend::process::{CancelPolicy, Environment, Launcher};
 use wispd::paths::DataDir;
+use wispd::routing::BackendRegistry;
 use wispd::server::{Config, Server, Shutdown};
 
 /// How long a test waits for anything before it fails.
@@ -194,7 +203,7 @@ impl InProcess {
     pub fn start(config: Config) -> Self {
         let server = Server::start(config).expect("start the server");
         let socket = server.socket_path().to_owned();
-        let shutdown = Shutdown::new();
+        let shutdown = Shutdown::default();
         let task = tokio::spawn(server.run(shutdown.clone()));
         Self {
             socket,
@@ -309,6 +318,14 @@ impl Client {
         }
     }
 
+    /// The next message, which must be an event.
+    pub async fn next_event(&mut self) -> EventsEventParams {
+        match self.next().await {
+            Some(Message::Notification(notification)) => event(notification),
+            other => panic!("expected an event, got {other:?}"),
+        }
+    }
+
     pub async fn response(&mut self) -> Response {
         match self.next().await {
             Some(Message::Response(response)) => response,
@@ -374,5 +391,192 @@ impl WriteLock {
         self.connection
             .execute_batch("ROLLBACK")
             .expect("release the write lock");
+    }
+}
+
+pub fn git(dir: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .expect("git runs");
+    assert!(output.status.success(), "git {args:?}: {output:?}");
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+/// A repository `dir/repos/<name>` with one commit and its own identity, as a user's checkout
+/// would be.
+pub fn real_repo(dir: &Path, name: &str) -> PathBuf {
+    let repo = dir.join("repos").join(name);
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "--initial-branch=main"]);
+    git(&repo, &["config", "user.name", "Test User"]);
+    git(&repo, &["config", "user.email", "test@example.com"]);
+    std::fs::write(repo.join("README.md"), "hello\n").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "init"]);
+    repo
+}
+
+/// Backends with the fake CLI, running `steps`, for Anthropic accounts.
+pub fn fake(steps: Vec<Step>) -> BackendRegistry {
+    let scratch = tempfile::tempdir().unwrap();
+    let launcher = Launcher::new(
+        DataDir::new(scratch.path()).unwrap(),
+        Environment::inherited(),
+    );
+    let mut backends = BackendRegistry::new();
+    backends.register(
+        Provider::Anthropic,
+        Arc::new(
+            FakeBackend::new(launcher, Script { steps }).with_cancel_policy(CancelPolicy {
+                signal: Signal::INT,
+                group: false,
+                // The fake's shell can lose a SIGINT that lands while it forks (#188), so
+                // `SIGKILL` follows soon.
+                grace: Duration::from_millis(500),
+            }),
+        ),
+    );
+    backends
+}
+
+pub fn init(session_id: &str) -> Step {
+    Step::Init {
+        session_id: session_id.to_owned(),
+        model: None,
+    }
+}
+
+pub fn text(text: &str) -> Step {
+    Step::Emit(Event::Text {
+        message_id: None,
+        text: text.to_owned(),
+    })
+}
+
+pub fn end_turn(result: &str) -> Step {
+    Step::EndTurn {
+        result: Some(result.to_owned()),
+    }
+}
+
+pub fn updated_to(status: AgentStatus) -> impl FnMut(&EventsEventParams) -> bool {
+    move |event| matches!(&event.event, WispEvent::AgentUpdated { state, .. } if state.status == status)
+}
+
+/// A client on which events can arrive between a request and its response. They wait in
+/// `pending` for [`Conn::until`], so none is lost.
+pub struct Conn {
+    client: Client,
+    pub pending: VecDeque<EventsEventParams>,
+}
+
+fn event(notification: Notification) -> EventsEventParams {
+    assert_eq!(
+        notification.method,
+        <EventsEvent as NotificationMethod>::NAME
+    );
+    serde_json::from_value(notification.params.expect("params")).expect("an event")
+}
+
+impl Conn {
+    pub async fn connect(socket: &Path) -> Self {
+        Self {
+            client: Client::connect(socket).await,
+            pending: VecDeque::new(),
+        }
+    }
+
+    pub async fn ready(socket: &Path) -> Self {
+        let mut conn = Self::connect(socket).await;
+        conn.initialize().await;
+        conn
+    }
+
+    pub async fn initialize(&mut self) -> InitializeResult {
+        self.client.initialize().await.expect("initialize")
+    }
+
+    /// Sends a request without waiting for its response, which [`Conn::responses`] collects.
+    pub async fn send<M: RequestMethod>(&mut self, params: M::Params) -> RequestId {
+        self.client.send::<M>(params).await
+    }
+
+    /// The next response, keeping the events that arrive before it.
+    async fn next_response(&mut self) -> Response {
+        loop {
+            match self.client.next().await {
+                Some(Message::Response(response)) => return response,
+                Some(Message::Notification(notification)) => {
+                    self.pending.push_back(event(notification));
+                }
+                other => panic!("expected a response, got {other:?}"),
+            }
+        }
+    }
+
+    pub async fn call<M: RequestMethod>(
+        &mut self,
+        params: M::Params,
+    ) -> Result<M::Result, ErrorObject> {
+        let id = self.send::<M>(params).await;
+        let response = self.next_response().await;
+        assert_eq!(response.id, Some(id));
+        response.into_result()
+    }
+
+    /// The responses to `ids`, in that order.
+    pub async fn responses(
+        &mut self,
+        ids: &[RequestId],
+    ) -> Vec<Result<serde_json::Value, ErrorObject>> {
+        let mut answers: Vec<Option<Result<serde_json::Value, ErrorObject>>> =
+            ids.iter().map(|_| None).collect();
+        while answers.iter().any(Option::is_none) {
+            let response = self.next_response().await;
+            let at = ids
+                .iter()
+                .position(|id| response.id.as_ref() == Some(id))
+                .expect("a response to one of the requests");
+            answers[at] = Some(response.into_result());
+        }
+        answers.into_iter().map(Option::unwrap).collect()
+    }
+
+    pub async fn subscribe(&mut self, after: u64, project: Option<ProjectId>) {
+        self.call::<EventsSubscribe>(EventsSubscribeParams { after, project })
+            .await
+            .unwrap();
+    }
+
+    /// Events until one matches `done`, which is included.
+    pub async fn until(
+        &mut self,
+        mut done: impl FnMut(&EventsEventParams) -> bool,
+    ) -> Vec<EventsEventParams> {
+        let deadline = Instant::now() + PATIENCE;
+        let mut events = Vec::new();
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "gave up waiting; got {events:#?}"
+            );
+            let event = match self.pending.pop_front() {
+                Some(event) => event,
+                None => self.client.next_event().await,
+            };
+            let stop = done(&event);
+            events.push(event);
+            if stop {
+                return events;
+            }
+        }
+    }
+
+    pub async fn stays_quiet(&mut self, within: Duration) {
+        assert!(self.pending.is_empty(), "{:?}", self.pending);
+        self.client.stays_quiet(within).await;
     }
 }

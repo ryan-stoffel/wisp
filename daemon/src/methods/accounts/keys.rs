@@ -272,26 +272,22 @@ pub(crate) fn mask_key(key: &str) -> String {
     if remaining < MIN_CHARS_TO_REVEAL_SUFFIX {
         return format!("{prefix}...");
     }
-    let last4: String = {
-        let mut chars: Vec<char> = key.chars().rev().take(4).collect();
-        chars.reverse();
-        chars.into_iter().collect()
-    };
-    format!("{prefix}...{last4}")
+    let last4 = key.char_indices().nth_back(3).map_or(0, |(start, _)| start);
+    format!("{prefix}...{}", &key[last4..])
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io;
-    use std::sync::{Arc, Mutex, PoisonError};
+    use std::sync::Mutex;
 
-    use tracing_subscriber::fmt::MakeWriter;
-    use wisp_protocol::jsonrpc::INVALID_PARAMS;
-    use wisp_protocol::{AccountId, ErrorKind, Provider, RawKey};
+    use wisp_protocol::jsonrpc::{ErrorObject, INVALID_PARAMS};
+    use wisp_protocol::{AccountId, AccountsKeysAddResult, ErrorKind, Provider, RawKey};
     use wisp_store::Store;
 
     use super::{add_account, check, mask_key, remove_account};
     use crate::keystore::{KeyStore, MemoryKeyStore};
+
+    const KEY: &str = "sk-ant-averylongthrowawaykeyabcd1234";
 
     fn temp_store() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
@@ -299,24 +295,28 @@ mod tests {
         (dir, store)
     }
 
-    fn raw_key(text: &str) -> RawKey {
-        serde_json::from_value(serde_json::json!(text)).unwrap()
+    fn add(
+        store: &mut Store,
+        keys: &MemoryKeyStore,
+        id: AccountId,
+        label: &str,
+        key: &str,
+    ) -> Result<AccountsKeysAddResult, ErrorObject> {
+        add_account(store, keys, id, Provider::Anthropic, label.to_owned(), key)
     }
 
-    fn params(provider: Provider, label: &str, key: &str) -> super::AccountsKeysAddParams {
-        super::AccountsKeysAddParams {
-            id: AccountId::generate(),
-            provider,
-            label: label.to_owned(),
-            key: raw_key(key),
-        }
+    fn stored(keys: &MemoryKeyStore, id: AccountId) -> Option<String> {
+        keys.get(id).unwrap().map(|key| key.to_string())
     }
 
     #[test]
     fn masks_reveal_at_most_4_characters_beyond_a_known_prefix_and_never_the_whole_key() {
-        // From the review of this table: nothing here may show more than a known public prefix
-        // plus 4 trailing characters, and a short key must not come back nearly whole.
+        // Nothing here may show more than a known public prefix plus 4 trailing characters, a
+        // short key must not come back nearly whole, and a key's own bytes are never taken for a
+        // prefix (a base64url key legitimately contains `-`).
         let cases = [
+            ("", "..."),
+            ("abcd", "..."),
             ("abcde", "..."),
             ("abcdefghij", "..."),
             ("sk-ant-1234", "sk-ant-..."),
@@ -334,6 +334,8 @@ mod tests {
                 "sk-admin-...5678",
             ),
             ("key_anunknownvendorbutknownprefixwxyz", "key_...wxyz"),
+            ("cursor_live_abcdefghijklmnopqrstuvwxyz", "...wxyz"),
+            ("Ab3xY-9kQ-randomBase64urlLookingSecretValue", "...alue"),
         ];
         for (input, expected) in cases {
             assert_eq!(mask_key(input), expected, "input {input:?}");
@@ -341,74 +343,38 @@ mod tests {
     }
 
     #[test]
-    fn no_recognized_prefix_shows_no_prefix() {
-        let masked = mask_key("cursor_live_abcdefghijklmnopqrstuvwxyz");
-        assert_eq!(masked, "...wxyz");
-    }
-
-    #[test]
-    fn a_hyphenated_key_with_no_known_prefix_never_leaks_its_random_bytes_as_a_prefix() {
-        // base64url keys legitimately contain '-'; none of it is a recognized vendor prefix, so
-        // none of it should be echoed back as though it were one.
-        let masked = mask_key("Ab3xY-9kQ-randomBase64urlLookingSecretValue");
-        assert_eq!(masked, "...alue");
-        assert!(!masked.contains("Ab3xY"), "{masked}");
-    }
-
-    #[test]
-    fn very_short_keys_mask_to_dots() {
-        assert_eq!(mask_key(""), "...");
-        assert_eq!(mask_key("abcd"), "...");
-    }
-
-    #[test]
-    fn check_rejects_an_unknown_provider() {
-        let error = check(&params(
-            Provider::Unknown,
-            "Personal",
-            "sk-ant-averylongkeyabcd1234",
-        ))
-        .unwrap_err();
+    fn check_rejects_an_unknown_provider_and_a_key_under_the_minimum_length() {
+        let params = |provider, key: &str| super::AccountsKeysAddParams {
+            id: AccountId::generate(),
+            provider,
+            label: "Personal".to_owned(),
+            key: serde_json::from_value::<RawKey>(serde_json::json!(key)).unwrap(),
+        };
+        let error = check(&params(Provider::Unknown, KEY)).unwrap_err();
         assert_eq!(error.code, INVALID_PARAMS);
-    }
-
-    #[test]
-    fn check_rejects_a_key_under_the_minimum_length() {
-        let error = check(&params(Provider::Anthropic, "Personal", "short")).unwrap_err();
+        let error = check(&params(Provider::Anthropic, "short")).unwrap_err();
         assert_eq!(error.code, INVALID_PARAMS);
         let longest_rejected = "a".repeat(super::MIN_KEY_BYTES - 1);
-        assert!(check(&params(Provider::Anthropic, "Personal", &longest_rejected)).is_err());
+        assert!(check(&params(Provider::Anthropic, &longest_rejected)).is_err());
         let shortest_accepted = "a".repeat(super::MIN_KEY_BYTES);
-        assert!(check(&params(Provider::Anthropic, "Personal", &shortest_accepted)).is_ok());
-    }
-
-    #[test]
-    fn removing_an_unknown_id_is_account_not_found() {
-        let (_dir, mut db_store) = temp_store();
-        let keys = MemoryKeyStore::new();
-        let error = remove_account(&mut db_store, &keys, AccountId::generate()).unwrap_err();
-        assert_eq!(error.wisp_data().unwrap().kind, ErrorKind::AccountNotFound);
+        assert!(check(&params(Provider::Anthropic, &shortest_accepted)).is_ok());
     }
 
     #[test]
     fn remove_deletes_both_the_row_and_the_keychain_entry() {
         let (_dir, mut db_store) = temp_store();
         let keys = MemoryKeyStore::new();
+        let unknown = remove_account(&mut db_store, &keys, AccountId::generate()).unwrap_err();
+        assert_eq!(
+            unknown.wisp_data().unwrap().kind,
+            ErrorKind::AccountNotFound
+        );
+
         let id = AccountId::generate();
-        add_account(
-            &mut db_store,
-            &keys,
-            id,
-            Provider::Anthropic,
-            "Personal".to_owned(),
-            "sk-ant-averylongthrowawaykeyabcd1234",
-        )
-        .unwrap();
-        assert!(keys.get(id).unwrap().is_some());
-
+        add(&mut db_store, &keys, id, "Personal", KEY).unwrap();
+        assert!(stored(&keys, id).is_some());
         remove_account(&mut db_store, &keys, id).unwrap();
-
-        assert_eq!(keys.get(id).unwrap(), None, "the key must be gone");
+        assert_eq!(stored(&keys, id), None, "the key must be gone");
         assert_eq!(
             db_store.get_account(id.into()).unwrap(),
             None,
@@ -417,67 +383,21 @@ mod tests {
     }
 
     #[test]
-    fn a_retried_add_with_the_same_key_is_idempotent() {
+    fn a_retried_add_with_the_same_key_is_idempotent_and_anything_else_conflicts() {
         let (_dir, mut db_store) = temp_store();
         let keys = MemoryKeyStore::new();
         let id = AccountId::generate();
-        let key = "sk-ant-averylongthrowawaykeyabcd1234";
-
-        let first = add_account(
-            &mut db_store,
-            &keys,
-            id,
-            Provider::Anthropic,
-            "Personal".to_owned(),
-            key,
-        )
-        .unwrap();
-        let second = add_account(
-            &mut db_store,
-            &keys,
-            id,
-            Provider::Anthropic,
-            "Personal".to_owned(),
-            key,
-        )
-        .unwrap();
-
+        let first = add(&mut db_store, &keys, id, "Personal", KEY).unwrap();
+        let second = add(&mut db_store, &keys, id, "Personal", KEY).unwrap();
         assert_eq!(first.account, second.account);
-        assert_eq!(
-            keys.get(id).unwrap().as_deref().map(String::as_str),
-            Some(key)
-        );
+
+        let relabelled = add(&mut db_store, &keys, id, "Work", KEY).unwrap_err();
+        assert_eq!(relabelled.wisp_data().unwrap().kind, ErrorKind::IdConflict);
+        assert_eq!(stored(&keys, id).as_deref(), Some(KEY));
     }
 
-    #[test]
-    fn a_retry_with_a_different_label_is_an_id_conflict() {
-        let (_dir, mut db_store) = temp_store();
-        let keys = MemoryKeyStore::new();
-        let id = AccountId::generate();
-        add_account(
-            &mut db_store,
-            &keys,
-            id,
-            Provider::Anthropic,
-            "Personal".to_owned(),
-            "sk-ant-averylongthrowawaykeyabcd1234",
-        )
-        .unwrap();
-
-        let error = add_account(
-            &mut db_store,
-            &keys,
-            id,
-            Provider::Anthropic,
-            "Work".to_owned(),
-            "sk-ant-averylongthrowawaykeyabcd1234",
-        )
-        .unwrap_err();
-        assert_eq!(error.wisp_data().unwrap().kind, ErrorKind::IdConflict);
-    }
-
-    /// Regression test: two different keys can share a mask (same recognized prefix and last 4
-    /// characters), so idempotency must not trust the mask alone.
+    /// Two different keys can share a mask (same recognized prefix and last 4 characters), so
+    /// idempotency must not trust the mask alone.
     #[test]
     fn a_retry_with_a_different_key_that_shares_a_mask_is_an_id_conflict() {
         let (_dir, mut db_store) = temp_store();
@@ -485,35 +405,13 @@ mod tests {
         let id = AccountId::generate();
         let first_key = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAabcd";
         let second_key = "sk-ant-api03-BBBBBBBBBBBBBBBBBBBBBBBBabcd";
-        assert_eq!(
-            mask_key(first_key),
-            mask_key(second_key),
-            "the test setup should give both keys the same mask"
-        );
-        assert_ne!(first_key, second_key);
+        assert_eq!(mask_key(first_key), mask_key(second_key));
 
-        add_account(
-            &mut db_store,
-            &keys,
-            id,
-            Provider::Anthropic,
-            "Personal".to_owned(),
-            first_key,
-        )
-        .unwrap();
-
-        let error = add_account(
-            &mut db_store,
-            &keys,
-            id,
-            Provider::Anthropic,
-            "Personal".to_owned(),
-            second_key,
-        )
-        .unwrap_err();
+        add(&mut db_store, &keys, id, "Personal", first_key).unwrap();
+        let error = add(&mut db_store, &keys, id, "Personal", second_key).unwrap_err();
         assert_eq!(error.wisp_data().unwrap().kind, ErrorKind::IdConflict);
         assert_eq!(
-            keys.get(id).unwrap().as_deref().map(String::as_str),
+            stored(&keys, id).as_deref(),
             Some(first_key),
             "the original key must be left untouched"
         );
@@ -523,55 +421,20 @@ mod tests {
     fn a_failed_store_write_rolls_back_the_keychain_write() {
         let (dir, mut db_store) = temp_store();
         // Break the schema after opening, from a second connection to the same database, so the
-        // next `create_account` fails immediately and deterministically: no fault-injecting mock
-        // store needed, and nothing to wait out.
-        {
-            let raw = rusqlite::Connection::open(dir.path().join("wispd.sqlite3")).unwrap();
-            raw.execute_batch("DROP TABLE accounts;").unwrap();
-        }
+        // next `create_account` fails immediately and deterministically.
+        rusqlite::Connection::open(dir.path().join("wispd.sqlite3"))
+            .unwrap()
+            .execute_batch("DROP TABLE accounts;")
+            .unwrap();
         let keys = MemoryKeyStore::new();
         let id = AccountId::generate();
 
-        let result = add_account(
-            &mut db_store,
-            &keys,
-            id,
-            Provider::Anthropic,
-            "Personal".to_owned(),
-            "sk-ant-averylongthrowawaykeyabcd1234",
-        );
-
-        assert!(result.is_err(), "the broken schema should fail the write");
+        assert!(add(&mut db_store, &keys, id, "Personal", KEY).is_err());
         assert_eq!(
-            keys.get(id).unwrap(),
+            stored(&keys, id),
             None,
             "a failed store write must not leave the key behind in the keychain"
         );
-    }
-
-    #[derive(Clone)]
-    struct SharedBuffer(Arc<Mutex<Vec<u8>>>);
-
-    impl io::Write for SharedBuffer {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.0
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl<'a> MakeWriter<'a> for SharedBuffer {
-        type Writer = Self;
-
-        fn make_writer(&'a self) -> Self::Writer {
-            self.clone()
-        }
     }
 
     /// Adding a key must never write it, in the clear, anywhere `tracing` can see: not in an
@@ -579,28 +442,26 @@ mod tests {
     #[test]
     fn adding_a_key_never_logs_it() {
         let secret = "sk-ant-api03-thisisaveryrealsecretvalueabcd";
-        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let log = tempfile::NamedTempFile::new().unwrap();
         let subscriber = tracing_subscriber::fmt()
-            .with_writer(SharedBuffer(Arc::clone(&buffer)))
+            .with_writer(Mutex::new(log.reopen().unwrap()))
             .with_ansi(false)
             .finish();
-
         let (_dir, mut db_store) = temp_store();
         let keys = MemoryKeyStore::new();
 
         tracing::subscriber::with_default(subscriber, || {
-            add_account(
+            add(
                 &mut db_store,
                 &keys,
                 AccountId::generate(),
-                Provider::Anthropic,
-                "Personal".to_owned(),
+                "Personal",
                 secret,
             )
             .expect("add should succeed");
         });
 
-        let logged = String::from_utf8(buffer.lock().unwrap().clone()).unwrap();
+        let logged = std::fs::read_to_string(log.path()).unwrap();
         assert!(
             !logged.contains(secret),
             "logged output must never contain the raw key: {logged}"

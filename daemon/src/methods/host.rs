@@ -14,7 +14,7 @@ use wisp_protocol::{
 
 use super::Context;
 use crate::VERSION;
-use crate::logging::untrusted;
+use crate::logging::Untrusted;
 use crate::server::Daemon;
 
 const SYSTEM_VERSION: &str = "/System/Library/CoreServices/SystemVersion.plist";
@@ -51,10 +51,10 @@ pub(crate) fn initialize(
     } = request.params()?;
     let capability_names = capabilities.0.keys().cloned().collect::<Vec<_>>().join(",");
     info!(
-        client = ?untrusted(&client.name),
-        client_version = ?untrusted(&client.version),
+        client = ?Untrusted(&client.name),
+        client_version = ?Untrusted(&client.version),
         protocol = version,
-        capabilities = ?untrusted(&capability_names),
+        capabilities = ?Untrusted(&capability_names),
         "initialized"
     );
     let result = InitializeResult {
@@ -71,13 +71,9 @@ pub(crate) fn initialize(
     Ok((session, result))
 }
 
-/// The capabilities this wispd advertises. M2 adds `accounts` (#117) and `agentClis` (#114),
-/// distinct capabilities since the two features (stored API keys and detected CLIs) can ship
-/// independently; M3 adds `agents` (#156): the `agent/*` methods and `agent.*` events,
-/// `agentReview` (#157): `agent/diff`, `agent/file`, `agent/accept`, `agent/requestChanges`, and
-/// `agent.accepted`, so an editor can tell a host that reviews runs from one that only runs them,
-/// and `threads` (#110): normal threads, with the `thread/*` and `repo/*` methods and the `repo.*`
-/// and `thread.*` events.
+/// The capabilities this wispd advertises: `accounts` (stored API keys), `agentClis` (detected
+/// CLIs), `agents` (`agent/*`), `agentReview` (`agent/diff`, `agent/file`, `agent/accept`,
+/// `agent/requestChanges`), and `threads` (`thread/*` and `repo/*`).
 fn capabilities_advertised() -> Capabilities {
     Capabilities(BTreeMap::from([
         ("accounts".to_owned(), serde_json::Map::new()),
@@ -128,7 +124,7 @@ fn plist_string<'a>(plist: &'a str, key: &str) -> Option<&'a str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{os_version, plist_string};
+    use super::plist_string;
 
     #[test]
     fn reads_strings_from_a_property_list() {
@@ -138,11 +134,5 @@ mod tests {
         assert_eq!(plist_string(plist, "ProductName"), Some("macOS"));
         assert_eq!(plist_string(plist, "ProductVersion"), Some("27.0"));
         assert_eq!(plist_string(plist, "Missing"), None);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn the_os_version_names_macos() {
-        assert!(os_version().starts_with("macOS "), "{}", os_version());
     }
 }

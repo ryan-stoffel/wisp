@@ -1,10 +1,5 @@
-//! `accounts/list` and `accounts/refresh` (#114): the vendor CLIs wispd detects, gated on the
-//! `agentClis` capability.
-//!
-//! `keys` holds `accounts/keys/add`, `accounts/keys/list`, and `accounts/keys/remove` (#117),
-//! which manage stored API keys under the separate `accounts` capability. The two features share
-//! the `accounts/` method prefix but are otherwise independent, so they live in one module here
-//! without colliding: this file's `list` detects CLIs, `keys::list` reads key accounts.
+//! `accounts/list` and `accounts/refresh`: the vendor CLIs wispd detects, under the `agentClis`
+//! capability. `keys` holds `accounts/keys/*`, the stored API keys under `accounts`.
 
 pub(crate) mod keys;
 

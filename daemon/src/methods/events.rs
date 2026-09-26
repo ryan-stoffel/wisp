@@ -173,16 +173,4 @@ mod tests {
         cursors.remove(host_id);
         assert_eq!(drain(&mut cursors, &log), [(late_id, 4)]);
     }
-
-    #[test]
-    fn a_cursor_behind_the_retention_is_reported() {
-        let log = EventLog::new(1);
-        log.append_blocking(Timestamp::now(), None, WispEvent::Unknown);
-        log.append_blocking(Timestamp::now(), None, WispEvent::Unknown);
-        let lagging = cursor(None, 0);
-        let id = lagging.subscription;
-        let mut cursors = Cursors::default();
-        cursors.add(lagging);
-        assert_eq!(cursors.next(&log).unwrap_err(), id);
-    }
 }

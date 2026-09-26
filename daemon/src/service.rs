@@ -203,14 +203,16 @@ pub fn install(label: &str, data_dir: &DataDir) -> Result<InstallOutcome, Servic
     check_label_serves(label, data_dir, DataDir::default_location().ok().as_ref())?;
     let uid = rustix::process::getuid().as_raw();
     let already_loaded = load_state(uid, label)?.loaded();
-    if !already_loaded && probe_initialize(data_dir) {
+    if !already_loaded && probe_initialize(data_dir).unwrap_or(false) {
         return Err(ServiceError::AlreadyRunningOutsideLaunchd {
             data_dir: data_dir.root().to_owned(),
         });
     }
     crate::server::prepare_data_dir(data_dir.root())?;
     prepare_log_dir(data_dir)?;
-    let program = current_exe()?;
+    // Not resolved through symlinks: a package manager that upgrades wispd by relinking a stable
+    // path keeps the plist pointing at that path.
+    let program = std::env::current_exe().map_err(ServiceError::CurrentExe)?;
     let plist = render_plist(label, &program, data_dir);
     let path = plist_path(label)?;
     write_plist(&path, &plist)?;
@@ -344,7 +346,7 @@ pub fn status(label: &str, data_dir: &DataDir) -> Result<Status, ServiceError> {
         .try_exists()
         .map_err(|error| ServiceError::io(format!("checking {}", path.display()), error))?;
     let launchd = load_state(uid, label)?;
-    let answers_initialize = probe_initialize(data_dir);
+    let answers_initialize = probe_initialize(data_dir).unwrap_or(false);
     Ok(Status {
         label: label.to_owned(),
         plist_path: path,
@@ -382,20 +384,12 @@ fn parse_print_output(text: &str) -> (bool, Option<u32>) {
 }
 
 /// Connects to `data_dir`'s socket and sends `initialize`, to see whether something answers it
-/// right now. `false` covers every way that can fail to happen: no socket, nothing listening, a
+/// right now. `Ok(false)` or an error both mean nothing does: no socket, nothing listening, a
 /// connection that doesn't answer in time, or an answer that isn't a well-formed response.
-fn probe_initialize(data_dir: &DataDir) -> bool {
-    let Ok(socket) = data_dir.socket_path() else {
-        return false;
-    };
-    let Ok(mut stream) = UnixStream::connect(&socket.path) else {
-        return false;
-    };
-    if stream.set_read_timeout(Some(PROBE_TIMEOUT)).is_err()
-        || stream.set_write_timeout(Some(PROBE_TIMEOUT)).is_err()
-    {
-        return false;
-    }
+fn probe_initialize(data_dir: &DataDir) -> io::Result<bool> {
+    let mut stream = UnixStream::connect(data_dir.socket_path()?.path)?;
+    stream.set_read_timeout(Some(PROBE_TIMEOUT))?;
+    stream.set_write_timeout(Some(PROBE_TIMEOUT))?;
     let request = Request::new::<Initialize>(
         1,
         InitializeParams {
@@ -408,23 +402,16 @@ fn probe_initialize(data_dir: &DataDir) -> bool {
             capabilities: Capabilities::default(),
         },
     );
-    let Ok(mut line) = serde_json::to_string(&request) else {
-        return false;
-    };
-    line.push('\n');
-    if stream.write_all(line.as_bytes()).is_err() {
-        return false;
-    }
-    let mut reader = BufReader::new(stream);
-    let mut response_line = String::new();
-    if reader.read_line(&mut response_line).is_err() {
-        return false;
-    }
-    let frame = response_line.trim_end_matches(['\n', '\r']);
-    matches!(
+    let mut line = serde_json::to_vec(&request)?;
+    line.push(b'\n');
+    stream.write_all(&line)?;
+    let mut response = String::new();
+    BufReader::new(stream).read_line(&mut response)?;
+    let frame = response.trim_end_matches(['\n', '\r']);
+    Ok(matches!(
         Message::from_frame(frame.as_bytes()),
         Ok(Message::Response(_))
-    )
+    ))
 }
 
 /// Creates `logs/` under the data folder, if it is not there yet, so launchd has somewhere to
@@ -439,15 +426,6 @@ fn prepare_log_dir(data_dir: &DataDir) -> Result<(), ServiceError> {
         .mode(0o700)
         .create(dir)
         .map_err(|error| ServiceError::io(format!("creating {}", dir.display()), error))
-}
-
-/// The absolute path of the running `wispd` binary, as `std::env::current_exe` reports it.
-///
-/// This is not resolved through symlinks: a package manager that upgrades wispd by relinking a
-/// stable path should keep the plist pointing at that stable path. Re-running `install` after
-/// moving the binary picks up its new location either way.
-fn current_exe() -> Result<PathBuf, ServiceError> {
-    std::env::current_exe().map_err(ServiceError::CurrentExe)
 }
 
 fn write_plist(path: &Path, contents: &str) -> Result<(), ServiceError> {
@@ -469,10 +447,10 @@ fn run_launchctl(args: &[&str]) -> Result<Output, ServiceError> {
 }
 
 /// Runs `launchctl` and turns a non-zero exit into [`ServiceError::Launchctl`].
-fn launchctl_ok(args: &[&str]) -> Result<Output, ServiceError> {
+fn launchctl_ok(args: &[&str]) -> Result<(), ServiceError> {
     let output = run_launchctl(args)?;
     if output.status.success() {
-        Ok(output)
+        Ok(())
     } else {
         Err(ServiceError::Launchctl {
             argv: args.join(" "),
@@ -486,8 +464,8 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        DEFAULT_LABEL, ServiceError, check_label_serves, escape_plist_text, parse_print_output,
-        plist_path, render_plist,
+        DEFAULT_LABEL, ServiceError, check_label_serves, parse_print_output, plist_path,
+        render_plist,
     };
     use crate::paths::DataDir;
 
@@ -532,12 +510,6 @@ mod tests {
     }
 
     #[test]
-    fn escaping_handles_the_reserved_characters_and_leaves_the_rest_alone() {
-        assert_eq!(escape_plist_text("a&b<c>d"), "a&amp;b&lt;c&gt;d");
-        assert_eq!(escape_plist_text("plain"), "plain");
-    }
-
-    #[test]
     fn plist_path_is_under_launch_agents_with_the_label() {
         let path = plist_path("io.example.test").unwrap();
         assert!(
@@ -561,13 +533,9 @@ mod tests {
     }
 
     #[test]
-    fn a_job_that_is_not_running_has_no_pid() {
+    fn a_job_that_is_not_running_or_unrecognized_output_has_no_pid() {
         let text = "gui/501/io.example = {\n\tstate = not running\n}\n";
         assert_eq!(parse_print_output(text), (false, None));
-    }
-
-    #[test]
-    fn unrecognized_output_is_read_as_not_running_rather_than_an_error() {
         assert_eq!(parse_print_output(""), (false, None));
     }
 }

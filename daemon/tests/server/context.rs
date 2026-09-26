@@ -4,14 +4,13 @@
 use std::os::unix::fs::symlink;
 use std::time::Duration;
 
-use wisp_protocol::jsonrpc::{INVALID_PARAMS, Message, Notification};
+use wisp_protocol::jsonrpc::INVALID_PARAMS;
 use wisp_protocol::methods::{
-    ContextList, ContextRead, ContextWrite, EventsEvent, EventsSubscribe, NotificationMethod,
-    ProjectCreate,
+    ContextList, ContextRead, ContextWrite, EventsSubscribe, ProjectCreate,
 };
 use wisp_protocol::{
     ContextListParams, ContextReadParams, ContextWriteId, ContextWriteParams, ErrorKind,
-    EventsEventParams, EventsSubscribeParams, Project, ProjectId, WispEvent,
+    EventsSubscribeParams, Project, ProjectId, WispEvent,
 };
 
 use crate::support::{Client, Wispd, create_params, kind, temp_dir};
@@ -36,16 +35,6 @@ fn write_params(
         path: path.to_owned(),
         content: content.to_owned(),
         writer: writer.map(str::to_owned),
-    }
-}
-
-async fn next_event(client: &mut Client) -> EventsEventParams {
-    match client.next().await {
-        Some(Message::Notification(Notification { method, params })) => {
-            assert_eq!(method, <EventsEvent as NotificationMethod>::NAME);
-            serde_json::from_value(params.expect("params")).expect("an event")
-        }
-        other => panic!("expected an event, got {other:?}"),
     }
 }
 
@@ -337,7 +326,7 @@ async fn a_write_emits_exactly_one_context_changed_event_and_an_agents_own_write
         ))
         .await
         .unwrap();
-    let event = next_event(&mut watcher).await;
+    let event = watcher.next_event().await;
     assert_eq!(event.project, Some(project.id));
     match event.event {
         WispEvent::ContextChanged { file } => {
@@ -353,7 +342,7 @@ async fn a_write_emits_exactly_one_context_changed_event_and_an_agents_own_write
     // An agent's own write, made directly on disk with no wispd call at all (0005).
     let context_dir = dir.path().join("context").join(project.id.to_string());
     std::fs::write(context_dir.join("research.md"), "from an agent").unwrap();
-    let event = next_event(&mut watcher).await;
+    let event = watcher.next_event().await;
     assert_eq!(event.project, Some(project.id));
     match event.event {
         WispEvent::ContextChanged { file } => {

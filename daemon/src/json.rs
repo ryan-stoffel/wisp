@@ -1,5 +1,5 @@
-//! A tiny shared helper for counting a JSON string's size the way `serde_json` actually writes
-//! it, used wherever a byte budget has to hold after encoding, not just before it (#157, #190).
+//! Counting a JSON string's size the way `serde_json` writes it, for byte budgets that have to
+//! hold after encoding.
 
 /// The size of `text` as a JSON string's content, as `serde_json` writes it: `"` and `\\` and the
 /// short escapes (`\n`, `\t`, ...) take two bytes, other control characters six (`\u00XX`).

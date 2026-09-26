@@ -346,17 +346,8 @@ pub fn create_params(dir: &Path, name: &str) -> ProjectCreateParams {
     }
 }
 
-/// The paths of `pid`'s descriptors 0 to 2, from `lsof`.
-pub fn stdio_paths(pid: Pid) -> Vec<String> {
-    lsof_names(pid, "0-2")
-}
-
-/// `pid`'s working directory, from `lsof`.
-pub fn working_dir(pid: Pid) -> Vec<String> {
-    lsof_names(pid, "cwd")
-}
-
-fn lsof_names(pid: Pid, descriptors: &str) -> Vec<String> {
+/// The paths `lsof` names for `pid`'s `descriptors`, such as `0-2` or `cwd`.
+pub fn lsof_names(pid: Pid, descriptors: &str) -> Vec<String> {
     let lsof = {
         let _lock = spawn_lock();
         std::process::Command::new("/usr/sbin/lsof")

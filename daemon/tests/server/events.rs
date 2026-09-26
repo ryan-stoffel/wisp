@@ -3,9 +3,9 @@
 use std::path::Path;
 use std::time::Duration;
 
-use wisp_protocol::jsonrpc::{Message, Notification};
+use wisp_protocol::jsonrpc::Message;
 use wisp_protocol::methods::{
-    EventsSubscribe, EventsUnsubscribe, HostHealth, NotificationMethod, ProjectCreate, ProjectList,
+    EventsSubscribe, EventsUnsubscribe, HostHealth, ProjectCreate, ProjectList,
 };
 use wisp_protocol::{
     ErrorKind, EventsEventParams, EventsSubscribeParams, EventsUnsubscribeParams, HostHealthParams,
@@ -33,19 +33,6 @@ async fn subscribe(client: &mut Client, after: u64) -> SubscriptionId {
         .subscription
 }
 
-async fn event(client: &mut Client) -> EventsEventParams {
-    match client.next().await {
-        Some(Message::Notification(Notification { method, params })) => {
-            assert_eq!(
-                method,
-                <wisp_protocol::methods::EventsEvent as NotificationMethod>::NAME
-            );
-            serde_json::from_value(params.expect("params")).expect("an event")
-        }
-        other => panic!("expected an event, got {other:?}"),
-    }
-}
-
 fn created(event: &EventsEventParams) -> &Project {
     match &event.event {
         WispEvent::ProjectCreated { project } => project,
@@ -62,7 +49,7 @@ async fn subscribers_get_the_replay_then_live_events_on_every_connection() {
 
     let mut replaying = Client::ready(&wispd.socket).await;
     let replay = subscribe(&mut replaying, 0).await;
-    let replayed = event(&mut replaying).await;
+    let replayed = replaying.next_event().await;
     assert_eq!(replayed.subscription, replay);
     assert_eq!(replayed.seq, 1);
     assert_eq!(replayed.project, None, "project.created is host-level");
@@ -96,7 +83,7 @@ async fn a_retried_create_adds_no_event() {
 
     let mut watcher = Client::ready(&wispd.socket).await;
     subscribe(&mut watcher, 0).await;
-    assert_eq!(event(&mut watcher).await.seq, 1);
+    assert_eq!(watcher.next_event().await.seq, 1);
     watcher.stays_quiet(Duration::from_millis(200)).await;
 }
 
@@ -190,8 +177,8 @@ async fn events_older_than_the_retention_need_a_resync() {
     assert_eq!(kind(&error), ErrorKind::ResyncRequired);
 
     subscribe(&mut client, 1).await;
-    assert_eq!(event(&mut client).await.seq, 2);
-    assert_eq!(event(&mut client).await.seq, 3);
+    assert_eq!(client.next_event().await.seq, 2);
+    assert_eq!(client.next_event().await.seq, 3);
     drop(client);
     server.stop().await;
 }

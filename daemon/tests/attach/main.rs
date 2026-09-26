@@ -22,8 +22,8 @@ use wispd::paths::DataDir;
 
 use crate::support::{
     Attach, PATIENCE, Serve, StopServe, WISPD, create_params, ends_within, gone,
-    hold_instance_lock, initialize_params, is_alive, log, pipe, serve_pid, socket_path, spawn_lock,
-    stdio_paths, temp_dir, working_dir,
+    hold_instance_lock, initialize_params, is_alive, log, lsof_names, pipe, serve_pid, socket_path,
+    spawn_lock, temp_dir,
 };
 
 #[tokio::test]
@@ -97,9 +97,9 @@ async fn attach_starts_a_detached_wispd_when_none_runs() {
     );
     let log_file = fs::canonicalize(dir.path().join("logs/wispd.log")).unwrap();
     let log_file = log_file.to_str().unwrap();
-    assert_eq!(stdio_paths(serve), ["/dev/null", log_file, log_file]);
+    assert_eq!(lsof_names(serve, "0-2"), ["/dev/null", log_file, log_file]);
     assert_eq!(
-        working_dir(serve),
+        lsof_names(serve, "cwd"),
         ["/"],
         "wispd keeps no folder of attach's busy"
     );

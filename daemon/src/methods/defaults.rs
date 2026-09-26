@@ -49,11 +49,9 @@ pub(crate) async fn set(
 
 /// Both roles' defaults, as they stand in the store right now.
 pub(crate) fn read_defaults(db_store: &Store) -> Result<AccountsDefaultsGetResult, ErrorObject> {
-    let coordinator = read_one(db_store, Role::Coordinator)?;
-    let worker = read_one(db_store, Role::Worker)?;
     Ok(AccountsDefaultsGetResult {
-        coordinator,
-        worker,
+        coordinator: read_one(db_store, Role::Coordinator)?,
+        worker: read_one(db_store, Role::Worker)?,
     })
 }
 
@@ -97,16 +95,10 @@ mod tests {
     }
 
     #[test]
-    fn with_nothing_set_both_roles_are_absent() {
-        let (_dir, store) = temp_store();
-        let defaults = read_defaults(&store).unwrap();
-        assert_eq!(defaults.coordinator, None);
-        assert_eq!(defaults.worker, None);
-    }
-
-    #[test]
     fn each_role_keeps_its_own_default() {
         let (_dir, mut store) = temp_store();
+        let unset = read_defaults(&store).unwrap();
+        assert_eq!((unset.coordinator, unset.worker), (None, None));
         let key_id = AccountId::generate();
         store
             .create_account(key_id.into(), &key_account_fields())

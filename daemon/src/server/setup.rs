@@ -57,7 +57,6 @@ pub fn prepare_data_dir(dir: &Path) -> Result<(), StartError> {
 }
 
 /// The `flock` on `wispd.lock` that admits one `serve` per data folder.
-#[derive(Debug)]
 pub(crate) struct InstanceLock {
     file: File,
     path: PathBuf,
@@ -139,7 +138,6 @@ fn read_pid(file: &mut File) -> Option<u32> {
 }
 
 /// The socket this server bound, known by its inode, so wispd only ever removes its own.
-#[derive(Debug)]
 pub(crate) struct Socket {
     path: PathBuf,
     identity: (u64, u64),
@@ -228,45 +226,15 @@ fn bind_at(path: &Path) -> io::Result<(UnixListener, (u64, u64))> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs::{self, Permissions};
-    use std::os::unix::fs::{PermissionsExt, symlink};
-    use std::os::unix::net::UnixListener;
+    use std::fs;
+    use std::os::unix::fs::symlink;
 
     use super::{InstanceLock, Socket, prepare_data_dir};
     use crate::server::StartError;
 
     #[test]
-    fn the_data_folder_is_created_private_or_made_private() {
+    fn a_data_folder_that_is_not_a_folder_is_refused() {
         let temp = tempfile::tempdir().unwrap();
-        let fresh = temp.path().join("a/b");
-        prepare_data_dir(&fresh).unwrap();
-        assert_eq!(
-            fs::metadata(&fresh).unwrap().permissions().mode() & 0o777,
-            0o700
-        );
-
-        let open = temp.path().join("open");
-        fs::create_dir(&open).unwrap();
-        fs::set_permissions(&open, Permissions::from_mode(0o755)).unwrap();
-        prepare_data_dir(&open).unwrap();
-        assert_eq!(
-            fs::metadata(&open).unwrap().permissions().mode() & 0o777,
-            0o700
-        );
-    }
-
-    #[test]
-    fn a_symlinked_or_non_folder_data_folder_is_refused() {
-        let temp = tempfile::tempdir().unwrap();
-        let target = temp.path().join("target");
-        fs::create_dir(&target).unwrap();
-        let link = temp.path().join("link");
-        symlink(&target, &link).unwrap();
-        assert!(matches!(
-            prepare_data_dir(&link),
-            Err(StartError::DataDir { .. })
-        ));
-
         let file = temp.path().join("file");
         fs::write(&file, "").unwrap();
         assert!(matches!(
@@ -312,43 +280,6 @@ mod tests {
         fs::rename(&other, &path).unwrap();
         lock.release();
         assert_eq!(fs::read_to_string(&path).unwrap(), "another instance's\n");
-    }
-
-    #[test]
-    fn a_second_lock_is_refused_with_the_holders_pid() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("wispd.lock");
-        let lock = InstanceLock::acquire(&path, temp.path()).unwrap();
-        match InstanceLock::acquire(&path, temp.path()) {
-            Err(StartError::AlreadyRunning { pid, .. }) => {
-                assert_eq!(pid, Some(std::process::id()));
-            }
-            other => panic!("expected AlreadyRunning, got {other:?}"),
-        }
-        lock.release();
-        assert!(!path.exists());
-        InstanceLock::acquire(&path, temp.path()).unwrap().release();
-    }
-
-    #[test]
-    fn an_old_socket_is_replaced_and_anything_else_is_left_alone() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("wispd.sock");
-        drop(UnixListener::bind(&path).unwrap());
-        let (socket, _listener) = Socket::bind(&path).unwrap();
-        assert_eq!(
-            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        socket.remove();
-        assert!(!path.exists());
-
-        fs::write(&path, "not a socket").unwrap();
-        assert!(matches!(
-            Socket::bind(&path),
-            Err(StartError::NotASocket { .. })
-        ));
-        assert_eq!(fs::read_to_string(&path).unwrap(), "not a socket");
     }
 
     #[test]

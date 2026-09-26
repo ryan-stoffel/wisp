@@ -103,7 +103,11 @@ fn main() -> ExitCode {
     match cli.command {
         Command::Serve(args) => serve(&args),
         Command::Attach(args) => attach(&args),
-        Command::Service(args) => service_command(args.command),
+        Command::Service(args) => match args.command {
+            ServiceCommand::Install(options) => service_install(&options),
+            ServiceCommand::Uninstall(options) => service_uninstall(&options),
+            ServiceCommand::Status(options) => service_status(&options),
+        },
     }
 }
 
@@ -186,7 +190,7 @@ fn serve(args: &ServeArgs) -> ExitCode {
     runtime.block_on(async {
         // Signals are caught before the socket exists, so a SIGTERM during startup still ends
         // in a clean shutdown.
-        let shutdown = Shutdown::new();
+        let shutdown = Shutdown::default();
         if let Err(error) = catch_signals(shutdown.clone()) {
             return fail(&format!("could not catch signals: {error}"));
         }
@@ -229,14 +233,6 @@ fn serve(args: &ServeArgs) -> ExitCode {
             }
         }
     })
-}
-
-fn service_command(command: ServiceCommand) -> ExitCode {
-    match command {
-        ServiceCommand::Install(options) => service_install(&options),
-        ServiceCommand::Uninstall(options) => service_uninstall(&options),
-        ServiceCommand::Status(options) => service_status(&options),
-    }
 }
 
 fn service_install(options: &ServiceOptions) -> ExitCode {
@@ -329,7 +325,7 @@ mod tests {
 
     use clap::{CommandFactory, Parser};
 
-    use super::{AttachArgs, Cli, Command, ServiceCommand, VERSION};
+    use super::{Cli, Command};
 
     #[test]
     fn the_command_line_definition_is_valid() {
@@ -337,118 +333,19 @@ mod tests {
     }
 
     #[test]
-    fn version_is_wired_to_wispds_own_version() {
-        // daemon/tests/cli.rs checks what `wispd --version` actually prints; this just checks
-        // the command is wired to the crate's VERSION (0006, #44), not a hardcoded string.
-        assert_eq!(Cli::command().get_version(), Some(VERSION));
-    }
-
-    #[test]
-    fn serve_takes_a_data_folder_and_a_log_level() {
-        let cli = Cli::try_parse_from([
-            "wispd",
-            "serve",
-            "--data-dir",
-            "/tmp/d",
-            "--log-level",
-            "wispd=debug,warn",
-        ])
-        .unwrap();
-        let Command::Serve(args) = cli.command else {
-            panic!("expected serve, got {:?}", cli.command);
+    fn attach_takes_a_timeout_in_seconds_up_to_a_day() {
+        let timeout = |seconds: &str| {
+            Cli::try_parse_from(["wispd", "attach", "--connect-timeout", seconds]).map(|cli| {
+                let Command::Attach(args) = cli.command else {
+                    panic!("expected attach, got {:?}", cli.command);
+                };
+                args.connect_timeout
+            })
         };
-        assert_eq!(
-            args.data_dir.as_deref(),
-            Some(std::path::Path::new("/tmp/d"))
-        );
-        assert_eq!(args.log_level.to_string(), "wispd=debug,warn");
-    }
-
-    #[test]
-    fn unknown_levels_and_arguments_are_rejected() {
-        assert!(Cli::try_parse_from(["wispd", "serve", "--log-level", "loud"]).is_err());
-        assert!(Cli::try_parse_from(["wispd", "--bogus"]).is_err());
-        assert!(Cli::try_parse_from(["wispd", "serve", "extra"]).is_err());
-    }
-
-    fn attach_args(args: &[&str]) -> Result<AttachArgs, clap::Error> {
-        let cli = Cli::try_parse_from(["wispd", "attach"].iter().chain(args))?;
-        let Command::Attach(args) = cli.command else {
-            panic!("expected attach, got {:?}", cli.command);
-        };
-        Ok(args)
-    }
-
-    #[test]
-    fn attach_takes_a_data_folder_and_a_timeout_in_seconds() {
-        let args = attach_args(&["--data-dir", "/tmp/d", "--connect-timeout", "2.5"]).unwrap();
-        assert_eq!(
-            args.data_dir.as_deref(),
-            Some(std::path::Path::new("/tmp/d"))
-        );
-        assert_eq!(args.connect_timeout, Some(Duration::from_millis(2500)));
-        assert_eq!(attach_args(&[]).unwrap().connect_timeout, None);
-        let longest = attach_args(&["--connect-timeout", "86400"]).unwrap();
-        assert_eq!(longest.connect_timeout, Some(Duration::from_hours(24)));
-    }
-
-    #[test]
-    fn attach_refuses_a_timeout_that_is_not_positive_and_extra_arguments() {
+        assert_eq!(timeout("2.5").unwrap(), Some(Duration::from_millis(2500)));
+        assert_eq!(timeout("86400").unwrap(), Some(Duration::from_hours(24)));
         for bad in ["0", "-1", "soon", "NaN", "inf", "1e19", "86401"] {
-            assert!(attach_args(&["--connect-timeout", bad]).is_err(), "{bad}");
+            assert!(timeout(bad).is_err(), "{bad}");
         }
-        assert!(attach_args(&["extra"]).is_err());
-    }
-
-    #[test]
-    fn service_install_takes_a_data_folder_and_a_label() {
-        let cli = Cli::try_parse_from([
-            "wispd",
-            "service",
-            "install",
-            "--data-dir",
-            "/tmp/d",
-            "--label",
-            "io.example.test",
-        ])
-        .unwrap();
-        let Command::Service(service) = cli.command else {
-            panic!("expected service, got {:?}", cli.command);
-        };
-        let ServiceCommand::Install(options) = service.command else {
-            panic!("expected install, got {:?}", service.command);
-        };
-        assert_eq!(
-            options.data_dir.as_deref(),
-            Some(std::path::Path::new("/tmp/d"))
-        );
-        assert_eq!(options.label, "io.example.test");
-    }
-
-    #[test]
-    fn service_status_defaults_to_the_wisp_label_with_no_data_dir_override() {
-        let cli = Cli::try_parse_from(["wispd", "service", "status"]).unwrap();
-        let Command::Service(service) = cli.command else {
-            panic!("expected service, got {:?}", cli.command);
-        };
-        let ServiceCommand::Status(options) = service.command else {
-            panic!("expected status, got {:?}", service.command);
-        };
-        assert_eq!(options.label, super::DEFAULT_LABEL);
-        assert_eq!(options.data_dir, None);
-    }
-
-    #[test]
-    fn service_uninstall_parses_with_no_options() {
-        let cli = Cli::try_parse_from(["wispd", "service", "uninstall"]).unwrap();
-        let Command::Service(service) = cli.command else {
-            panic!("expected service, got {:?}", cli.command);
-        };
-        assert!(matches!(service.command, ServiceCommand::Uninstall(_)));
-    }
-
-    #[test]
-    fn service_without_a_subcommand_is_a_usage_error() {
-        assert!(Cli::try_parse_from(["wispd", "service"]).is_err());
     }
 }

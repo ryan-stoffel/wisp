@@ -1,106 +1,41 @@
 //! Normal threads end to end (#110): `thread/*` and `repo/*` against an in-process server whose
 //! worker backend is the fake CLI, in real git repositories.
 
-use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::Arc;
-use std::time::Duration;
 
-use rustix::process::Signal;
 use tempfile::TempDir;
-use tokio::time::Instant;
-use wisp_protocol::jsonrpc::{ErrorObject, INVALID_PARAMS, Message, Notification, RequestId};
+use wisp_protocol::jsonrpc::{ErrorObject, INVALID_PARAMS};
 use wisp_protocol::methods::{
-    AgentAccept, AgentEvents, AgentList, AgentSend, EventsEvent, EventsSubscribe, HostHealth,
-    NotificationMethod, RepoAdd, RequestMethod, ThreadArchive, ThreadDelete, ThreadList,
-    ThreadStart,
+    AgentAccept, AgentEvents, AgentList, AgentSend, HostHealth, RepoAdd, ThreadArchive,
+    ThreadDelete, ThreadList, ThreadStart,
 };
 use wisp_protocol::{
     AcceptId, AccountChoice, AgentAcceptParams, AgentEventsParams, AgentListParams,
-    AgentSendParams, AgentStatus, ErrorKind, EventsEventParams, EventsSubscribeParams,
-    HostHealthParams, ProjectId, Provider, Repo, RepoAddParams, RepoId, RunId, ThreadArchiveParams,
-    ThreadDeleteParams, ThreadListParams, ThreadListResult, ThreadStartParams, TurnId, WispEvent,
+    AgentSendParams, AgentStatus, ErrorKind, HostHealthParams, ProjectId, Repo, RepoAddParams,
+    RepoId, RunId, ThreadArchiveParams, ThreadDeleteParams, ThreadListParams, ThreadListResult,
+    ThreadStartParams, TurnId, WispEvent,
 };
-use wispd::backend::Event;
-use wispd::backend::fake::{FakeBackend, Script, Step};
-use wispd::backend::process::{CancelPolicy, Environment, Launcher};
-use wispd::paths::DataDir;
+use wispd::backend::fake::Step;
 use wispd::routing::BackendRegistry;
 
-use crate::support::{Client, InProcess, PATIENCE, kind, temp_dir};
-
-fn git(dir: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .expect("git runs");
-    assert!(output.status.success(), "git {args:?}: {output:?}");
-    String::from_utf8(output.stdout).unwrap().trim().to_owned()
-}
-
-fn real_repo(dir: &Path, name: &str) -> PathBuf {
-    let repo = dir.join("repos").join(name);
-    std::fs::create_dir_all(&repo).unwrap();
-    git(&repo, &["init", "-q", "--initial-branch=main"]);
-    git(&repo, &["config", "user.name", "Test User"]);
-    git(&repo, &["config", "user.email", "test@example.com"]);
-    std::fs::write(repo.join("README.md"), "hello\n").unwrap();
-    git(&repo, &["add", "-A"]);
-    git(&repo, &["commit", "-q", "-m", "init"]);
-    repo.canonicalize().unwrap()
-}
-
-fn fake(steps: Vec<Step>) -> BackendRegistry {
-    let scratch = tempfile::tempdir().unwrap();
-    let launcher = Launcher::new(
-        DataDir::new(scratch.path()).unwrap(),
-        Environment::inherited(),
-    );
-    let mut backends = BackendRegistry::new();
-    backends.register(
-        Provider::Anthropic,
-        Arc::new(
-            FakeBackend::new(launcher, Script { steps }).with_cancel_policy(CancelPolicy {
-                signal: Signal::INT,
-                group: false,
-                grace: Duration::from_millis(500),
-            }),
-        ),
-    );
-    backends
-}
+use crate::support::{
+    Conn, InProcess, end_turn, fake, git, init, kind, real_repo, temp_dir, text, updated_to,
+};
 
 fn editing() -> Vec<Step> {
     vec![
-        Step::Init {
-            session_id: "thread-1".to_owned(),
-            model: None,
-        },
+        init("thread-1"),
         Step::WriteFile {
             path: "NOTES.md".to_owned(),
             content: "Written in a thread.\n".to_owned(),
         },
-        Step::Emit(Event::Text {
-            message_id: None,
-            text: "Done.".to_owned(),
-        }),
-        Step::EndTurn {
-            result: Some("Done.".to_owned()),
-        },
+        text("Done."),
+        end_turn("Done."),
     ]
 }
 
 fn hang() -> Vec<Step> {
-    vec![
-        Step::Init {
-            session_id: "hang-1".to_owned(),
-            model: None,
-        },
-        Step::Hang,
-    ]
+    vec![init("hang-1"), Step::Hang]
 }
 
 fn start_params(repo: Option<RepoId>, prompt: &str) -> ThreadStartParams {
@@ -136,114 +71,20 @@ impl Host {
     }
 
     async fn client(&self) -> Conn {
-        let mut client = Client::connect(&self.server.socket).await;
-        client.initialize().await.expect("initialize");
-        Conn {
-            client,
-            pending: VecDeque::new(),
-        }
+        Conn::ready(&self.server.socket).await
     }
 
     fn data(&self) -> PathBuf {
         self.dir.path().canonicalize().unwrap()
     }
-}
 
-struct Conn {
-    client: Client,
-    pending: VecDeque<EventsEventParams>,
-}
-
-fn event(notification: Notification) -> EventsEventParams {
-    assert_eq!(
-        notification.method,
-        <EventsEvent as NotificationMethod>::NAME
-    );
-    serde_json::from_value(notification.params.expect("params")).expect("an event")
+    /// A new repository `name` among the tests' own.
+    fn repo(&self, name: &str) -> PathBuf {
+        real_repo(self.work.path(), name).canonicalize().unwrap()
+    }
 }
 
 impl Conn {
-    async fn call<M: RequestMethod>(
-        &mut self,
-        params: M::Params,
-    ) -> Result<M::Result, ErrorObject> {
-        let id = self.client.send::<M>(params).await;
-        loop {
-            match self.client.next().await {
-                Some(Message::Response(response)) => {
-                    assert_eq!(response.id, Some(id));
-                    return response.into_result();
-                }
-                Some(Message::Notification(notification)) => {
-                    self.pending.push_back(event(notification));
-                }
-                other => panic!("expected a response, got {other:?}"),
-            }
-        }
-    }
-
-    async fn subscribe(&mut self, after: u64, project: Option<ProjectId>) {
-        self.call::<EventsSubscribe>(EventsSubscribeParams { after, project })
-            .await
-            .unwrap();
-    }
-
-    async fn until(
-        &mut self,
-        mut done: impl FnMut(&EventsEventParams) -> bool,
-    ) -> Vec<EventsEventParams> {
-        let deadline = Instant::now() + PATIENCE;
-        let mut events = Vec::new();
-        loop {
-            assert!(
-                Instant::now() < deadline,
-                "gave up waiting; got {events:#?}"
-            );
-            let event = match self.pending.pop_front() {
-                Some(event) => event,
-                None => match self.client.next().await {
-                    Some(Message::Notification(notification)) => event(notification),
-                    other => panic!("expected an event, got {other:?}"),
-                },
-            };
-            let stop = done(&event);
-            events.push(event);
-            if stop {
-                return events;
-            }
-        }
-    }
-
-    /// Sends a request without waiting for its response, which [`Conn::responses`] collects.
-    async fn send<M: RequestMethod>(&mut self, params: M::Params) -> RequestId {
-        self.client.send::<M>(params).await
-    }
-
-    /// The responses to `ids`, in that order, keeping the events that arrive meanwhile.
-    async fn responses(
-        &mut self,
-        ids: &[RequestId],
-    ) -> Vec<Result<serde_json::Value, ErrorObject>> {
-        let mut answers: Vec<Option<Result<serde_json::Value, ErrorObject>>> =
-            ids.iter().map(|_| None).collect();
-        while answers.iter().any(Option::is_none) {
-            match self.client.next().await {
-                Some(Message::Response(response)) => {
-                    let at = ids
-                        .iter()
-                        .position(|id| response.id.as_ref() == Some(id))
-                        .expect("a response to one of the requests");
-                    answers[at] = Some(response.into_result());
-                }
-                Some(Message::Notification(notification)) => {
-                    self.pending.push_back(event(notification));
-                }
-                other => panic!("expected a response, got {other:?}"),
-            }
-        }
-        answers.into_iter().map(Option::unwrap).collect()
-    }
-
     async fn running_agents(&mut self) -> u32 {
         self.call::<HostHealth>(HostHealthParams {})
             .await
@@ -272,10 +113,6 @@ impl Conn {
     }
 }
 
-fn updated_to(status: AgentStatus) -> impl FnMut(&EventsEventParams) -> bool {
-    move |event| matches!(&event.event, WispEvent::AgentUpdated { state, .. } if state.status == status)
-}
-
 fn scope(repo: RepoId) -> ProjectId {
     ProjectId::try_from(uuid::Uuid::from(repo)).unwrap()
 }
@@ -283,7 +120,7 @@ fn scope(repo: RepoId) -> ProjectId {
 #[tokio::test]
 async fn a_thread_runs_in_a_worktree_of_its_repo_entry_and_lists_under_it() {
     let host = Host::start(fake(editing()));
-    let path = real_repo(host.work.path(), "app");
+    let path = host.repo("app");
     let mut client = host.client().await;
     let listed = client.list().await;
     assert!(listed.repos.is_empty() && listed.threads.is_empty());
@@ -489,7 +326,7 @@ async fn deleting_a_running_thread_stops_its_agent_and_removes_everything() {
 #[tokio::test]
 async fn a_delete_racing_a_message_to_a_finished_thread_leaves_nothing_running() {
     let host = Host::start(fake(editing()));
-    let path = real_repo(host.work.path(), "app");
+    let path = host.repo("app");
     let mut client = host.client().await;
     let repo = client.add(&path).await;
     let params = start_params(Some(repo.id), "Write some notes");
@@ -570,7 +407,7 @@ async fn an_accepted_quick_chat_deletes_its_scratch_repository() {
 #[tokio::test]
 async fn a_retried_start_on_a_taken_run_id_makes_no_scratch_repository() {
     let host = Host::start(fake(editing()));
-    let path = real_repo(host.work.path(), "app");
+    let path = host.repo("app");
     let mut client = host.client().await;
     let repo = client.add(&path).await;
     let params = start_params(Some(repo.id), "Write some notes");
@@ -642,8 +479,8 @@ async fn repo_entries_and_threads_refuse_what_they_cant_run() {
         "a link into the data folder"
     );
 
-    let path = real_repo(host.work.path(), "app");
-    let other = real_repo(host.work.path(), "other");
+    let path = host.repo("app");
+    let other = host.repo("other");
     let id = RepoId::generate();
     client
         .call::<RepoAdd>(RepoAddParams {

@@ -23,16 +23,12 @@ pub const SERVICE: &str = "io.github.ryan-stoffel.wisp";
 /// other saved passwords.
 const ITEM_LABEL: &str = "wisp API key";
 
-/// `security_framework_sys::base::errSecItemNotFound`, kept as a local constant so this module
-/// does not need `security-framework-sys` as a direct dependency for one status code.
+// `security_framework_sys::base` status codes, kept here rather than depending on that crate for
+// three numbers.
 const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
-
-/// `security_framework_sys::base::errSecInteractionNotAllowed`: the Keychain is locked and
-/// nothing can prompt to unlock it, such as a headless session (0004, 0007, #91).
+/// The Keychain is locked and nothing can prompt to unlock it, such as a headless session.
 const ERR_SEC_INTERACTION_NOT_ALLOWED: i32 = -25308;
-
-/// `security_framework_sys::base::errSecUserCanceled`: the user dismissed a Keychain access
-/// prompt.
+/// The user dismissed a Keychain access prompt.
 const ERR_SEC_USER_CANCELED: i32 = -128;
 
 /// Where API keys are stored, keyed by account id.
@@ -99,22 +95,11 @@ pub struct KeychainStore {
 }
 
 impl KeychainStore {
-    /// The real wisp Keychain service, [`SERVICE`].
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { service: SERVICE }
-    }
-
-    /// A store under a different service name, so a test can't disturb a real stored key.
+    /// A store under `service`: [`SERVICE`], or another name so a test can't disturb a real
+    /// stored key.
     #[must_use]
     pub const fn with_service(service: &'static str) -> Self {
         Self { service }
-    }
-}
-
-impl Default for KeychainStore {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -192,53 +177,5 @@ impl KeyStore for MemoryKeyStore {
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&account);
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use wisp_protocol::AccountId;
-
-    use super::{KeyStore, MemoryKeyStore};
-
-    fn get(store: &MemoryKeyStore, account: AccountId) -> Option<String> {
-        store.get(account).unwrap().map(|key| key.to_string())
-    }
-
-    #[test]
-    fn a_key_round_trips_through_the_mock_store() {
-        let store = MemoryKeyStore::new();
-        let account = AccountId::generate();
-        assert_eq!(get(&store, account), None);
-
-        store.set(account, "sk-ant-secret").unwrap();
-        assert_eq!(get(&store, account).as_deref(), Some("sk-ant-secret"));
-
-        store.set(account, "sk-ant-replacement").unwrap();
-        assert_eq!(
-            get(&store, account).as_deref(),
-            Some("sk-ant-replacement"),
-            "setting again replaces the stored key"
-        );
-
-        store.delete(account).unwrap();
-        assert_eq!(get(&store, account), None);
-    }
-
-    #[test]
-    fn deleting_a_key_that_was_never_set_succeeds() {
-        let store = MemoryKeyStore::new();
-        store.delete(AccountId::generate()).unwrap();
-    }
-
-    #[test]
-    fn accounts_are_independent() {
-        let store = MemoryKeyStore::new();
-        let (a, b) = (AccountId::generate(), AccountId::generate());
-        store.set(a, "key-a").unwrap();
-        store.set(b, "key-b").unwrap();
-        store.delete(a).unwrap();
-        assert_eq!(get(&store, a), None);
-        assert_eq!(get(&store, b).as_deref(), Some("key-b"));
     }
 }

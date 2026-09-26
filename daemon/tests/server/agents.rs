@@ -1,21 +1,16 @@
 //! The M3 runner end to end (#156): `agent/*` against an in-process server whose worker backend
 //! is the fake CLI, in a real git repository.
 
-use std::collections::VecDeque;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rustix::process::Signal;
 use tempfile::TempDir;
-use tokio::time::Instant;
-use wisp_protocol::jsonrpc::{ErrorObject, INVALID_PARAMS, Message, Notification};
+use wisp_protocol::jsonrpc::{ErrorObject, INVALID_PARAMS};
 use wisp_protocol::methods::{
     AgentAccept, AgentCancel, AgentDiff, AgentEvents, AgentFile, AgentList, AgentRequestChanges,
-    AgentSend, AgentStart, EventsEvent, EventsSubscribe, HostHealth, NotificationMethod,
-    ProjectCreate, RequestMethod, UsageGet,
+    AgentSend, AgentStart, HostHealth, ProjectCreate, UsageGet,
 };
 use wisp_protocol::{
     AcceptId, AccountChoice, AgentAcceptParams, AgentAcceptResult, AgentCancelParams,
@@ -23,84 +18,20 @@ use wisp_protocol::{
     AgentFileParams, AgentFileResult, AgentFileSide, AgentFileStatus, AgentListParams, AgentMerge,
     AgentMergeKind, AgentOutcome, AgentOutputItem, AgentPolicy, AgentRequestChangesParams,
     AgentRun, AgentSendParams, AgentStartParams, AgentStatus, DiffSummary, ErrorKind,
-    EventsEventParams, EventsSubscribeParams, HostHealthParams, InitializeResult, Project,
-    ProjectCreateParams, ProjectId, Provider, RunId, TurnId, UsageGetParams, WispEvent,
+    EventsEventParams, HostHealthParams, Project, ProjectCreateParams, ProjectId, Provider, RunId,
+    TurnId, UsageGetParams, WispEvent,
 };
-use wispd::backend::fake::{FakeBackend, Script, Step};
-use wispd::backend::process::{CancelPolicy, Environment, Launcher};
+use wispd::backend::fake::Step;
+use wispd::backend::process::{Environment, Launcher};
 use wispd::backend::{
     Backend, Capabilities, Event, FailureKind, ModelUsage, RunRequest, StartError, Started, Usage,
 };
 use wispd::paths::DataDir;
 use wispd::routing::BackendRegistry;
 
-use crate::support::{Client, InProcess, PATIENCE, kind, temp_dir};
-
-fn git(dir: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .expect("git runs");
-    assert!(output.status.success(), "git {args:?}: {output:?}");
-    String::from_utf8(output.stdout).unwrap().trim().to_owned()
-}
-
-/// A repository under `dir` with one commit and its own identity, as a user's checkout would be.
-fn real_repo(dir: &Path) -> PathBuf {
-    let repo = dir.join("repos").join("app");
-    std::fs::create_dir_all(&repo).unwrap();
-    git(&repo, &["init", "-q", "--initial-branch=main"]);
-    git(&repo, &["config", "user.name", "Test User"]);
-    git(&repo, &["config", "user.email", "test@example.com"]);
-    std::fs::write(repo.join("README.md"), "hello\n").unwrap();
-    git(&repo, &["add", "-A"]);
-    git(&repo, &["commit", "-q", "-m", "init"]);
-    repo
-}
-
-fn fake(steps: Vec<Step>) -> BackendRegistry {
-    let scratch = tempfile::tempdir().unwrap();
-    let launcher = Launcher::new(
-        DataDir::new(scratch.path()).unwrap(),
-        Environment::inherited(),
-    );
-    let mut backends = BackendRegistry::new();
-    backends.register(
-        Provider::Anthropic,
-        Arc::new(
-            FakeBackend::new(launcher, Script { steps }).with_cancel_policy(CancelPolicy {
-                signal: Signal::INT,
-                group: false,
-                // The fake's shell can lose a SIGINT that lands while it forks (#188), so
-                // `SIGKILL` follows soon.
-                grace: Duration::from_millis(500),
-            }),
-        ),
-    );
-    backends
-}
-
-fn init(session_id: &str) -> Step {
-    Step::Init {
-        session_id: session_id.to_owned(),
-        model: None,
-    }
-}
-
-fn text(text: &str) -> Step {
-    Step::Emit(Event::Text {
-        message_id: None,
-        text: text.to_owned(),
-    })
-}
-
-fn end_turn(result: &str) -> Step {
-    Step::EndTurn {
-        result: Some(result.to_owned()),
-    }
-}
+use crate::support::{
+    Conn, InProcess, end_turn, fake, git, init, kind, real_repo, temp_dir, text, updated_to,
+};
 
 /// A script that reports its session, then runs until cancelled.
 fn hang() -> Vec<Step> {
@@ -157,115 +88,12 @@ fn project_params(dir: &Path) -> ProjectCreateParams {
     ProjectCreateParams {
         id: ProjectId::generate(),
         name: "app".to_owned(),
-        repo_path: real_repo(dir).to_str().unwrap().to_owned(),
+        repo_path: real_repo(dir, "app").to_str().unwrap().to_owned(),
     }
 }
 
 async fn create(client: &mut Conn, params: ProjectCreateParams) -> Project {
     client.call::<ProjectCreate>(params).await.unwrap().project
-}
-
-async fn subscribe(client: &mut Conn, project: ProjectId, after: u64) {
-    client
-        .call::<EventsSubscribe>(EventsSubscribeParams {
-            after,
-            project: Some(project),
-        })
-        .await
-        .unwrap();
-}
-
-/// A client on which events can arrive between a request and its response. They wait in
-/// `pending` for [`until`], so none is lost.
-struct Conn {
-    client: Client,
-    pending: VecDeque<EventsEventParams>,
-}
-
-fn event(notification: Notification) -> EventsEventParams {
-    assert_eq!(
-        notification.method,
-        <EventsEvent as NotificationMethod>::NAME
-    );
-    serde_json::from_value(notification.params.expect("params")).expect("an event")
-}
-
-impl Conn {
-    async fn connect(socket: &Path) -> Self {
-        Self {
-            client: Client::connect(socket).await,
-            pending: VecDeque::new(),
-        }
-    }
-
-    async fn ready(socket: &Path) -> Self {
-        let mut conn = Self::connect(socket).await;
-        conn.initialize().await;
-        conn
-    }
-
-    async fn initialize(&mut self) -> InitializeResult {
-        self.client.initialize().await.expect("initialize")
-    }
-
-    async fn call<M: RequestMethod>(
-        &mut self,
-        params: M::Params,
-    ) -> Result<M::Result, ErrorObject> {
-        let id = self.client.send::<M>(params).await;
-        loop {
-            match self.client.next().await {
-                Some(Message::Response(response)) => {
-                    assert_eq!(response.id, Some(id));
-                    return response.into_result();
-                }
-                Some(Message::Notification(notification)) => {
-                    self.pending.push_back(event(notification));
-                }
-                other => panic!("expected a response, got {other:?}"),
-            }
-        }
-    }
-
-    async fn next_event(&mut self) -> EventsEventParams {
-        if let Some(event) = self.pending.pop_front() {
-            return event;
-        }
-        match self.client.next().await {
-            Some(Message::Notification(notification)) => event(notification),
-            other => panic!("expected an event, got {other:?}"),
-        }
-    }
-
-    async fn stays_quiet(&mut self, within: Duration) {
-        assert!(self.pending.is_empty(), "{:?}", self.pending);
-        self.client.stays_quiet(within).await;
-    }
-}
-
-/// Events until one matches `done`, which is included.
-async fn until(
-    client: &mut Conn,
-    mut done: impl FnMut(&EventsEventParams) -> bool,
-) -> Vec<EventsEventParams> {
-    let deadline = Instant::now() + PATIENCE;
-    let mut events = Vec::new();
-    loop {
-        assert!(
-            Instant::now() < deadline,
-            "gave up waiting; got {events:#?}"
-        );
-        let event = client.next_event().await;
-        let stop = done(&event);
-        events.push(event);
-        if stop {
-            return events;
-        }
-    }
-}
-
-fn updated_to(status: AgentStatus) -> impl FnMut(&EventsEventParams) -> bool {
-    move |event| matches!(&event.event, WispEvent::AgentUpdated { state, .. } if state.status == status)
 }
 
 fn has_item(item: AgentOutputItem) -> impl FnMut(&EventsEventParams) -> bool {
@@ -371,8 +199,8 @@ async fn assert_replays(
 ) {
     let last = events.last().unwrap().seq;
     let mut replay = host.client().await;
-    subscribe(&mut replay, project, 0).await;
-    let replayed = until(&mut replay, |event| event.seq == last).await;
+    replay.subscribe(0, Some(project)).await;
+    let replayed = replay.until(|event| event.seq == last).await;
     let pairs = |events: &[EventsEventParams]| -> Vec<(u64, WispEvent)> {
         events
             .iter()
@@ -430,7 +258,7 @@ async fn a_worker_edits_its_worktree_writes_shared_context_commits_and_replays()
     let host = Host::start(dir, fake(editing_script(&note)));
     let mut client = host.client().await;
     let project = create(&mut client, project_params).await;
-    subscribe(&mut client, project.id, 0).await;
+    client.subscribe(0, Some(project.id)).await;
 
     let params = start_params(project.id, "Rewrite the README");
     let started = client.call::<AgentStart>(params.clone()).await.unwrap().run;
@@ -445,7 +273,7 @@ async fn a_worker_edits_its_worktree_writes_shared_context_commits_and_replays()
 
     let mut context_changed = false;
     let mut is_done = updated_to(AgentStatus::Completed);
-    let events = until(&mut client, |event| {
+    let events = client.until(|event| {
         context_changed |=
             matches!(&event.event, WispEvent::ContextChanged { file } if file.path == "notes.md");
         is_done(event)
@@ -508,7 +336,7 @@ async fn a_worker_edits_its_worktree_writes_shared_context_commits_and_replays()
         "Build with cargo.\n"
     );
     if !context_changed {
-        until(&mut client, |event| {
+        client.until(|event| {
             matches!(&event.event, WispEvent::ContextChanged { file } if file.path == "notes.md")
         })
         .await;
@@ -533,18 +361,16 @@ async fn a_follow_up_reaches_a_live_run_and_a_finished_run_resumes_its_session()
     );
     let mut client = host.client().await;
     let project = create(&mut client, project_params(host.dir.path())).await;
-    subscribe(&mut client, project.id, 0).await;
+    client.subscribe(0, Some(project.id)).await;
     let params = start_params(project.id, "Answer twice");
     let run_id = params.run_id;
     client.call::<AgentStart>(params).await.unwrap();
-    until(
-        &mut client,
-        has_item(AgentOutputItem::TurnFinished {
+    client
+        .until(has_item(AgentOutputItem::TurnFinished {
             turn_id: None,
             result: Some("First answer.".to_owned()),
-        }),
-    )
-    .await;
+        }))
+        .await;
 
     let first = TurnId::generate();
     let sent = client
@@ -563,7 +389,7 @@ async fn a_follow_up_reaches_a_live_run_and_a_finished_run_resumes_its_session()
         .unwrap_err();
     assert_eq!(kind(&conflict), ErrorKind::IdConflict);
 
-    let events = until(&mut client, updated_to(AgentStatus::Completed)).await;
+    let events = client.until(updated_to(AgentStatus::Completed)).await;
     let transcript = items(&events);
     assert!(transcript.contains(&AgentOutputItem::TurnStarted {
         turn_id: Some(first)
@@ -588,14 +414,12 @@ async fn a_follow_up_reaches_a_live_run_and_a_finished_run_resumes_its_session()
         .await
         .unwrap();
     assert_eq!(resumed.run.status, AgentStatus::Running);
-    let events = until(
-        &mut client,
-        has_item(AgentOutputItem::TurnFinished {
+    let events = client
+        .until(has_item(AgentOutputItem::TurnFinished {
             turn_id: Some(second),
             result: Some("First answer.".to_owned()),
-        }),
-    )
-    .await;
+        }))
+        .await;
     let transcript = items(&events);
     assert!(
         transcript.contains(&AgentOutputItem::SessionStarted {
@@ -612,7 +436,7 @@ async fn a_follow_up_reaches_a_live_run_and_a_finished_run_resumes_its_session()
         .call::<AgentSend>(send_params(run_id, third, "done"))
         .await
         .unwrap();
-    until(&mut client, updated_to(AgentStatus::Completed)).await;
+    client.until(updated_to(AgentStatus::Completed)).await;
     host.server.stop().await;
 }
 
@@ -622,18 +446,16 @@ async fn cancel_stops_a_running_worker() {
     let host = Host::start(dir, fake(hang()));
     let mut client = host.client().await;
     let project = create(&mut client, project_params(host.dir.path())).await;
-    subscribe(&mut client, project.id, 0).await;
+    client.subscribe(0, Some(project.id)).await;
     let params = start_params(project.id, "Work forever");
     let run_id = params.run_id;
     client.call::<AgentStart>(params).await.unwrap();
-    until(
-        &mut client,
-        has_item(AgentOutputItem::Text {
+    client
+        .until(has_item(AgentOutputItem::Text {
             message_id: None,
             text: "Working".to_owned(),
-        }),
-    )
-    .await;
+        }))
+        .await;
     let health = client
         .call::<HostHealth>(HostHealthParams {})
         .await
@@ -645,7 +467,7 @@ async fn cancel_stops_a_running_worker() {
         .await
         .unwrap();
     assert_eq!(cancelling.run.id, run_id);
-    let events = until(&mut client, updated_to(AgentStatus::Cancelled)).await;
+    let events = client.until(updated_to(AgentStatus::Cancelled)).await;
     assert_eq!(outcomes(&events), [AgentOutcome::Cancelled]);
     let health = client
         .call::<HostHealth>(HostHealthParams {})
@@ -683,10 +505,10 @@ async fn agent_start_is_idempotent_on_its_run_id() {
     let host = Host::start(dir, fake(vec![init("s"), end_turn("ok")]));
     let mut client = host.client().await;
     let project = create(&mut client, project_params(host.dir.path())).await;
-    subscribe(&mut client, project.id, 0).await;
+    client.subscribe(0, Some(project.id)).await;
     let params = start_params(project.id, "Do it once");
     let first = client.call::<AgentStart>(params.clone()).await.unwrap().run;
-    until(&mut client, updated_to(AgentStatus::Completed)).await;
+    client.until(updated_to(AgentStatus::Completed)).await;
 
     let retried = client.call::<AgentStart>(params.clone()).await.unwrap().run;
     assert_eq!(retried.id, first.id);
@@ -732,18 +554,16 @@ async fn a_run_interrupted_by_a_restart_or_a_crash_resumes_by_its_session() {
     let mut client = Conn::connect(&host.server.socket).await;
     let first_log = client.initialize().await.log_id;
     let project = create(&mut client, project_params(host.dir.path())).await;
-    subscribe(&mut client, project.id, 0).await;
+    client.subscribe(0, Some(project.id)).await;
     let params = start_params(project.id, "Work until wispd stops");
     let run_id = params.run_id;
     client.call::<AgentStart>(params).await.unwrap();
-    let before = until(
-        &mut client,
-        has_item(AgentOutputItem::Text {
+    let before = client
+        .until(has_item(AgentOutputItem::Text {
             message_id: None,
             text: "Working".to_owned(),
-        }),
-    )
-    .await;
+        }))
+        .await;
     let seq_before = before.last().unwrap().seq;
     drop(client);
 
@@ -755,8 +575,8 @@ async fn a_run_interrupted_by_a_restart_or_a_crash_resumes_by_its_session() {
     let runs = list(&mut client).await;
     assert_eq!(runs[0].status, AgentStatus::Interrupted);
     assert_eq!(runs[0].session_id.as_deref(), Some("hang-1"));
-    subscribe(&mut client, project.id, seq_before).await;
-    let stopped = until(&mut client, updated_to(AgentStatus::Interrupted)).await;
+    client.subscribe(seq_before, Some(project.id)).await;
+    let stopped = client.until(updated_to(AgentStatus::Interrupted)).await;
     assert_eq!(outcomes(&stopped), [AgentOutcome::Interrupted]);
 
     let turn = TurnId::generate();
@@ -765,13 +585,11 @@ async fn a_run_interrupted_by_a_restart_or_a_crash_resumes_by_its_session() {
         .await
         .unwrap();
     assert_eq!(resumed.run.status, AgentStatus::Running);
-    let events = until(
-        &mut client,
-        has_item(AgentOutputItem::TurnStarted {
+    let events = client
+        .until(has_item(AgentOutputItem::TurnStarted {
             turn_id: Some(turn),
-        }),
-    )
-    .await;
+        }))
+        .await;
     assert!(items(&events).contains(&AgentOutputItem::SessionStarted {
         session_id: "hang-1".to_owned(),
         model: None,
@@ -802,24 +620,22 @@ async fn a_sent_turn_stays_idempotent_across_a_restart() {
     let host = Host::start(dir, fake(hang()));
     let mut client = host.client().await;
     let project = create(&mut client, project_params(host.dir.path())).await;
-    subscribe(&mut client, project.id, 0).await;
+    client.subscribe(0, Some(project.id)).await;
     let params = start_params(project.id, "Work until cancelled");
     let run_id = params.run_id;
     client.call::<AgentStart>(params).await.unwrap();
-    until(
-        &mut client,
-        has_item(AgentOutputItem::Text {
+    client
+        .until(has_item(AgentOutputItem::Text {
             message_id: None,
             text: "Working".to_owned(),
-        }),
-    )
-    .await;
+        }))
+        .await;
 
     client
         .call::<AgentCancel>(AgentCancelParams { run_id })
         .await
         .unwrap();
-    until(&mut client, updated_to(AgentStatus::Cancelled)).await;
+    client.until(updated_to(AgentStatus::Cancelled)).await;
 
     // The CLI has exited: sending resumes the session in a new process, and the turn is recorded
     // with the run, not only kept in the actor's own memory.
@@ -829,20 +645,18 @@ async fn a_sent_turn_stays_idempotent_across_a_restart() {
         .await
         .unwrap();
     assert_eq!(sent.run.status, AgentStatus::Running);
-    let events = until(
-        &mut client,
-        has_item(AgentOutputItem::TurnStarted {
+    let events = client
+        .until(has_item(AgentOutputItem::TurnStarted {
             turn_id: Some(turn),
-        }),
-    )
-    .await;
+        }))
+        .await;
     let seq_before = events.last().unwrap().seq;
     drop(client);
 
     let host = host.restart(fake(hang())).await;
     let mut client = host.client().await;
-    subscribe(&mut client, project.id, seq_before).await;
-    until(&mut client, updated_to(AgentStatus::Interrupted)).await;
+    client.subscribe(seq_before, Some(project.id)).await;
+    client.until(updated_to(AgentStatus::Interrupted)).await;
 
     // A retry with the same text is answered from the stored turn, not sent to the CLI again.
     let retried = client
@@ -892,12 +706,12 @@ async fn a_worker_learns_its_limits_and_a_fallback_moves_its_usage_to_the_new_ac
     );
     let mut client = host.client().await;
     let project = create(&mut client, project_params).await;
-    subscribe(&mut client, project.id, 0).await;
+    client.subscribe(0, Some(project.id)).await;
     client
         .call::<AgentStart>(start_params(project.id, "Tidy the build"))
         .await
         .unwrap();
-    let events = until(&mut client, updated_to(AgentStatus::Completed)).await;
+    let events = client.until(updated_to(AgentStatus::Completed)).await;
 
     let fallback = events.iter().find_map(|event| match &event.event {
         WispEvent::AgentAccountFallback {
@@ -1238,13 +1052,13 @@ async fn a_finished_run_is_reviewed_accepted_into_the_branch_and_then_closed() {
     let mut client = host.client().await;
     let project = create(&mut client, project_params).await;
     let repo = PathBuf::from(&project.repo_path);
-    subscribe(&mut client, project.id, 0).await;
+    client.subscribe(0, Some(project.id)).await;
     let params = start_params(project.id, "Rewrite the README");
     let run_id = params.run_id;
     let started = client.call::<AgentStart>(params).await.unwrap().run;
     let branch = started.branch.clone().unwrap();
     let worktree = PathBuf::from(started.worktree_path.clone().unwrap());
-    let events = until(&mut client, updated_to(AgentStatus::Completed)).await;
+    let events = client.until(updated_to(AgentStatus::Completed)).await;
     let WispEvent::AgentUpdated { state, .. } = &events.last().unwrap().event else {
         unreachable!()
     };
@@ -1292,7 +1106,7 @@ async fn a_finished_run_is_reviewed_accepted_into_the_branch_and_then_closed() {
         "",
         "and its branch"
     );
-    let events = until(&mut client, updated_to(AgentStatus::Accepted)).await;
+    let events = client.until(updated_to(AgentStatus::Accepted)).await;
     assert!(events.iter().any(|event| matches!(
         &event.event,
         WispEvent::AgentAccepted { run_id: id, merge } if *id == run_id && *merge == accepted.merge
@@ -1336,7 +1150,7 @@ async fn review_reads_commits_not_the_worktree_and_accept_waits_for_the_run_to_s
     let mut client = host.client().await;
     let project = create(&mut client, project_params(host.dir.path())).await;
     let repo = PathBuf::from(&project.repo_path);
-    subscribe(&mut client, project.id, 0).await;
+    client.subscribe(0, Some(project.id)).await;
     let params = start_params(project.id, "Link a secret");
     let run_id = params.run_id;
     let started = client.call::<AgentStart>(params).await.unwrap().run;
@@ -1351,14 +1165,12 @@ async fn review_reads_commits_not_the_worktree_and_accept_waits_for_the_run_to_s
         .await
         .unwrap();
     assert_eq!(requested.run.status, AgentStatus::Running);
-    until(
-        &mut client,
-        has_item(AgentOutputItem::Text {
+    client
+        .until(has_item(AgentOutputItem::Text {
             message_id: None,
             text: "Please also update the docs.".to_owned(),
-        }),
-    )
-    .await;
+        }))
+        .await;
 
     // The worker writes into its worktree while it runs: nothing is reviewable until wispd
     // commits, and accept waits for the run to stop.
@@ -1388,7 +1200,7 @@ async fn review_reads_commits_not_the_worktree_and_accept_waits_for_the_run_to_s
         .call::<AgentCancel>(AgentCancelParams { run_id })
         .await
         .unwrap();
-    until(&mut client, updated_to(AgentStatus::Cancelled)).await;
+    client.until(updated_to(AgentStatus::Cancelled)).await;
 
     let diff = client
         .call::<AgentDiff>(AgentDiffParams { run_id })

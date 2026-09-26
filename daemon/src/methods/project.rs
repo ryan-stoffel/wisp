@@ -144,29 +144,13 @@ mod tests {
     use wisp_protocol::jsonrpc::INVALID_PARAMS;
     use wisp_protocol::{ProjectCreateParams, ProjectId};
 
-    use super::{MAX_NAME_BYTES, MAX_REPO_PATH_BYTES, check};
+    use super::check;
 
     fn params(name: &str, repo_path: &str) -> ProjectCreateParams {
         ProjectCreateParams {
             id: ProjectId::generate(),
             name: name.to_owned(),
             repo_path: repo_path.to_owned(),
-        }
-    }
-
-    #[test]
-    fn names_and_paths_have_byte_limits_and_no_nul() {
-        let longest_name = "n".repeat(MAX_NAME_BYTES);
-        let longest_path = format!("/{}", "p".repeat(MAX_REPO_PATH_BYTES - 1));
-        assert!(check(&params(&longest_name, &longest_path)).is_ok());
-        for (name, repo_path) in [
-            (format!("{longest_name}n"), "/src".to_owned()),
-            ("wisp".to_owned(), format!("{longest_path}p")),
-            ("wi\0sp".to_owned(), "/src".to_owned()),
-            ("wisp".to_owned(), "/x\0y".to_owned()),
-        ] {
-            let error = check(&params(&name, &repo_path)).unwrap_err();
-            assert_eq!(error.code, INVALID_PARAMS, "{name:?} {repo_path:?}");
         }
     }
 

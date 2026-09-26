@@ -5,6 +5,7 @@ fn wispd(args: &[&str]) -> Output {
         .args(args)
         .env_remove("WISPD_LOG")
         .env_remove("WISPD_DATA_DIR")
+        .env_remove("WISPD_SERVICE_LABEL")
         .output()
         .expect("wispd should run")
 }
@@ -96,14 +97,12 @@ fn service_install_refuses_the_default_label_for_another_data_folder() {
         .tempdir_in("/tmp")
         .expect("create a temp dir under /tmp");
     let data_dir = temp.path().join("data");
-    let output = Command::new(env!("CARGO_BIN_EXE_wispd"))
-        .args(["service", "install", "--data-dir"])
-        .arg(&data_dir)
-        .env_remove("WISPD_LOG")
-        .env_remove("WISPD_DATA_DIR")
-        .env_remove("WISPD_SERVICE_LABEL")
-        .output()
-        .expect("wispd should run");
+    let output = wispd(&[
+        "service",
+        "install",
+        "--data-dir",
+        data_dir.to_str().expect("a UTF-8 temp path"),
+    ]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);

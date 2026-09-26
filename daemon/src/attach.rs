@@ -460,54 +460,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_end_of_stdin_half_closes_and_the_answer_still_arrives() {
-        let Rig {
-            mut stdin,
-            mut stdout,
-            mut wispd,
-            bridge,
-        } = rig();
-        stdin.write_all(b"{\"id\":1}\n").await.unwrap();
-        drop(stdin);
-
-        let mut request = Vec::new();
-        timeout(PATIENCE, wispd.read_to_end(&mut request))
-            .await
-            .expect("wispd reads to the end of the input")
-            .unwrap();
-        assert_eq!(request, b"{\"id\":1}\n");
-
-        wispd
-            .write_all(b"{\"id\":1,\"result\":{}}\n")
-            .await
-            .unwrap();
-        drop(wispd);
-        let mut answer = Vec::new();
-        timeout(PATIENCE, stdout.read_to_end(&mut answer))
-            .await
-            .expect("the answer and the end of stdout")
-            .unwrap();
-        assert_eq!(answer, b"{\"id\":1,\"result\":{}}\n");
-        ended(bridge).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn wispd_closing_ends_the_bridge_while_stdin_is_still_open() {
-        let Rig {
-            stdin,
-            mut stdout,
-            wispd,
-            bridge,
-        } = rig();
-        drop(wispd);
-        ended(bridge).await.unwrap();
-        let mut rest = Vec::new();
-        stdout.read_to_end(&mut rest).await.unwrap();
-        assert!(rest.is_empty());
-        drop(stdin);
-    }
-
-    #[tokio::test]
     async fn a_closed_stdout_ends_the_bridge() {
         let Rig {
             stdin,

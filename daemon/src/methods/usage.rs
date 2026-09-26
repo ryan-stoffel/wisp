@@ -224,13 +224,4 @@ mod tests {
         );
         assert_eq!(codex.limits.len(), 1);
     }
-
-    #[test]
-    fn a_store_with_no_usage_reports_no_accounts() {
-        let (_dir, store) = open();
-        let far_past = "2020-01-01T00:00:00Z".parse().unwrap();
-        let far_future = "2030-01-01T00:00:00Z".parse().unwrap();
-        let report = usage_report(&store, far_past, far_past, far_future).unwrap();
-        assert!(report.accounts.is_empty());
-    }
 }

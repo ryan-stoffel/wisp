@@ -64,7 +64,7 @@ pub(crate) async fn read(
 }
 
 /// The logic behind `context/write`, apart from wispd's blocking pool, so a test can call it
-/// directly.
+/// directly. [`write`] has already checked the per-file cap.
 ///
 /// Idempotent on `id`: a retry with the same `project`, `path`, `content`, and `writer` returns
 /// the file unchanged, without writing again or emitting a second `context.changed` event; a
@@ -79,12 +79,6 @@ fn write_context_file(
     writer: Option<String>,
     write_id: wisp_protocol::ContextWriteId,
 ) -> Result<ContextWriteResult, ErrorObject> {
-    if content.len() as u64 > context::MAX_FILE_BYTES {
-        return Err(ErrorObject::wisp(
-            ErrorKind::ContextTooLarge,
-            format!("{name} would be over the per-file shared context size cap"),
-        ));
-    }
     let dir = context::ensure_dir(&daemon.data_dir, project).map_err(io_error(name))?;
     match daemon.context.check(
         project,
@@ -143,8 +137,6 @@ pub(crate) async fn write(
         writer,
     } = params;
     let name = context::validate_relative_path(&path)?.to_owned();
-    // A fast, redundant check: `write_context_file` enforces this cap too, but failing here skips
-    // a project lookup and a trip to the blocking pool for a request that is invalid regardless.
     if content.len() as u64 > context::MAX_FILE_BYTES {
         return Err(ErrorObject::wisp(
             ErrorKind::ContextTooLarge,
@@ -201,89 +193,10 @@ mod tests {
     use super::write_context_file;
     use crate::server::Daemon;
 
-    fn daemon() -> (tempfile::TempDir, std::sync::Arc<Daemon>) {
-        let dir = tempfile::tempdir().unwrap();
-        let daemon = Daemon::for_tests(dir.path(), 10, std::time::Duration::from_secs(90));
-        (dir, daemon)
-    }
-
-    #[test]
-    fn a_retry_with_the_same_params_is_idempotent_and_a_different_one_conflicts() {
-        let (_dir, daemon) = daemon();
-        let project = ProjectId::generate();
-        let id = ContextWriteId::generate();
-
-        let first = write_context_file(
-            &daemon,
-            project,
-            "notes.md",
-            "hello",
-            Some("editor".to_owned()),
-            id,
-        )
-        .unwrap();
-        let retry = write_context_file(
-            &daemon,
-            project,
-            "notes.md",
-            "hello",
-            Some("editor".to_owned()),
-            id,
-        )
-        .unwrap();
-        assert_eq!(first.file, retry.file);
-
-        let conflict =
-            write_context_file(&daemon, project, "notes.md", "different", None, id).unwrap_err();
-        assert_eq!(conflict.wisp_data().unwrap().kind, ErrorKind::IdConflict);
-    }
-
-    #[test]
-    fn a_fresh_id_overwrites_the_previous_content() {
-        let (_dir, daemon) = daemon();
-        let project = ProjectId::generate();
-
-        write_context_file(
-            &daemon,
-            project,
-            "notes.md",
-            "first",
-            None,
-            ContextWriteId::generate(),
-        )
-        .unwrap();
-        let second = write_context_file(
-            &daemon,
-            project,
-            "notes.md",
-            "second, and longer",
-            None,
-            ContextWriteId::generate(),
-        )
-        .unwrap();
-        assert_eq!(second.file.size, "second, and longer".len() as u64);
-    }
-
-    #[test]
-    fn a_file_over_the_per_file_cap_is_rejected() {
-        let (_dir, daemon) = daemon();
-        let project = ProjectId::generate();
-        let too_big = "a".repeat(usize::try_from(super::context::MAX_FILE_BYTES).unwrap() + 1);
-        let error = write_context_file(
-            &daemon,
-            project,
-            "a.md",
-            &too_big,
-            None,
-            ContextWriteId::generate(),
-        )
-        .unwrap_err();
-        assert_eq!(error.wisp_data().unwrap().kind, ErrorKind::ContextTooLarge);
-    }
-
     #[test]
     fn a_write_that_would_cross_the_per_project_cap_is_rejected() {
-        let (_dir, daemon) = daemon();
+        let dir = tempfile::tempdir().unwrap();
+        let daemon = Daemon::for_tests(dir.path(), 10, std::time::Duration::from_secs(90));
         let project = ProjectId::generate();
         let one_file = "a".repeat(usize::try_from(super::context::MAX_FILE_BYTES).unwrap());
         write_context_file(

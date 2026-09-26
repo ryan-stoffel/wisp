@@ -1,7 +1,7 @@
 //! One client connection: reading requests, answering them, and delivering events (0007).
 //!
 //! The reader parses frames and starts a task for each request, with at most
-//! `max_requests_in_flight` at a time. Beyond that it stops reading, which pushes back on the
+//! `MAX_REQUESTS_IN_FLIGHT` at a time. Beyond that it stops reading, which pushes back on the
 //! client. Every reply goes through a bounded queue to the writer. The writer empties that queue
 //! before it writes any event, and it takes events from the event log through each
 //! subscription's cursor rather than from a queue of its own, so a subscriber that lags reads from
@@ -40,10 +40,16 @@ use wisp_protocol::{ErrorKind, EventsEventParams};
 
 use super::Daemon;
 use crate::event_log::EventLog;
-use crate::logging::{untrusted, untrusted_id};
+use crate::logging::{Untrusted, UntrustedId};
 use crate::methods::{self, Context, Cursors, Reply, Session};
 
 type InFlight = Arc<Mutex<HashMap<RequestId, CancellationToken>>>;
+
+/// Requests one connection may have in flight before the server stops reading from it.
+const MAX_REQUESTS_IN_FLIGHT: usize = 32;
+
+/// Replies one connection may have waiting to be written.
+const OUTBOUND_QUEUE: usize = 32;
 
 /// Serves one connection until it closes. `closing` closes it at once; `stop_reading` stops
 /// reading and closes it after the requests already read are answered.
@@ -56,10 +62,10 @@ pub(crate) async fn serve<S>(
     S: AsyncRead + AsyncWrite + Send + 'static,
 {
     let (read, write) = tokio::io::split(stream);
-    let (replies, queue) = mpsc::channel(daemon.limits.outbound_queue);
+    let (replies, queue) = mpsc::channel(OUTBOUND_QUEUE);
     let reader = Reader {
         frames: FramedRead::new(read, FrameCodec::new()),
-        permits: Arc::new(Semaphore::new(daemon.limits.max_requests_in_flight)),
+        permits: Arc::new(Semaphore::new(MAX_REQUESTS_IN_FLIGHT)),
         daemon: Arc::clone(&daemon),
         replies,
         session: None,
@@ -69,7 +75,7 @@ pub(crate) async fn serve<S>(
         closing: closing.clone(),
     };
     let stall = Stall {
-        timeout: daemon.limits.idle_timeout,
+        timeout: daemon.idle_timeout,
         stopping: stop_reading.clone(),
     };
     let writer = run_writer(
@@ -83,7 +89,7 @@ pub(crate) async fn serve<S>(
     let (session, ()) = tokio::join!(reader.run(), writer);
     if let Some(session) = session {
         info!(
-            client = ?untrusted(&session.client.name),
+            client = ?Untrusted(&session.client.name),
             protocol = session.protocol,
             "disconnected"
         );
@@ -126,7 +132,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static> Reader<S> {
     }
 
     async fn read(&mut self) -> End {
-        let idle = self.daemon.limits.idle_timeout;
+        let idle = self.daemon.idle_timeout;
         let mut deadline = Instant::now() + idle;
         loop {
             let next = tokio::select! {
@@ -191,14 +197,14 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static> Reader<S> {
             }
             Ok(Message::Response(response)) => {
                 debug!(
-                    id = ?response.id.as_ref().map(untrusted_id),
+                    id = ?response.id.as_ref().map(UntrustedId),
                     "ignored a response; wispd sends no requests"
                 );
                 true
             }
             Err(malformed) => {
                 debug!(
-                    error = ?untrusted(&malformed.error.message),
+                    error = ?Untrusted(&malformed.error.message),
                     "answered a malformed message"
                 );
                 self.reply(Reply::Response(malformed.into_response())).await
@@ -236,8 +242,8 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static> Reader<S> {
         let replies = self.replies.clone();
         let span = debug_span!(
             "request",
-            id = ?untrusted_id(&request.id),
-            method = ?untrusted(&request.method)
+            id = ?UntrustedId(&request.id),
+            method = ?Untrusted(&request.method)
         );
         self.handlers.spawn(
             async move {
@@ -286,7 +292,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static> Reader<S> {
     fn notification(&self, notification: &Notification) {
         if notification.method != CancelRequest::NAME {
             debug!(
-                method = ?untrusted(&notification.method),
+                method = ?Untrusted(&notification.method),
                 "ignored a notification"
             );
             return;
@@ -294,17 +300,17 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static> Reader<S> {
         match notification.params::<<CancelRequest as NotificationMethod>::Params>() {
             Ok(CancelRequestParams { id }) => {
                 if let Some(cancel) = lock(&self.in_flight).get(&id) {
-                    debug!(id = ?untrusted_id(&id), "cancelling a request");
+                    debug!(id = ?UntrustedId(&id), "cancelling a request");
                     cancel.cancel();
                 } else {
                     debug!(
-                        id = ?untrusted_id(&id),
+                        id = ?UntrustedId(&id),
                         "ignored a cancel for a request that is not in flight"
                     );
                 }
             }
             Err(error) => debug!(
-                error = ?untrusted(&error.message),
+                error = ?Untrusted(&error.message),
                 "ignored a malformed $/cancelRequest"
             ),
         }
@@ -471,7 +477,7 @@ async fn send_response<W: AsyncWrite + Unpin>(
     match sink.feed(&response).await {
         Err(FrameError::TooLarge { max_frame_bytes }) => {
             warn!(
-                id = ?response.id.as_ref().map(untrusted_id),
+                id = ?response.id.as_ref().map(UntrustedId),
                 "a response was larger than the frame limit"
             );
             let error = ErrorObject::internal_error(format!(

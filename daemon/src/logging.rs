@@ -27,16 +27,7 @@ const MAX_LOGGED_CHARS: usize = 64;
 /// It is quoted and escaped, so a newline in it can't start a forged log line. Past 64
 /// characters it is cut, with its full length in bytes after it, so a huge value can't make a
 /// huge line.
-pub(crate) fn untrusted(text: &str) -> impl fmt::Debug + '_ {
-    Untrusted(text)
-}
-
-/// A request id from a client, ready for a log field with `?`, cut like [`untrusted`] text.
-pub(crate) fn untrusted_id(id: &RequestId) -> impl fmt::Debug + '_ {
-    UntrustedId(id)
-}
-
-struct Untrusted<'a>(&'a str);
+pub(crate) struct Untrusted<'a>(pub &'a str);
 
 impl fmt::Debug for Untrusted<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -47,7 +38,8 @@ impl fmt::Debug for Untrusted<'_> {
     }
 }
 
-struct UntrustedId<'a>(&'a RequestId);
+/// A request id from a client, ready for a log field with `?`, cut like [`Untrusted`] text.
+pub(crate) struct UntrustedId<'a>(pub &'a RequestId);
 
 impl fmt::Debug for UntrustedId<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -155,7 +147,7 @@ mod tests {
     use tracing::Level;
     use wisp_protocol::jsonrpc::RequestId;
 
-    use super::{LogFilter, untrusted, untrusted_id};
+    use super::{LogFilter, Untrusted, UntrustedId};
 
     fn allows(filter: &str, target: &str, level: Level) -> bool {
         filter
@@ -193,31 +185,22 @@ mod tests {
     }
 
     #[test]
-    fn client_text_is_escaped_so_it_cant_forge_a_line() {
-        let forged = "wisp\n2026-09-24T00:00:00.000000Z ERROR forged";
-        let logged = format!("{:?}", untrusted(forged));
-        assert!(!logged.contains('\n'), "{logged}");
-        assert!(logged.starts_with("\"wisp\\n2026"), "{logged}");
-        assert_eq!(format!("{:?}", untrusted("wisp")), "\"wisp\"");
-    }
-
-    #[test]
     fn long_client_text_is_cut_to_64_characters_and_its_length() {
         let huge = "\u{e9}".repeat(1_000_000);
-        let logged = format!("{:?}", untrusted(&huge));
+        let logged = format!("{:?}", Untrusted(&huge));
         assert_eq!(
             logged,
             format!("{:?}... (2000000 bytes)", "\u{e9}".repeat(64))
         );
         let exactly = "x".repeat(64);
-        assert_eq!(format!("{:?}", untrusted(&exactly)), format!("{exactly:?}"));
+        assert_eq!(format!("{:?}", Untrusted(&exactly)), format!("{exactly:?}"));
     }
 
     #[test]
     fn request_ids_are_logged_like_client_text() {
-        assert_eq!(format!("{:?}", untrusted_id(&RequestId::Number(-7))), "-7");
+        assert_eq!(format!("{:?}", UntrustedId(&RequestId::Number(-7))), "-7");
         let id = RequestId::String(format!("a\n{}", "b".repeat(100)));
-        let logged = format!("{:?}", untrusted_id(&id));
+        let logged = format!("{:?}", UntrustedId(&id));
         assert!(logged.starts_with("\"a\\nbbb"), "{logged}");
         assert!(logged.ends_with("... (102 bytes)"), "{logged}");
     }
