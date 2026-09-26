@@ -1,6 +1,6 @@
 # 0007: JSON-RPC over `wispd attach`, locally and over SSH
 
-- Status: accepted
+- Status: accepted; the `agents` capability's methods are partly superseded by [0014](0014-agent-runs.md), which renames `agent/stop` to `agent/cancel` and `agent/output` to `agent/events`, and adds `agent/send` from 0011
 - Date: 2026-09-24
 - Issue: #56
 
