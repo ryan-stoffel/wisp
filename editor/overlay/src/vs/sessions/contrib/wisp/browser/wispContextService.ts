@@ -84,7 +84,7 @@ export class WispContextService extends Disposable implements IWispContextServic
 
 	constructor(
 		@IWispdService private readonly wispdService: IWispdService,
-		@IWispProjectsService projectsService: IWispProjectsService,
+		@IWispProjectsService private readonly projectsService: IWispProjectsService,
 		@ILogService private readonly logService: ILogService,
 	) {
 		super();
@@ -183,9 +183,18 @@ export class WispContextService extends Disposable implements IWispContextServic
 		if (state.kind !== 'connected') {
 			return;
 		}
+		// A paused watch's project may no longer exist at all (#106's third review): reloading it here
+		// on every reconnect or host switch, the way an idle-or-failed watch for a still-current project
+		// needs, would ask wispd about a project it may since have dropped entirely. Only reload one
+		// this host's own list still has; the constructor's autorun is what resumes a paused watch once
+		// a project it names comes back, for the case where the list itself is what changes.
+		if (this.projectsService.state.get().kind !== 'ready') {
+			return;
+		}
+		const ids = new Set(this.projectsService.projects.get().map(project => project.id));
 		for (const [project, watch] of this.watches) {
 			const kind = watch.state.get().kind;
-			if (watch.watching && (kind === 'idle' || kind === 'failed')) {
+			if (watch.watching && ids.has(project) && (kind === 'idle' || kind === 'failed')) {
 				this.load(project, watch);
 			}
 		}
