@@ -1,0 +1,145 @@
+#!/usr/bin/env node
+'use strict';
+// #95's own check: `wispd attach` through a real `ssh localhost`, once scripts/ci/ssh-localhost has
+// set it up. Mirrors daemon/README.md's own "Testing attach over ssh on your Mac" recipe, but
+// checked instead of eyeballed: exactly one line on stdout, a JSON-RPC response with id 1, no
+// error, and result.protocol === 1; that ssh exits 0 once wispd has answered; and that `serve`
+// keeps running after the ssh session ends, then stops it.
+//
+// Skips (exit 0) wherever scripts/ci/ssh-localhost was skipped, unless WISP_E2E_REQUIRE_SSH=1
+// (ci.yml's e2e job sets it), in which case "not ready" is a failure instead, so a broken ssh
+// setup fails the build rather than silently dropping this coverage.
+
+const { execFileSync } = require('node:child_process');
+const { existsSync, mkdtempSync, readFileSync, rmSync } = require('node:fs');
+const { tmpdir } = require('node:os');
+const { join } = require('node:path');
+
+/** Thrown by `fail`/`skip`: `main`'s own catch decides the message and exit code from these, once,
+ * after every `finally` in between (the temp data dir cleanup) has already run via normal
+ * exception propagation. Calling `process.exit` directly from inside a `try` would skip that. */
+class CheckFailed extends Error { }
+class CheckSkipped extends Error { }
+
+function fail(message) {
+  throw new CheckFailed(message);
+}
+
+function skip(message) {
+  throw new CheckSkipped(message);
+}
+
+function readStatus(path) {
+  const entries = {};
+  let text;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch {
+    return entries;
+  }
+  for (const line of text.split('\n')) {
+    const equals = line.indexOf('=');
+    if (equals === -1) {
+      continue;
+    }
+    entries[line.slice(0, equals).trim()] = line.slice(equals + 1).trim();
+  }
+  return entries;
+}
+
+async function main() {
+  const [, , statusFile, wispd] = process.argv;
+  if (!statusFile || !wispd) {
+    fail('usage: check-ssh-attach <status-file> <wispd-binary>');
+  }
+
+  const status = readStatus(statusFile);
+  const requireSsh = process.env.WISP_E2E_REQUIRE_SSH === '1';
+  if (status.WISP_E2E_SSH_READY !== 'true') {
+    const reason = status.WISP_E2E_SSH_REASON || 'ssh to localhost is not ready (see #95)';
+    if (requireSsh) {
+      fail(`WISP_E2E_REQUIRE_SSH=1 but ${reason}`);
+    }
+    skip(reason);
+  }
+
+  if (!existsSync(wispd)) {
+    fail(`${wispd} is not an executable file`);
+  }
+
+  const dataDir = mkdtempSync(join(tmpdir(), 'wisp-e2e-ssh-attach-'));
+  try {
+    const request = `${JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocol: { min: 1, max: 1 }, client: { name: 'ci-ssh-attach', version: '0' }, capabilities: {} },
+    })}\n`;
+
+    let stdout;
+    try {
+      stdout = execFileSync(
+        'ssh',
+        ['-T', '-o', 'BatchMode=yes', '-o', 'ControlPath=none', '--', 'localhost', `WISPD_DATA_DIR='${dataDir}' '${wispd}' attach`],
+        { input: request, timeout: 60_000, encoding: 'utf8' },
+      );
+    } catch (error) {
+      fail(`ssh failed or timed out (60s): ${error.message}`);
+    }
+
+    // "stdout holds nothing else" (#95): exactly one line, once the single trailing newline (attach
+    // writes one line per NDJSON message, decision record 0007) is accounted for.
+    if (!stdout.endsWith('\n') || stdout.slice(0, -1).includes('\n')) {
+      fail(`expected exactly one line on stdout, got: ${JSON.stringify(stdout)}`);
+    }
+    const line = stdout.slice(0, -1);
+    console.log(`check-ssh-attach: response: ${line}`);
+
+    let response;
+    try {
+      response = JSON.parse(line);
+    } catch {
+      fail(`stdout is not valid JSON: ${line}`);
+    }
+    if (response.jsonrpc !== '2.0' || response.id !== 1 || response.error !== undefined || response.result?.protocol !== 1) {
+      fail(`expected a successful initialize response with protocol 1, got: ${line}`);
+    }
+
+    const lockFile = join(dataDir, 'wispd.lock');
+    if (!existsSync(lockFile)) {
+      fail(`no ${lockFile}; wispd never started serve`);
+    }
+    const lockContent = readFileSync(lockFile, 'utf8');
+    const pid = Number.parseInt(lockContent.trim(), 10);
+    // The same sanity check readWispdPid (ci/screenshots/src/harness.ts) applies: a lock holding
+    // 0, a negative number, or something unparseable must never be handed to process.kill, whose
+    // pid 0 (or a negative pid) targets a whole process group rather than one process.
+    if (!Number.isSafeInteger(pid) || pid <= 1) {
+      fail(`${lockFile} does not hold a usable pid: ${JSON.stringify(lockContent)}`);
+    }
+    try {
+      process.kill(pid, 0);
+    } catch {
+      fail(`serve (pid ${pid}) was not still running after the ssh session ended`);
+    }
+    process.kill(pid, 'SIGTERM');
+
+    console.log(`check-ssh-attach: ok (serve pid ${pid} was running after ssh closed, then stopped)`);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+}
+
+main().catch((error) => {
+  if (error instanceof CheckSkipped) {
+    process.stdout.write(`check-ssh-attach: skipping: ${error.message}\n`);
+    process.exitCode = 0;
+    return;
+  }
+  if (error instanceof CheckFailed) {
+    process.stderr.write(`check-ssh-attach: ${error.message}\n`);
+    process.exitCode = 1;
+    return;
+  }
+  throw error;
+});
