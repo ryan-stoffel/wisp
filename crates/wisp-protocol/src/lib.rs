@@ -43,6 +43,7 @@ mod id;
 pub mod jsonrpc;
 pub mod methods;
 mod project;
+mod thread;
 pub mod typescript;
 mod usage;
 
@@ -87,6 +88,11 @@ pub use id::InvalidId;
 pub use project::{
     Project, ProjectCreateParams, ProjectCreateResult, ProjectId, ProjectListParams,
     ProjectListResult,
+};
+pub use thread::{
+    Repo, RepoAddParams, RepoAddResult, RepoId, Thread, ThreadArchiveParams, ThreadArchiveResult,
+    ThreadDeleteParams, ThreadDeleteResult, ThreadListParams, ThreadListResult, ThreadStartParams,
+    ThreadStartResult,
 };
 pub use usage::{AccountUsage, UsageGetParams, UsageGetResult, UsageLimitWindow, UsagePeriod};
 

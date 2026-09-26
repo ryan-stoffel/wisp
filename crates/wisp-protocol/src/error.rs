@@ -49,6 +49,13 @@ pub enum ErrorKind {
     /// wispd could not create the run's worktree, for example because the project's repository
     /// has uncommitted changes. The message says what to do.
     WorktreeFailed,
+    /// No repo entry has the given id (#110).
+    RepoNotFound,
+    /// No normal thread has the given run id (#110).
+    ThreadNotFound,
+    /// The run's CLI is running, so wispd won't do what was asked, such as deleting its thread
+    /// (#110). Cancel it first.
+    RunActive,
     /// A kind this version does not know yet.
     #[serde(other)]
     #[ts(skip)]
@@ -148,6 +155,9 @@ mod tests {
             (ErrorKind::RunNotResumable, "runNotResumable"),
             (ErrorKind::WorkerUnavailable, "workerUnavailable"),
             (ErrorKind::WorktreeFailed, "worktreeFailed"),
+            (ErrorKind::RepoNotFound, "repoNotFound"),
+            (ErrorKind::ThreadNotFound, "threadNotFound"),
+            (ErrorKind::RunActive, "runActive"),
         ] {
             assert_eq!(serde_json::to_value(kind).unwrap(), json!(name));
             assert_eq!(
