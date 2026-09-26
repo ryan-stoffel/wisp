@@ -441,9 +441,9 @@ fn a_version_1_database_migrates_and_keeps_its_projects() {
         })
         .expect("read schema version");
     assert_eq!(
-        version, 8,
+        version, 7,
         "migrations 3 (accounts, #117), 4 (usage, #120), 5 (worktrees, #154), 6 (role \
-         defaults, #119), 7 (runs and events, #156), and 8 (event pruning index, #187) also apply"
+         defaults, #119), and 7 (runs and events, #156) also apply"
     );
     let account_columns: Vec<String> = conn
         .prepare("SELECT name FROM pragma_table_info('accounts')")
@@ -532,9 +532,9 @@ fn a_version_3_database_from_develop_migrates_to_usage_tables_and_keeps_its_acco
         })
         .expect("read schema version");
     assert_eq!(
-        version, 8,
-        "migrations 5 (worktrees, #154), 6 (role defaults, #119), 7 (runs and events, #156), \
-         and 8 (event pruning index, #187) also apply"
+        version, 7,
+        "migrations 5 (worktrees, #154), 6 (role defaults, #119), and 7 (runs and events, \
+         #156) also apply"
     );
 }
 
@@ -771,7 +771,7 @@ fn pruning_host_events_keeps_the_newest_and_leaves_run_events_alone() {
     let deleted = store.prune_host_events(1).expect("prune");
     assert_eq!(deleted, 2, "keeps only the newest of the 3 host events");
 
-    let remaining = store.latest_events(usize::MAX).expect("latest");
+    let remaining = store.latest_events(usize::MAX, usize::MAX).expect("latest");
     let seqs: Vec<u64> = remaining.iter().map(|event| event.seq).collect();
     assert_eq!(
         seqs,

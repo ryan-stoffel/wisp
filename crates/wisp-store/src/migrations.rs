@@ -162,14 +162,6 @@ const MIGRATIONS: &[Migration] = &[
         );
         CREATE INDEX events_run ON events (run_id, seq);",
     },
-    // Compacting the event log (#187): host and project events (`run_id IS NULL`, such as
-    // `project.created` and `context.changed`) are pruned to the newest `host_event_retention`,
-    // keeping the table bounded. This partial index keeps that prune's DELETE cheap; agent run
-    // events are never selected by it and stay untouched.
-    Migration {
-        version: 8,
-        sql: "CREATE INDEX events_host ON events (seq) WHERE run_id IS NULL;",
-    },
 ];
 
 /// Bootstraps the `schema_version` table and applies any migration whose

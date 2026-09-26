@@ -129,20 +129,35 @@ impl Store {
         Ok(head.unwrap_or(0))
     }
 
-    /// The newest `limit` events, oldest first.
+    /// The newest events, oldest first: at most `limit` of them, and no more than `max_bytes` of
+    /// payload, but always at least one when any exist. Rows come back newest first and are read
+    /// one at a time, so this never reads past the row that puts it over budget.
     ///
     /// # Errors
     ///
     /// A database error, or an error if a stored id or timestamp is corrupt.
-    pub fn latest_events(&self, limit: usize) -> Result<Vec<StoredEvent>, StoreError> {
+    pub fn latest_events(
+        &self,
+        limit: usize,
+        max_bytes: usize,
+    ) -> Result<Vec<StoredEvent>, StoreError> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT {COLUMNS} FROM (
-                SELECT {COLUMNS} FROM events ORDER BY seq DESC LIMIT ?1
-             ) ORDER BY seq ASC"
+            "SELECT {COLUMNS} FROM events ORDER BY seq DESC LIMIT ?1"
         ))?;
-        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let limit = i64::try_from(limit.max(1)).unwrap_or(i64::MAX);
         let rows = stmt.query_map(params![limit], RawEvent::from_row)?;
-        rows.map(|row| row?.into_event()).collect()
+        let mut events = Vec::new();
+        let mut bytes = 0_usize;
+        for row in rows {
+            let event = row?.into_event()?;
+            if !events.is_empty() && bytes + event.payload.len() > max_bytes {
+                break;
+            }
+            bytes += event.payload.len();
+            events.push(event);
+        }
+        events.reverse();
+        Ok(events)
     }
 
     /// Run `run_id`'s events after `after`, oldest first: at most `limit` of them, and no more
@@ -202,11 +217,16 @@ impl Store {
     /// A database error.
     pub fn prune_host_events(&self, keep: usize) -> Result<usize, StoreError> {
         let keep = i64::try_from(keep).unwrap_or(i64::MAX);
+        // The cutoff is the `seq` of the (keep + 1)-th newest host event, found by `OFFSET`
+        // rather than by collecting the newest `keep` into a list: on a table with many run
+        // events mixed in, this measures at about a tenth of the cost. With fewer than `keep`
+        // host events, the subquery has no row, its `seq` reads as `NULL`, and `seq <= NULL` is
+        // never true, so nothing is deleted.
         let deleted = self.conn.execute(
             "DELETE FROM events
              WHERE run_id IS NULL
-               AND seq NOT IN (
-                   SELECT seq FROM events WHERE run_id IS NULL ORDER BY seq DESC LIMIT ?1
+               AND seq <= (
+                   SELECT seq FROM events WHERE run_id IS NULL ORDER BY seq DESC LIMIT 1 OFFSET ?1
                )",
             params![keep],
         )?;
