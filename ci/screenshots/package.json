@@ -2,7 +2,7 @@
   "name": "wisp-ci-screenshots",
   "version": "0.0.0",
   "private": true,
-  "description": "Drives the built app with Playwright and captures the views that screenshots.yml posts on each PR",
+  "description": "Drives the built app with Playwright and captures the scenes a pull request asks screenshots.yml for",
   "license": "Apache-2.0",
   "type": "module",
   "engines": {

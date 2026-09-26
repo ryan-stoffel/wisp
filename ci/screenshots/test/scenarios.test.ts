@@ -77,8 +77,8 @@ test('launch arguments are paths that exist inside the scenario directory', asyn
   }
 });
 
-test('the publish job imports only Node built-ins, so it runs without npm install', async () => {
-  const publishPath = ['publish.ts', 'artifact.ts', 'branch.ts', 'comment.ts', 'manifest.ts'];
+test('the publish job, and the request parser, import only Node built-ins, so they run without npm install', async () => {
+  const publishPath = ['publish.ts', 'artifact.ts', 'branch.ts', 'section.ts', 'manifest.ts', 'request.ts'];
   for (const file of publishPath) {
     const source = await readFile(join(import.meta.dirname, '..', 'src', file), 'utf8');
     for (const [, specifier = ''] of source.matchAll(/^import[^'"]*['"]([^'"]+)['"]/gm)) {

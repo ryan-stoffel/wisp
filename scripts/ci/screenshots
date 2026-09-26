@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 
+usage="usage: ${0##*/} [<out-dir>] --request '<mode>: <scene>[, <scene>...][; ...]'"
 root=$(cd "$(dirname "$0")/../.." && pwd)
 want=$(cut -d. -f1 "$root/.nvmrc")
 have=$(node -p 'process.versions.node.split(".")[0]')
@@ -9,7 +10,12 @@ if [ "$have" != "$want" ]; then
   exit 1
 fi
 
-out=${1:-$root/ci/screenshots/out}
+out=$root/ci/screenshots/out
+case ${1:-} in
+  '') echo "$usage" >&2; exit 1 ;;
+  -*) ;;
+  *) out=$1; shift ;;
+esac
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
 
@@ -18,4 +24,8 @@ set -x
 
 node --version
 npm ci --omit=dev --no-audit --no-fund
-node src/capture.ts "$out"
+# recordVideo encodes with Playwright's own ffmpeg build, which is a separate download.
+case "$*" in
+  *video:*) npx --no-install playwright-core install ffmpeg ;;
+esac
+node src/capture.ts "$out" "$@"
