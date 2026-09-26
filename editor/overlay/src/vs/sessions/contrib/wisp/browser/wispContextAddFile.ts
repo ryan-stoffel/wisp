@@ -16,9 +16,12 @@ import { IWispContextService } from './wispContextService.js';
 /**
  * Adds a shared context file (docs/design/agents-window.md, note 10; decision record 0005): asks
  * for its name, and either opens it if it already exists, or creates it empty with `context/write`
- * and opens it. wispd's protocol has no listing method that is cheaper than a read, and the
- * watched list can be stale (another agent's write, or a project nobody has watched yet), so this
- * always checks with `context/read` rather than trusting `IWispContextService.state`.
+ * and opens it. A name the watched `ready` list already has is known to exist without a round trip
+ * to wispd for its content; otherwise (the list isn't `ready` yet, or doesn't list the name) this
+ * confirms with `context/read`, since the list can be stale by the width of one write from another
+ * agent. That leaves a small window, between a `contextNotFound` answer and the write below, where
+ * such a write could still be overwritten; wispd has no create-only mode for `context/write` to
+ * close it.
  */
 export class WispContextAddFileFlow {
 
@@ -34,13 +37,15 @@ export class WispContextAddFileFlow {
 		if (name === undefined) {
 			return undefined;
 		}
-		let existing: ContextFile | undefined;
-		try {
-			existing = (await this.contextService.read(project, name)).file;
-		} catch (error) {
-			if (!(error instanceof WispdError && error.kind === 'contextNotFound')) {
-				this.notifyFailure(name, error);
-				return undefined;
+		let existing = this.knownExisting(project, name);
+		if (!existing) {
+			try {
+				existing = (await this.contextService.read(project, name)).file;
+			} catch (error) {
+				if (!(error instanceof WispdError && error.kind === 'contextNotFound')) {
+					this.notifyFailure(name, error);
+					return undefined;
+				}
 			}
 		}
 		if (existing) {
@@ -56,6 +61,12 @@ export class WispContextAddFileFlow {
 		}
 		await this.editorService.openEditor({ resource: toContextUri(project, name) });
 		return file;
+	}
+
+	/** A name the watched `ready` list already has, without a `context/read` round trip. */
+	private knownExisting(project: ProjectId, name: string): ContextFile | undefined {
+		const state = this.contextService.state(project).get();
+		return state.kind === 'ready' ? state.files.find(file => file.path === name) : undefined;
 	}
 
 	private notifyFailure(name: string, error: unknown): void {
