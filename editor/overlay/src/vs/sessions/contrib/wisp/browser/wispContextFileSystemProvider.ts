@@ -125,7 +125,10 @@ export class WispContextFileSystemProvider extends Disposable implements IFileSy
 
 	async readFile(resource: URI): Promise<Uint8Array> {
 		const parsed = parseContextUri(resource);
-		if (!parsed?.path) {
+		if (!parsed) {
+			throw createFileSystemProviderError('not a shared context resource', FileSystemProviderErrorCode.FileNotFound);
+		}
+		if (!parsed.path) {
 			throw createFileSystemProviderError('shared context has no subdirectories', FileSystemProviderErrorCode.FileIsADirectory);
 		}
 		try {
@@ -138,7 +141,10 @@ export class WispContextFileSystemProvider extends Disposable implements IFileSy
 
 	async writeFile(resource: URI, content: Uint8Array, _opts: IFileWriteOptions): Promise<void> {
 		const parsed = parseContextUri(resource);
-		if (!parsed?.path) {
+		if (!parsed) {
+			throw createFileSystemProviderError('not a shared context resource', FileSystemProviderErrorCode.FileNotFound);
+		}
+		if (!parsed.path) {
 			throw createFileSystemProviderError('shared context has no subdirectories', FileSystemProviderErrorCode.FileIsADirectory);
 		}
 		try {
