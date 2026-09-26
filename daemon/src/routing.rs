@@ -323,6 +323,10 @@ pub fn start(
         .map_err(|error| StartError::Invalid(error.to_string()))?;
     request.account = account.clone();
     request.policy = policy;
+    if policy == ToolPolicy::NoWrite {
+        // A no-write run never writes, so it has no worker sandbox (0013), whatever was asked.
+        request.sandbox = None;
+    }
     let started = backend.start(request.clone())?;
 
     let fallback_id = is_subscription
