@@ -594,7 +594,7 @@ suite('wisp: shared context', () => {
 			dispose();
 		});
 
-		test('shows the short message, a fixed two-line zone, and the full sentence as a hover title', () => {
+		test('shows the short message, a fixed three-line zone, and the full sentence as a hover title', () => {
 			const { editor, zones, dispose } = fakeEditor({ uri: toContextUri(ONE, 'notes.md') });
 			const banner = new WispContextEditorBanner(editor, fakeHostStatus('this Mac'));
 			const zone = [...zones.values()][0];
@@ -602,7 +602,7 @@ suite('wisp: shared context', () => {
 			// A fixed heightInLines, not a measured heightInPx (#106's third review): nothing about
 			// this depends on the browser laying anything out first, so it can never race the moment a
 			// newly added view zone is still hidden the way a dynamic, ResizeObserver-driven height did.
-			assert.strictEqual(zone.heightInLines, 2);
+			assert.strictEqual(zone.heightInLines, 3);
 			assert.strictEqual(zone.heightInPx, undefined);
 			assert.strictEqual(zone.domNode.textContent, wispContextBannerMessage('this Mac'));
 			assert.strictEqual(zone.domNode.getAttribute('title'), wispContextBannerTitle('this Mac'), 'the full sentence is reachable on hover even though the bar itself shows the shorter message');

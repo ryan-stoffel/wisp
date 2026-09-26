@@ -5,7 +5,7 @@
 /* The bar above a shared context file's content (note 10): theme tokens only. */
 
 /*
- * A fixed two-line zone (#106's third review): overflow stays hidden so a host name long enough to
+ * A fixed three-line zone (#106's third review): overflow stays hidden so a host name long enough to
  * need a third line is clipped instead of drawn over the file's own content below, the same way a
  * still-wrong dynamic guess would have been (the previous approach this replaced).
  */
