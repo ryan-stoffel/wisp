@@ -168,6 +168,16 @@ export const scenarios: readonly Scenario[] = [
     },
   },
   {
+    name: 'agents-window-accounts',
+    title: 'Customize, Accounts, with the bundled wispd and no CLIs installed',
+    async run({ window }) {
+      await connectedToThisMac(window);
+      await window.locator('.wisp-threads-action', { hasText: 'Customize' }).click();
+      await visible(window, '.wisp-accounts', '.wisp-accounts-section-title');
+      return screenshot(window);
+    },
+  },
+  {
     name: 'agents-window-project',
     title: 'A new project in the sidebar, with its Project tab',
     async run(context) {

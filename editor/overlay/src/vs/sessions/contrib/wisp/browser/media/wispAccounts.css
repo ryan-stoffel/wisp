@@ -1,0 +1,189 @@
+/*---------------------------------------------------------------------------------------------
+ *  wisp: not part of Code - OSS. Edit editor/overlay in the wisp repo, not this copy.
+ *--------------------------------------------------------------------------------------------*/
+
+/* The Accounts editor pane (Customize > Accounts, issue #121): theme and size tokens only. */
+
+.wisp-accounts {
+	box-sizing: border-box;
+	overflow-y: auto;
+	padding: var(--vscode-spacing-size160);
+	font-size: var(--vscode-fontSize-body1);
+}
+
+.wisp-accounts-title {
+	margin: 0 0 var(--vscode-spacing-size160);
+	font-size: var(--vscode-fontSize-heading2, 20px);
+	font-weight: var(--vscode-fontWeight-semiBold);
+}
+
+.wisp-accounts-section {
+	margin-bottom: var(--vscode-spacing-size240);
+}
+
+.wisp-accounts-section-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--vscode-spacing-size80);
+	margin-bottom: var(--vscode-spacing-size80);
+}
+
+.wisp-accounts-section-title {
+	margin: 0;
+	font-size: var(--vscode-fontSize-heading3, 16px);
+	font-weight: var(--vscode-fontWeight-semiBold);
+}
+
+.wisp-accounts-icon-button,
+.wisp-accounts-link-button {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size40);
+	padding: var(--vscode-spacing-size20) var(--vscode-spacing-size60);
+	border: none;
+	border-radius: var(--vscode-cornerRadius-small);
+	background: transparent;
+	color: var(--vscode-textLink-foreground);
+	font-size: var(--vscode-fontSize-label1);
+	cursor: pointer;
+}
+
+.wisp-accounts-icon-button {
+	color: var(--vscode-icon-foreground);
+}
+
+.wisp-accounts-icon-button:hover,
+.wisp-accounts-link-button:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.wisp-accounts-icon-button:focus-visible,
+.wisp-accounts-link-button:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.wisp-accounts-icon-button.disabled,
+.wisp-accounts-link-button.disabled {
+	color: var(--vscode-disabledForeground);
+	cursor: default;
+}
+
+.wisp-accounts-icon-button.disabled:hover,
+.wisp-accounts-link-button.disabled:hover {
+	background-color: transparent;
+}
+
+.wisp-accounts-list {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	border: 1px solid var(--vscode-widget-border, transparent);
+	border-radius: var(--vscode-cornerRadius-medium);
+}
+
+.wisp-accounts-empty {
+	padding: var(--vscode-spacing-size100);
+	color: var(--vscode-descriptionForeground);
+}
+
+.wisp-accounts-row,
+.wisp-accounts-usage-row {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size100);
+	padding: var(--vscode-spacing-size100);
+	border-bottom: 1px solid var(--vscode-widget-border, transparent);
+}
+
+.wisp-accounts-usage-row {
+	flex-direction: column;
+	align-items: stretch;
+}
+
+.wisp-accounts-row:last-child,
+.wisp-accounts-usage-row:last-child {
+	border-bottom: none;
+}
+
+.wisp-accounts-row-icon {
+	flex: none;
+	color: var(--vscode-descriptionForeground);
+}
+
+.wisp-accounts-row-text {
+	display: flex;
+	flex: 1 1 auto;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.wisp-accounts-row-title {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.wisp-accounts-row-detail {
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.wisp-accounts-usage-periods {
+	display: flex;
+	gap: var(--vscode-spacing-size240);
+	margin-top: var(--vscode-spacing-size40);
+}
+
+.wisp-accounts-period {
+	display: flex;
+	flex-direction: column;
+}
+
+.wisp-accounts-period-label {
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.wisp-accounts-limits {
+	margin: var(--vscode-spacing-size100) 0 0;
+	padding: 0;
+	list-style: none;
+}
+
+.wisp-accounts-limit {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	margin-top: var(--vscode-spacing-size60);
+}
+
+.wisp-accounts-limit-name {
+	flex: none;
+	min-width: 96px;
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.wisp-accounts-limit-bar {
+	position: relative;
+	flex: 1 1 auto;
+	height: 6px;
+	border-radius: var(--vscode-cornerRadius-small);
+	background-color: var(--vscode-widget-border, var(--vscode-descriptionForeground));
+	opacity: 0.3;
+}
+
+.wisp-accounts-limit-fill {
+	position: absolute;
+	inset: 0;
+	border-radius: var(--vscode-cornerRadius-small);
+	background-color: var(--vscode-charts-blue);
+	opacity: 1;
+}
+
+.wisp-accounts-limit-detail {
+	flex: none;
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+}
