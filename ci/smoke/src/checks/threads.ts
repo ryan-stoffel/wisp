@@ -6,7 +6,7 @@
 import { agentReply, chatShows, fakeClaudeEnv, sendMessage } from '../../../screenshots/src/agents.ts';
 import { launch, type LaunchOptions } from '../../../screenshots/src/harness.ts';
 import { createProject, projectName } from '../../../screenshots/src/projects.ts';
-import { openNewChat, repoThreadRow, sendFirstMessage, threadTask } from '../../../screenshots/src/threads.ts';
+import { openNewChat, repoThreadRow, sendFirstMessage, sessionsPart, threadTask } from '../../../screenshots/src/threads.ts';
 import { check } from '../check.ts';
 import { appLaunchOptions, ready } from '../harness.ts';
 
@@ -25,7 +25,7 @@ export const threadsChecks = [
 
       step = "New Chat opens the new-session composer in the project's repository";
       await openNewChat(window);
-      const picker = await window.locator('.part.sessions').last().textContent();
+      const picker = await sessionsPart(window).textContent();
       if (!picker?.includes(projectName)) {
         throw new Error(`the composer's workspace is not ${projectName}: ${JSON.stringify(picker?.slice(0, 400))}`);
       }

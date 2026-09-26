@@ -20,9 +20,14 @@ export async function openNewChat(window: Page): Promise<void> {
   await composer(window).waitFor({ state: 'visible', timeout: 30_000 });
 }
 
-/** The new-session composer's editor. */
+/** The Agents window's main part, which holds the new-session composer. */
+export function sessionsPart(window: Page) {
+  return window.locator('.part.sessionspart').last();
+}
+
+/** The new-session composer's input: upstream's `NewChatInput` editor. */
 export function composer(window: Page) {
-  return window.locator('.part.sessions .monaco-editor .view-lines').last();
+  return sessionsPart(window).locator('.sessions-chat-editor .monaco-editor').last();
 }
 
 /** A thread's row under its repository in the sidebar's Repositories section. */
