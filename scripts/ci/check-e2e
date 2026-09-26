@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+
+root=$(cd "$(dirname "$0")/../.." && pwd)
+want=$(cut -d. -f1 "$root/.nvmrc")
+have=$(node -p 'process.versions.node.split(".")[0]')
+if [ "$have" != "$want" ]; then
+  echo "${0##*/}: Node $want is required (.nvmrc pins $(cat "$root/.nvmrc")), but node is $(node --version)" >&2
+  exit 1
+fi
+
+set -x
+
+node --version
+# See scripts/ci/e2e: type-checking ci/e2e's src pulls in ci/screenshots' and ci/smoke's own
+# harness.ts by relative path, and ci/screenshots' "playwright-core" import resolves from its own
+# node_modules regardless of who imports it.
+(cd "$root/ci/screenshots" && npm ci --no-audit --no-fund)
+cd "$root/ci/e2e"
+npm ci --no-audit --no-fund
+npm run lint
+npm run typecheck
+npm test

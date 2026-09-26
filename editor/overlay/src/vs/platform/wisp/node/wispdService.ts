@@ -16,7 +16,7 @@ import { INativeHostService } from '../../native/common/native.js';
 import { IProductService } from '../../product/common/productService.js';
 import { IWispdService, IWispdSubscribeOptions, WispdMethod, WispdState, WispdSubscriptionMessage } from '../common/wispd.js';
 import { IWispdTransportFactory } from '../common/wispdClient.js';
-import { WISP_HOST_LOCAL, WISP_HOST_SETTING, WISP_REMOTE_WISPD_PATH_SETTING } from '../common/wispdConfiguration.js';
+import { affectsWispdTarget, WISP_HOST_LOCAL, WISP_HOST_SETTING, WISP_REMOTE_WISPD_PATH_SETTING, wispdTarget } from '../common/wispdConfiguration.js';
 import { WispdHostConnection } from '../common/wispdHostConnection.js';
 import { WispRequests } from '../common/wispProtocol.js';
 import { DEFAULT_REMOTE_WISPD_CANDIDATES, WispdInvalidHostTransportFactory, WispdSshTransportFactory, validateRemoteWispdPath, validateSshDestination } from './wispdSshTransport.js';
@@ -111,12 +111,16 @@ export class WispdService extends Disposable implements IWispdService {
 		const logger = this._register(loggerService.createLogger(joinPath(environmentService.logsHome, 'wispd.log'), { id: 'wispd', name: 'wispd' }));
 		const executable = resolveWispdExecutable(process.env, environmentService.appRoot, environmentService.isBuilt);
 		this.connection = this._register(new WispdHostConnection(
-			() => createWispdTransportFactory(
-				configurationService.getValue(WISP_HOST_SETTING),
-				configurationService.getValue(WISP_REMOTE_WISPD_PATH_SETTING),
-				executable,
-				logger,
-			),
+			() => {
+				const host = configurationService.getValue(WISP_HOST_SETTING);
+				const remoteWispdPath = configurationService.getValue(WISP_REMOTE_WISPD_PATH_SETTING);
+				return {
+					factory: createWispdTransportFactory(host, remoteWispdPath, executable, logger),
+					target: wispdTarget(host, remoteWispdPath),
+				};
+			},
+			// This process sees settings.json change only through a file watcher, after the window that wrote it (#219).
+			() => configurationService.reloadConfiguration(),
 			{ client: { name: 'wisp', version: productService.version } },
 			logger,
 		));
@@ -124,7 +128,7 @@ export class WispdService extends Disposable implements IWispdService {
 
 		// The shared process outlives every window, so a new host applies without restarting Wisp.
 		this._register(configurationService.onDidChangeConfiguration(event => {
-			if (event.affectsConfiguration(WISP_HOST_SETTING) || event.affectsConfiguration(WISP_REMOTE_WISPD_PATH_SETTING)) {
+			if (affectsWispdTarget(event)) {
 				this.connection.update();
 			}
 		}));
@@ -132,17 +136,16 @@ export class WispdService extends Disposable implements IWispdService {
 		this._register(sharedProcessLifecycleService.onWillShutdown(() => this.dispose()));
 	}
 
-	async getState(): Promise<WispdState> {
-		this.connection.start();
-		return this.connection.state;
+	getState(target?: string): Promise<WispdState> {
+		return this.connection.getState(target);
 	}
 
 	async retry(): Promise<void> {
 		this.connection.retry();
 	}
 
-	request<M extends WispdMethod>(method: M, params: WispRequests[M]['params'], token?: CancellationToken): Promise<WispRequests[M]['result']> {
-		return this.connection.request(method, params, token);
+	request<M extends WispdMethod>(method: M, params: WispRequests[M]['params'], token?: CancellationToken, target?: string): Promise<WispRequests[M]['result']> {
+		return this.connection.request(method, params, token, target);
 	}
 
 	subscribe(options: IWispdSubscribeOptions): Event<WispdSubscriptionMessage> {
