@@ -8,6 +8,22 @@
 //! a resync. If the database can't be opened, the log runs in memory only, starting over with a
 //! new `logId` on every start, as it did in M1.
 //!
+//! The table is compacted on a retention policy (#187, decision 0016): an agent run's events stay
+//! as long as its run row does (nothing removes one yet, so in practice they are not pruned by
+//! this log), while host and project events with no `run_id` — `project.created`,
+//! `context.changed` — are pruned to the newest `host_retention` after each one is appended.
+//! `host_retention` is always at least `retention` (`EventLog::with` enforces it): a restart only
+//! ever reloads the newest `retention` events, and by pigeonhole every host or project event in
+//! that reload is among the newest `retention` host and project events too, so keeping at least
+//! that many never lets pruning remove one a reload still needs. A live subscriber is unaffected
+//! either way, since `events/subscribe`'s replay (`check`/`next`) only ever reads the in-memory
+//! window, never the database; pruning only changes what a later restart can reload, and the
+//! invariant keeps that reload gap-free rather than merely shorter. That in-memory window is
+//! itself bounded by both count (`retention`) and bytes (`max_bytes`), evicting from the front
+//! once either is exceeded — on every append, and once more on load in case a restart's reload
+//! didn't already fit — so a run with many large `agent.output` batches can't hold unbounded
+//! memory even right after a restart.
+//!
 //! Subscribers don't get their own queues. Each subscription is a cursor that reads the log (see
 //! `methods::events::Cursors`), so a slow subscriber costs nothing until it reads, and whoever
 //! appends never waits for one.
@@ -30,6 +46,8 @@ pub(crate) struct Entry {
     pub time: Timestamp,
     pub project: Option<ProjectId>,
     pub event: WispEvent,
+    /// The event's JSON size, for the in-memory replay window's byte bound.
+    bytes: usize,
 }
 
 /// Why the events after a `seq` can't be replayed.
@@ -47,12 +65,20 @@ pub(crate) enum Gone {
 pub(crate) struct EventLog {
     id: LogId,
     retention: usize,
+    /// The in-memory replay window's byte bound (#187): even within `retention`, evicts older
+    /// events once their JSON exceeds this many bytes.
+    max_bytes: usize,
+    /// How many of the newest host and project events (no `run_id`) the stored log keeps;
+    /// older ones are pruned after each one is appended. Irrelevant for a log with no database.
+    host_retention: usize,
     inner: Mutex<Inner>,
     head: watch::Sender<u64>,
 }
 
 struct Inner {
     events: VecDeque<Arc<Entry>>,
+    /// The sum of `events`' sizes, kept alongside for O(1) eviction decisions.
+    bytes: usize,
     /// The log's own connection to the store's database, or `None` for a log in memory only.
     db: Option<Store>,
 }
@@ -80,25 +106,60 @@ fn kind_of(event: &WispEvent) -> String {
         .unwrap_or_default()
 }
 
+/// Evicts from the front of `events` until it is within both `retention` and `max_bytes`,
+/// keeping `bytes` (the sum of what remains) in sync. Always leaves at least one event, so a
+/// single one over `max_bytes` on its own is never dropped outright. Shared by construction and
+/// by every append, so the bound holds the same way whichever put the log over it.
+fn evict(events: &mut VecDeque<Arc<Entry>>, bytes: &mut usize, retention: usize, max_bytes: usize) {
+    while events.len() > 1 && (events.len() > retention || *bytes > max_bytes) {
+        if let Some(evicted) = events.pop_front() {
+            *bytes = bytes.saturating_sub(evicted.bytes);
+        }
+    }
+}
+
 impl EventLog {
-    /// An empty log in memory only, which keeps the newest `retention` events.
+    /// An empty log in memory only, which keeps the newest `retention` events with no byte bound.
+    /// For tests that don't care about the byte bound or the store's own host-event pruning.
+    #[cfg(test)]
     pub fn new(retention: usize) -> Self {
-        Self::with(LogId::generate(), retention, VecDeque::new(), 0, None)
+        Self::new_bounded(retention, usize::MAX)
     }
 
-    /// The log stored in the database at `path`, with the newest `retention` events in memory.
-    /// Falls back to a log in memory only if the database can't be opened or read.
-    pub fn open(path: &Path, retention: usize) -> Self {
-        match Self::load(path, retention) {
+    /// An empty log in memory only, which keeps the newest `retention` events and evicts once
+    /// their JSON passes `max_bytes`, whichever comes first.
+    pub fn new_bounded(retention: usize, max_bytes: usize) -> Self {
+        Self::with(
+            LogId::generate(),
+            retention,
+            max_bytes,
+            usize::MAX,
+            VecDeque::new(),
+            0,
+            None,
+        )
+    }
+
+    /// The log stored in the database at `path`, with the newest `retention` events in memory
+    /// (evicting sooner if they pass `max_bytes`), and the newest `host_retention` host and
+    /// project events kept in the table. Falls back to a log in memory only if the database can't
+    /// be opened or read.
+    pub fn open(path: &Path, retention: usize, max_bytes: usize, host_retention: usize) -> Self {
+        match Self::load(path, retention, max_bytes, host_retention) {
             Ok(log) => log,
             Err(error) => {
                 error!(path = %path.display(), %error, "could not open the event log's database; keeping it in memory only");
-                Self::new(retention)
+                Self::new_bounded(retention, max_bytes)
             }
         }
     }
 
-    fn load(path: &Path, retention: usize) -> Result<Self, StoreError> {
+    fn load(
+        path: &Path,
+        retention: usize,
+        max_bytes: usize,
+        host_retention: usize,
+    ) -> Result<Self, StoreError> {
         let db = Store::open(path)?;
         db.relax_sync()?;
         let stored_id = db.event_log_id(LogId::generate().into())?;
@@ -108,25 +169,51 @@ impl EventLog {
         });
         let head = db.event_head()?;
         let events = db
-            .latest_events(retention.max(1))?
+            .latest_events(retention.max(1), max_bytes)?
             .into_iter()
             .map(|stored| Arc::new(entry(&stored)))
             .collect();
         info!(log_id = %id, head, "opened the event log");
-        Ok(Self::with(id, retention, events, head, Some(db)))
+        Ok(Self::with(
+            id,
+            retention,
+            max_bytes,
+            host_retention,
+            events,
+            head,
+            Some(db),
+        ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn with(
         id: LogId,
         retention: usize,
-        events: VecDeque<Arc<Entry>>,
+        max_bytes: usize,
+        host_retention: usize,
+        mut events: VecDeque<Arc<Entry>>,
         head: u64,
         db: Option<Store>,
     ) -> Self {
+        let retention = retention.max(1);
+        let max_bytes = max_bytes.max(1);
+        // A restart can only reload what's in the table already, so `latest_events` applies both
+        // bounds itself; this is a second, defensive pass in case `events` didn't (`new_bounded`
+        // starts empty, so it's a no-op there). `host_retention` must be at least `retention`: a
+        // reload only ever pulls the newest `retention` events, and every host or project event
+        // among them is, by pigeonhole, among the newest `retention` host and project events, so
+        // keeping at least that many host events never lets a restart's window skip one. A
+        // smaller `host_retention` could prune a host event that a reload still expects, leaving
+        // a hole `resyncRequired` would never notice (0016).
+        let host_retention = host_retention.max(retention);
+        let mut bytes = events.iter().map(|entry| entry.bytes).sum();
+        evict(&mut events, &mut bytes, retention, max_bytes);
         Self {
             id,
-            retention: retention.max(1),
-            inner: Mutex::new(Inner { events, db }),
+            retention,
+            max_bytes,
+            host_retention,
+            inner: Mutex::new(Inner { events, bytes, db }),
             head: watch::Sender::new(head),
         }
     }
@@ -150,14 +237,17 @@ impl EventLog {
     pub fn append(&self, time: Timestamp, project: Option<ProjectId>, event: WispEvent) -> u64 {
         let mut inner = self.inner();
         let seq = self.head() + 1;
+        let run_id = run_of(&event);
+        let payload = serde_json::to_string(&event).unwrap_or_default();
+        let bytes = payload.len();
         if let Some(db) = &inner.db {
             let stored = StoredEvent {
                 seq,
                 time,
                 project_id: project.map(Uuid::from),
-                run_id: run_of(&event).map(Uuid::from),
+                run_id: run_id.map(Uuid::from),
                 kind: kind_of(&event),
-                payload: serde_json::to_string(&event).unwrap_or_default(),
+                payload,
             };
             if let Err(error) = db.append_event(&stored) {
                 error!(seq, %error, "could not store an event; it is delivered but not kept");
@@ -166,6 +256,12 @@ impl EventLog {
                 if let Err(error) = db.reset_event_log_id() {
                     error!(%error, "could not mark the event log to start over");
                 }
+            } else if run_id.is_none() {
+                // Only a host or project event can grow past the retention this way (#187): a
+                // run's events stay until its run row is removed, which nothing does yet.
+                if let Err(error) = db.prune_host_events(self.host_retention) {
+                    error!(%error, "could not prune host and project events");
+                }
             }
         }
         inner.events.push_back(Arc::new(Entry {
@@ -173,10 +269,15 @@ impl EventLog {
             time,
             project,
             event,
+            bytes,
         }));
-        while inner.events.len() > self.retention {
-            inner.events.pop_front();
-        }
+        inner.bytes += bytes;
+        let Inner {
+            events: entries,
+            bytes: total_bytes,
+            ..
+        } = &mut *inner;
+        evict(entries, total_bytes, self.retention, self.max_bytes);
         self.head.send_replace(seq);
         seq
     }
@@ -273,13 +374,16 @@ fn entry(stored: &StoredEvent) -> Entry {
         project: stored
             .project_id
             .and_then(|id| ProjectId::try_from(id).ok()),
+        bytes: stored.payload.len(),
         event: serde_json::from_str(&stored.payload).unwrap_or(WispEvent::Unknown),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use wisp_protocol::{AgentOutcome, ProjectId, RunId, WispEvent};
+    use std::path::Path;
+
+    use wisp_protocol::{AgentOutcome, AgentOutputItem, ProjectId, RunId, WispEvent};
 
     use super::{EventLog, Gone};
 
@@ -292,6 +396,12 @@ mod tests {
             run_id,
             outcome: AgentOutcome::Cancelled,
         }
+    }
+
+    /// A stored log with no byte bound and no host-event pruning, for tests that only care about
+    /// `retention`.
+    fn open(path: &Path, retention: usize) -> EventLog {
+        EventLog::open(path, retention, usize::MAX, usize::MAX)
     }
 
     #[test]
@@ -350,14 +460,14 @@ mod tests {
         let path = dir.path().join("wispd.sqlite3");
         let project = ProjectId::generate();
         let run = RunId::generate();
-        let first = EventLog::open(&path, 2);
+        let first = open(&path, 2);
         append(&first, None);
         first.append(jiff::Timestamp::now(), Some(project), finished(run));
         append(&first, Some(project));
         let id = first.id();
         drop(first);
 
-        let reopened = EventLog::open(&path, 2);
+        let reopened = open(&path, 2);
         assert_eq!(reopened.id(), id, "the log did not start over");
         assert_eq!(reopened.head(), 3);
         assert_eq!(
@@ -386,7 +496,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("file");
         std::fs::write(&file, "").unwrap();
-        let log = EventLog::open(&file.join("nested.sqlite3"), 10);
+        let log = open(&file.join("nested.sqlite3"), 10);
         let run = RunId::generate();
         log.append(jiff::Timestamp::now(), None, finished(run));
         assert_eq!(log.head(), 1);
@@ -404,7 +514,7 @@ mod tests {
     fn replay_skips_nothing_across_a_gap_in_seq() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("wispd.sqlite3");
-        let first = EventLog::open(&path, 10);
+        let first = open(&path, 10);
         for _ in 0..4 {
             append(&first, None);
         }
@@ -415,7 +525,7 @@ mod tests {
         db.execute("DELETE FROM events WHERE seq = 2", []).unwrap();
         drop(db);
 
-        let reopened = EventLog::open(&path, 10);
+        let reopened = open(&path, 10);
         assert_eq!(reopened.id(), id);
         let mut delivered = Vec::new();
         let mut after = 0;
@@ -431,7 +541,7 @@ mod tests {
     fn a_failed_insert_gives_the_log_a_new_id_on_the_next_start() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("wispd.sqlite3");
-        let log = EventLog::open(&path, 10);
+        let log = open(&path, 10);
         append(&log, None);
         let id = log.id();
         // A row already holding the next `seq` makes the insert fail.
@@ -444,7 +554,7 @@ mod tests {
         drop(db);
         assert_eq!(append(&log, None), 2, "still delivered");
         drop(log);
-        assert_ne!(EventLog::open(&path, 10).id(), id);
+        assert_ne!(open(&path, 10).id(), id);
     }
 
     #[test]
@@ -455,5 +565,128 @@ mod tests {
         append(&log, None);
         assert!(watcher.has_changed().unwrap());
         assert_eq!(*watcher.borrow_and_update(), 1);
+    }
+
+    fn big_output(run_id: RunId, text: &str) -> WispEvent {
+        WispEvent::AgentOutput {
+            run_id,
+            items: vec![AgentOutputItem::TextDelta {
+                message_id: None,
+                text: text.to_owned(),
+            }],
+        }
+    }
+
+    #[test]
+    fn the_in_memory_window_evicts_on_bytes_before_it_would_on_count() {
+        let run = RunId::generate();
+        let one = serde_json::to_string(&big_output(run, &"a".repeat(80)))
+            .unwrap()
+            .len();
+        // Room for a little more than one event, so a second one evicts the first even though
+        // `retention` (1000) is nowhere close.
+        let log = EventLog::new_bounded(1000, one + 10);
+        log.append(
+            jiff::Timestamp::now(),
+            None,
+            big_output(run, &"a".repeat(80)),
+        );
+        log.append(
+            jiff::Timestamp::now(),
+            None,
+            big_output(run, &"b".repeat(80)),
+        );
+        log.append(
+            jiff::Timestamp::now(),
+            None,
+            big_output(run, &"c".repeat(80)),
+        );
+
+        assert_eq!(
+            log.check(0),
+            Err(Gone::Dropped),
+            "the byte bound evicted seq 1 well before the count bound would"
+        );
+        assert_eq!(log.check(2), Ok(()));
+        assert_eq!(log.next(2, None).unwrap().0.unwrap().seq, 3);
+    }
+
+    #[test]
+    fn host_retention_below_the_in_memory_retention_is_clamped_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wispd.sqlite3");
+        let run = RunId::generate();
+        // Ask for host_retention 1 with retention 3: without the clamp in `EventLog::with`,
+        // pruning would keep only the single newest host event, taking seq 3 and 4 down with
+        // seq 1 even though they're inside what a restart still reloads.
+        let log = EventLog::open(&path, 3, usize::MAX, 1);
+        append(&log, None); // seq 1: host
+        log.append(jiff::Timestamp::now(), None, finished(run)); // seq 2: run, never pruned
+        append(&log, None); // seq 3: host
+        append(&log, None); // seq 4: host
+        append(&log, None); // seq 5: host, old enough that pruning it is legitimate
+        let id = log.id();
+        drop(log);
+
+        let reopened = EventLog::open(&path, 3, usize::MAX, 1);
+        assert_eq!(reopened.id(), id, "the log did not start over");
+        assert_eq!(reopened.head(), 5);
+
+        // The clamp made the effective host_retention 3, so only seq 1 (older than every host
+        // event the newest-3 window could ever need) was pruned; seq 3 and 4 survived.
+        assert_eq!(
+            reopened.check(2),
+            Ok(()),
+            "no silent gap: everything the newest-3 window owes seq 2 is still there"
+        );
+        let mut seqs = Vec::new();
+        let mut after = 2;
+        while let (Some(entry), seq) = reopened.next(after, None).unwrap() {
+            seqs.push(entry.seq);
+            after = seq;
+        }
+        assert_eq!(seqs, [3, 4, 5], "no hole between the reloaded events");
+
+        // seq 1 is genuinely gone (it's outside the reloaded window entirely), so a client that
+        // saw it still correctly needs a resync.
+        assert_eq!(reopened.check(0), Err(Gone::Dropped));
+    }
+
+    #[test]
+    fn reopening_with_a_small_byte_bound_trims_the_reloaded_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wispd.sqlite3");
+        let run = RunId::generate();
+        let one = serde_json::to_string(&big_output(run, &"a".repeat(80)))
+            .unwrap()
+            .len();
+        let log = EventLog::open(&path, 1000, usize::MAX, 1000);
+        log.append(
+            jiff::Timestamp::now(),
+            None,
+            big_output(run, &"a".repeat(80)),
+        );
+        log.append(
+            jiff::Timestamp::now(),
+            None,
+            big_output(run, &"b".repeat(80)),
+        );
+        log.append(
+            jiff::Timestamp::now(),
+            None,
+            big_output(run, &"c".repeat(80)),
+        );
+        drop(log);
+
+        // `retention` (1000) is nowhere close to 3, so only the byte bound should trim this on
+        // reload, before any append ever runs against the reopened log.
+        let reopened = EventLog::open(&path, 1000, one + 10, 1000);
+        assert_eq!(
+            reopened.check(0),
+            Err(Gone::Dropped),
+            "the byte bound trimmed what was reloaded, not just what a later append would evict"
+        );
+        assert_eq!(reopened.check(2), Ok(()));
+        assert_eq!(reopened.next(2, None).unwrap().0.unwrap().seq, 3);
     }
 }
