@@ -35,6 +35,8 @@ export type LaunchOptions = NonNullable<Parameters<typeof _electron.launch>[0]>;
 
 export interface Session extends ScenarioContext {
   close(): Promise<void>;
+  /** The data folder of the wispd this session's app uses (`WISPD_DATA_DIR`), for a check that drives it too. */
+  readonly wispdDataDir: string;
 }
 
 export const TIMEOUT_MS = 60_000;
@@ -132,6 +134,7 @@ export async function launch(options: LaunchOptions, scenario: Pick<Scenario, 'a
       app: started,
       window,
       dir: files,
+      wispdDataDir,
       close,
       relaunch: async () => {
         await quit();

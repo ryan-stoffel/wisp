@@ -1,11 +1,17 @@
 #!/bin/sh
-# A fake `claude` CLI for the sign-in smoke check (#115). wispd's own detection (#114) runs
-# "claude auth status" to decide whether the CLI is installed and signed in; this always answers
-# signed in, so the Accounts view's Sign in action is enabled. The smoke check itself does not run
-# that command -- clicking Sign in runs "claude auth login" in an integrated terminal, and this
+# A fake `claude` CLI for the smoke checks. wispd's own detection (#114) runs "claude auth status"
+# to decide whether the CLI is installed and signed in, and "claude --version" for the version a
+# worker needs (0013); this always answers signed in, with a version new enough.
+#
+# Sign in (#115): clicking Sign in runs "claude auth login" in an integrated terminal, and this
 # script answers that by writing its own argv to $WISP_SIGNIN_PROOF_FILE, standing in for a
 # completed login. wisp never reads this file; only the smoke check does, to prove which command
 # the terminal ran.
+#
+# Agent review (#157): run as a worker ("claude -p ... --input-format stream-json"), it reads the
+# prompt from stdin, writes REVIEW.md in its working directory (the run's worktree), and answers
+# in Claude Code's stream-json format, as a real worker that edits one file would. wispd then
+# commits the worktree, which gives the review a diff.
 case "${1:-} ${2:-}" in
   "auth status")
     printf '{"loggedIn":true,"subscriptionType":"Test Plan"}'
@@ -17,7 +23,23 @@ case "${1:-} ${2:-}" in
     fi
     exit 0
     ;;
+  "--version "*)
+    printf '2.1.281 (Claude Code)\n'
+    exit 0
+    ;;
+  "-p "*)
+    ;;
   *)
     exit 1
     ;;
 esac
+
+IFS= read -r prompt || exit 0
+turn=$(printf '%s' "$prompt" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')
+session=5b1e3c9a-8f2d-4c6e-9a1b-3d7f0e2c4a68
+printf '# Review me\n\nWritten by the smoke test'"'"'s fake agent.\n' >REVIEW.md
+printf '{"type":"system","subtype":"init","cwd":"%s","session_id":"%s","tools":["Read","Edit","Write"],"mcp_servers":[],"model":"claude-smoke","permissionMode":"acceptEdits","apiKeySource":"none","claude_code_version":"2.1.281","uuid":"a0000000-0000-4000-8000-000000000001"}\n' "$PWD" "$session"
+printf '{"type":"assistant","message":{"id":"msg_smoke","type":"message","role":"assistant","model":"claude-smoke","content":[{"type":"text","text":"Added REVIEW.md."}],"stop_reason":null,"usage":{"input_tokens":1,"output_tokens":1}},"parent_tool_use_id":null,"session_id":"%s","uuid":"a0000000-0000-4000-8000-000000000002"}\n' "$session"
+printf '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"stop_reason":"end_turn","session_id":"%s","result":"Added REVIEW.md.","usage":{"input_tokens":1,"output_tokens":1},"user_message_uuids":["%s"],"uuid":"a0000000-0000-4000-8000-000000000003"}\n' "$session" "$turn"
+cat >/dev/null
+exit 0
