@@ -1,8 +1,8 @@
 # 0014: Agent runs in wispd
 
-- Status: accepted
+- Status: accepted; review and accept added by #157
 - Date: 2026-09-25
-- Issue: #156
+- Issue: #156, #157 (review and accept), #68 (what Accept does)
 
 ## Context
 
@@ -34,6 +34,21 @@ M3's done-when is one subagent that completes a task in a worktree and writes to
 - **One actor task per run** takes commands and backend events in one loop. It charges usage to the run's current account, which changes on `AccountFallback` (0012).
 - **When a CLI process ends,** wispd commits the worktree on the run's branch with `commit_all` (#166: pinned git folder, no hooks), whatever the outcome, and reports the commit's stats against the worktree's base. A failed commit fails the run with `commitFailed`.
 - **When wispd stops,** it cancels running CLIs and records their runs `interrupted`, without committing. **When wispd starts,** any run still `starting` or `running` (a crash) becomes `interrupted`. Both resume through `agent/send` by their session id, on the account the session ended on (after any fallback), not the worker role's current default; if that account is gone, or now runs on another backend, `agent/send` fails with `runNotResumable`.
+
+### Review and accept (#157, #68)
+
+Added by #157, behind a new `agentReview` capability. What a client reviews is exactly what Accept merges: the run's latest commit (`run.diff.commit`) against its worktree's base. The uncommitted edits of a running agent can't be reviewed; wispd commits them when its CLI ends.
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `agent/diff` | `{runId}` | `{base, head, files, stats, truncated}`: per file its status, stats, and a unified diff capped at 256 KiB, with 4 MiB in all and 3,000 files listed |
+| `agent/file` | `{runId, path, side: "base" \| "head"}` | `{commit, exists, size?, content?, tooLarge}`: base64 content, capped at 4 MiB |
+| `agent/accept` | `{runId, id, commit?}` | `{run, merge: {commit, into, how: fastForward \| merge \| upToDate}}` |
+| `agent/requestChanges` | `{runId, turnId, text}` | `{run}`, sent as `agent/send` sends a message |
+
+- **Reads** come from git's objects (`ls-tree` and `cat-file` on the commit), through #166's pinned and hardened worktree calls, and never from the worktree's files. So a symlink comes back as its target text and is never followed, and a path through a symlinked folder doesn't exist. `path` must be relative, with no empty, `.`, or `..` component, no backslash or NUL, and nothing under `.git`, and it is matched literally.
+- **Accept** (#68's default) merges the run's commit into the current branch of the project's checkout on the host, and never pushes. It refuses, with nothing changed (`mergeRefused`), when the run is running or has no commit, when HEAD is detached, when a merge, rebase, cherry-pick, revert, or am is in progress, when uncommitted changes (staged, unstaged, or untracked) touch a path the merge changes, or when `commit` isn't the run's latest commit. When the branch has moved on, `git merge-tree --write-tree` builds the merge in the object store, a conflict refuses with `mergeConflict` and names the files, and a clean result becomes an unsigned merge commit. The branch and working tree then move with `git merge --ff-only <result>`, which keeps unrelated uncommitted changes. Then wispd removes the worktree and branch, records the run `accepted`, and emits `agent.accepted {runId, merge}` and `agent.updated`. `id` makes a retry after a lost connection return the same answer, even after a restart. An accepted run fails `agent/diff`, `agent/file`, and `agent/send` with `runAccepted`.
+- **The user's own git setup** applies to Accept's git calls, which run in the user's checkout: global config, filters such as Git LFS's, merge drivers, and identity. Hooks are the exception, turned off with `core.hooksPath=/dev/null`. The merge brings in files the worker wrote, and `core.hooksPath` often names a tracked folder (husky), so a `post-merge` or `post-checkout` hook could be the worker's own code, run unsandboxed in wispd as soon as it lands (0013: review is the last gate). Someone who relies on a post-merge hook runs it themselves.
 
 ### The event log is stored
 

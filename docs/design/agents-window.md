@@ -48,7 +48,7 @@ Upstream's window as it is, with no Copilot, from the #100 experiment, is in [ag
 | 12 | Messaging a subagent directly | `interactivity: Full`; wispd's new `agent/send` | M3 | #105 |
 | 13 | Changes tab: the viewed agent's worktree | `IChat.changes`, and one changeset per worktree | M3 | #105 |
 | 14 | Diff review in the detail pane | Upstream's Changes editor in the single-pane detail layout | M3 | #105 |
-| 15 | Review bar: **Accept**, **Request changes** | Menu contributions on the changeset; #68 decides Accept | M3 | #105, #68 |
+| 15 | Review bar: **Accept**, **Request changes** | Menu contributions on the changeset, running `wisp.acceptAgentChanges` and `wisp.requestAgentChanges` (#157); Accept merges into the host's current branch (#68, 0014) | M3 | #105, #68 |
 | 16 | wisp's sidebar with no projects yet | wisp's sidebar view and the empty provider | M0 | #12 |
 | 17 | No host connected | A Custom View Grid view (`AbstractCustomView`) | M0 | #12 |
 | 18 | Wisp opens here at launch | The `startup:` patch | M0 | #103 |
