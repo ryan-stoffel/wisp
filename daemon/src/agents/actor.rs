@@ -137,7 +137,11 @@ impl Actor {
                 // event (#190 N6): while a CLI keeps its stream busy, that event branch is
                 // otherwise always ready, and `biased` would starve `agent/cancel` and the
                 // coalescing flush for as long as the flood lasts, rather than just until the
-                // next iteration.
+                // next iteration. Side effect (#190 review, non-blocking): a command can now run
+                // before a backend event still buffered ahead of it, so `agent/accept` can see a
+                // transient `mergeRefused` for a run whose CLI has already exited but whose
+                // `Finished` hasn't been drained yet. `send` already copes with the equivalent
+                // case (`SendError::Finished`); a caller of `accept` just retries.
                 biased;
                 () = shutdown.cancelled(), if !self.stopping => {
                     self.stopping = true;
@@ -403,6 +407,12 @@ impl Actor {
     /// Records that `turn_id` was sent with `text`, in memory and in the store, so a retry of
     /// `agent/send` stays idempotent across a wispd restart, not only across a resumed CLI
     /// process within the same wispd (#190).
+    /// Runs after the CLI has already accepted the turn (`live.run.send`'s `Ok`, or a successful
+    /// `launch` in `resume`), so a crash between the two makes a retried `agent/send` after a
+    /// restart send the message again: at-least-once, not exactly-once (#190 review non-blocking
+    /// note). That's the same failure mode #190 was fixing in the other direction (a restart
+    /// forgetting a turn was ever sent), and strictly better: a duplicate is visible in the
+    /// transcript, a lost retry silently drops the user's message.
     async fn record_turn(&mut self, turn_id: TurnId, text: String) {
         self.turns.insert(turn_id, text.clone());
         let (run_id, id) = (self.row.id, self.id);
@@ -886,53 +896,65 @@ mod tests {
         (row, worktree)
     }
 
-    /// #190 N6: `Actor::run`'s select order lets a queued `agent/cancel` through promptly even
-    /// while the backend keeps producing output, instead of only once its stream goes quiet. The
-    /// fake backend here never stops on its own, so under the old, event-first `biased` order
-    /// this would hang until the timeout; the fix answers within one loop iteration.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    /// #190 N6 / review item 5: `Actor::run`'s select order lets a queued `agent/cancel` through
+    /// promptly even while the backend keeps producing output, instead of only once its stream
+    /// goes quiet. Deterministic, on a `current_thread` runtime: the whole flood is buffered in
+    /// the channel *before* the actor's loop ever runs, so the event branch of its `select!` is
+    /// synchronously ready on every iteration without needing a producer task to keep pace with
+    /// the consumer — nothing here depends on real concurrency or timing. `Command::Cancel` is
+    /// likewise queued before the loop starts, so on its very first iteration both branches are
+    /// ready and only the `select!`'s order decides which one runs. Under the old, event-first
+    /// order this drains the whole flood — appending it as `agent.output` — before ever reaching
+    /// the command; confirmed by temporarily restoring that order and observing this test fail on
+    /// the `head()` assertion below, well past the timeout.
+    #[tokio::test]
     async fn a_cancel_is_answered_promptly_while_output_floods_in() {
+        const FLOOD: usize = 10_000;
         let dir = tempfile::tempdir().unwrap();
-        let daemon = Daemon::for_tests(dir.path(), 10_000, Duration::from_secs(90));
+        let daemon = Daemon::for_tests(dir.path(), 100_000, Duration::from_secs(90));
         let (row, worktree) = fake_row_and_worktree();
         let mut actor = Actor::new(Arc::clone(&daemon), row, Some(worktree), HashMap::new());
 
-        let (mut sink, events) = EventSink::channel(64, Vec::new());
+        let (mut sink, events) = EventSink::channel(FLOOD, Vec::new());
+        for _ in 0..FLOOD {
+            sink.emit(Event::Text {
+                message_id: None,
+                text: "x".repeat(16),
+            })
+            .await
+            .expect("the channel holds the whole flood");
+        }
         actor.live = Some(Live {
             run: Arc::new(NoopRun),
             events,
         });
 
-        let flood = tokio::spawn(async move {
-            loop {
-                let sent = sink
-                    .emit(Event::Text {
-                        message_id: None,
-                        text: "x".repeat(64),
-                    })
-                    .await;
-                if sent.is_err() {
-                    return;
-                }
-            }
-        });
-
         let (commands, receiver) = mpsc::channel(4);
-        let run_task = tokio::spawn(actor.run(receiver, CancellationToken::new()));
-
         let (reply, answer) = oneshot::channel();
         commands
             .send(Command::Cancel { reply })
             .await
             .expect("the actor's command channel is open");
+
+        let run_task = tokio::spawn(actor.run(receiver, CancellationToken::new()));
+
         tokio::time::timeout(Duration::from_secs(5), answer)
             .await
             .expect("a cancel command was never answered while output flooded in")
             .expect("the actor answered")
             .expect("cancelling a live run always succeeds");
 
-        flood.abort();
+        // Nothing but the one `Cancel` command has been processed: no event, and so nothing
+        // appended to the log. The old order would have drained (and appended) some or all of
+        // the 10,000-item flood by now.
+        assert_eq!(
+            daemon.log.head(),
+            0,
+            "the cancel was answered only after events were appended, not before"
+        );
+
+        drop(sink);
         drop(commands);
-        let _ = tokio::time::timeout(Duration::from_secs(1), run_task).await;
+        run_task.abort();
     }
 }
