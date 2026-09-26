@@ -78,7 +78,7 @@ suite('wisp: Agents window', () => {
 			return { ...context, view };
 		}
 
-		test('shows the actions, with New Chat and Customize disabled and no Automations', () => {
+		test('shows the actions, with New Chat disabled, Customize enabled, and no Automations', () => {
 			const { view } = renderSidebar();
 			const actions = query<HTMLElement>(view.element, '.wisp-threads-actions');
 			assert.strictEqual(actions.getAttribute('role'), 'group');
@@ -86,7 +86,7 @@ suite('wisp: Agents window', () => {
 			assert.deepStrictEqual(buttons.map(button => [button.textContent, button.getAttribute('aria-disabled')]), [
 				['New Chat', 'true'],
 				['Search', null],
-				['Customize', 'true'],
+				['Customize', null],
 			]);
 			assert.strictEqual(buttons[0].disabled, false, 'a disabled button would leave the tab order');
 			assert.strictEqual(buttons[0].getAttribute('aria-description'), 'Chats outside a project are not available yet.');
