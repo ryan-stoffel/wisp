@@ -1,7 +1,7 @@
 // The Agents window's host and project steps that several scenarios and smoke checks share: waiting for
 // the bundled wispd to connect, and creating a project the way a user does.
 import { execFile } from 'node:child_process';
-import { writeFile } from 'node:fs/promises';
+import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { ElectronApplication, Page } from 'playwright-core';
@@ -85,7 +85,44 @@ export async function createProject({ app, window, dir }: Pick<ScenarioContext, 
   }
   await name.press('Enter');
   await window.locator(projectRow).waitFor({ state: 'visible' });
-  await projectTab(window);
+  try {
+    await projectTab(window);
+  } catch (error) {
+    console.log(await projectTabDiagnostics(app, window));
+    throw error;
+  }
+}
+
+/**
+ * What the window and its logs say when the Project tab never shows a new project, for a flake
+ * that only a loaded runner hits (#183): where focus is, whether the row is selected, any
+ * notification, and the renderer's and wispd's recent log lines.
+ */
+async function projectTabDiagnostics(app: ElectronApplication, window: Page): Promise<string> {
+  const lines = ['Project tab diagnostics (#183):'];
+  try {
+    const dom = await window.evaluate(() => ({
+      focused: document.activeElement ? `${document.activeElement.tagName}.${document.activeElement.className} ${document.activeElement.getAttribute('aria-label') ?? ''}`.slice(0, 200) : null,
+      rows: [...document.querySelectorAll('.part.sidebar button.wisp-threads-row')].map((row) => `${row.getAttribute('aria-label') ?? ''}${row.classList.contains('selected') ? ' (selected)' : ''}`),
+      notifications: document.querySelector('.notifications-toasts')?.textContent.slice(0, 500) ?? null,
+      auxiliaryBar: document.querySelector('.part.auxiliarybar')?.textContent.slice(0, 200) ?? null,
+    }));
+    lines.push(JSON.stringify(dom));
+    // Code - OSS keeps a folder of logs per launch under the profile; the newest is this app's.
+    const userData = await app.evaluate((electron: unknown) => (electron as { app: { getPath(name: string): string } }).app.getPath('userData'));
+    const launches = (await readdir(join(userData, 'logs'))).sort();
+    const logs = join(userData, 'logs', launches[launches.length - 1] ?? '');
+    for (const file of (await readdir(logs, { recursive: true })).sort()) {
+      if (file.endsWith('renderer.log') || file === 'wispd.log' || file === 'sharedprocess.log') {
+        const text = await readFile(join(logs, file), 'utf8');
+        const kept = text.split('\n').filter((line) => file === 'wispd.log' || /\[(error|warning)\]|wisp|SessionsView/.test(line));
+        lines.push(`--- ${file}, last ${String(Math.min(kept.length, 40))} of ${String(kept.length)} lines kept`, ...kept.slice(-40));
+      }
+    }
+  } catch (error) {
+    lines.push(`(diagnostics failed: ${String(error)})`);
+  }
+  return lines.join('\n');
 }
 
 /** Waits for the Project tab to show the project, with the repository as its first fact. */

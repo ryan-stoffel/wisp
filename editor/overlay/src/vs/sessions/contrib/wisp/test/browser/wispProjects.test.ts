@@ -133,6 +133,48 @@ suite('wisp: projects', () => {
 			assert.strictEqual(created.id, TWO);
 			assert.deepStrictEqual(projects.projects.get().map(p => p.id), [ONE, TWO]);
 		});
+
+		test('a project created while project/list is on its way survives the older list (#183)', async () => {
+			const { wispd, projects, provider } = services();
+			const handler = wispd.handler!;
+			let answerList: (() => void) | undefined;
+			wispd.handler = (method, params) => method === 'project/list'
+				? new Promise(resolve => answerList = () => resolve({ projects: [project(ONE, 'billing')], seq: 5 }))
+				: handler(method, params);
+			const removed: string[] = [];
+			disposables.add(provider.onDidChangeSessions(e => removed.push(...e.removed.map(s => projectIdOf(s.resource) ?? ''))));
+			wispd.setState(connected());
+			await settle();
+			assert.strictEqual(projects.state.get().kind, 'loading');
+
+			await projects.create({ id: TWO, name: 'magic', repoPath: '/Users/ryan/src/magic' });
+			assert.ok(provider.getProjectSession(TWO), 'the new project has its session at once, so it can be opened');
+			answerList!();
+			await settle();
+			wispd.emit({ type: 'event', event: { seq: 6, time: '2026-09-25T00:00:00Z', event: { kind: 'project.created', project: project(TWO, 'magic', { repoPath: '/Users/ryan/src/magic' }) } } });
+
+			assert.deepStrictEqual(projects.projects.get().map(p => p.id), [ONE, TWO]);
+			assert.deepStrictEqual(removed, [], 'the open project\'s session is never removed');
+		});
+
+		test('a create answered after a resync began still adds its project', async () => {
+			const { wispd, projects, provider } = services();
+			wispd.setState(connected());
+			await settle();
+			const handler = wispd.handler!;
+			let answerCreate: (() => void) | undefined;
+			wispd.handler = (method, params) => method === 'project/create'
+				? new Promise(resolve => answerCreate = () => resolve({ project: project(TWO, 'magic') }))
+				: handler(method, params);
+			const created = projects.create({ id: TWO, name: 'magic', repoPath: '/Users/ryan/src/magic' });
+			await settle();
+			wispd.emit({ type: 'resync', reason: 'logIdChanged' });
+			await settle();
+			answerCreate!();
+			await created;
+			assert.deepStrictEqual(projects.projects.get().map(p => p.id), [ONE, TWO]);
+			assert.ok(provider.getProjectSession(TWO));
+		});
 	});
 
 	suite('provider', () => {
