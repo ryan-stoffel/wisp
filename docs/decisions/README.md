@@ -18,7 +18,7 @@ A decision that affects more than one issue gets a record here. Records supersed
 | [0012](0012-account-routing.md) | `AccountChoice` names a subscription by its backend or a key account by id; per-role defaults live in a `role_defaults` store table; a backend serves both credential kinds for its provider, so fallback never switches backends |
 | [0013](0013-worker-sandbox.md) | Workers run in their vendor's own OS sandbox: they write only their worktree, the shared context folder, and temp; their commands can't read a denylist of credential stores but do have network access; wispd commits. Claude workers use `--restricted` with Claude Code's Bash sandbox |
 | [0014](0014-agent-runs.md) | The `agents` capability is `agent/start`, `send`, `cancel`, `list`, and `events`; a run outlives its CLI processes, wispd commits it after each one, and it resumes by session after a restart; the event log is stored in SQLite; agents get no SSH session variables and a filled-in `PATH` |
-| [0015](0015-event-log-retention.md) | The stored event log prunes host and project events by count; a run's events stay until its run row does, which nothing removes yet (#207); the in-memory replay window is also bounded by bytes |
+| [0016](0016-event-log-retention.md) | The stored event log prunes host and project events by count; a run's events stay until its run row does, which nothing removes yet (#207); the in-memory replay window is also bounded by bytes |
 
 Numbers are assigned in order. Take the next free number when you start the record, add a row to this table in the same PR, and link the record from its issue.
 

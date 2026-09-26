@@ -8,7 +8,7 @@
 //! a resync. If the database can't be opened, the log runs in memory only, starting over with a
 //! new `logId` on every start, as it did in M1.
 //!
-//! The table is compacted on a retention policy (#187, decision 0015): an agent run's events stay
+//! The table is compacted on a retention policy (#187, decision 0016): an agent run's events stay
 //! as long as its run row does (nothing removes one yet, so in practice they are not pruned by
 //! this log), while host and project events with no `run_id` — `project.created`,
 //! `context.changed` — are pruned to the newest `host_retention` after each one is appended. The

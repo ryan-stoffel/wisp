@@ -1,4 +1,4 @@
-# 0015: Retention for the stored event log and its in-memory replay window
+# 0016: Retention for the stored event log and its in-memory replay window
 
 - Status: accepted
 - Date: 2026-09-25
