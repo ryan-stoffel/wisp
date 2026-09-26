@@ -4,7 +4,7 @@
 // plain `project/list`, without needing the old event log to have survived.
 import { check } from '../check.ts';
 import { TIMEOUT_MS, launchConnected, projectWorkspace, readWispdPid, ready, type Session } from '../harness.ts';
-import { projectRowSessions, waitForHostKind } from '../wispUi.ts';
+import { waitForHostKind, waitForProjectRowSession, waitForSingleProjectRow } from '../wispUi.ts';
 import { createLocalProject, stubFolderPicker } from '../wispProject.ts';
 
 export const projectPersistenceChecks = [
@@ -17,31 +17,14 @@ export const projectPersistenceChecks = [
 
       await stubFolderPicker(session.app, workspace.folder);
       await createLocalProject(session.window);
-
-      await session.window.waitForFunction(
-        () => document.querySelectorAll('.wisp-threads-rows button.wisp-threads-row').length > 0,
-        undefined,
-        { timeout: TIMEOUT_MS },
-      );
-      const created = await projectRowSessions(session.window);
-      if (created.length !== 1) {
-        throw new Error(`expected one project row after creating it, found ${String(created.length)}: ${created.join(', ')}`);
-      }
+      const created = await waitForSingleProjectRow(session.window, TIMEOUT_MS);
       const pidBefore = await readWispdPid(session.wispdDataDir);
 
       // relaunch()'s own type is the narrower ScenarioContext; at runtime it is always a full
       // Session (ci/screenshots/src/harness.ts's `start` returns one either way).
       session = (await session.relaunch()) as Session;
       await waitForHostKind(session.window, ['connected'], TIMEOUT_MS);
-      await session.window.waitForFunction(
-        () => document.querySelectorAll('.wisp-threads-rows button.wisp-threads-row').length > 0,
-        undefined,
-        { timeout: TIMEOUT_MS },
-      );
-      const afterRelaunch = await projectRowSessions(session.window);
-      if (afterRelaunch.length !== 1 || afterRelaunch[0] !== created[0]) {
-        throw new Error(`project list after relaunch is ${JSON.stringify(afterRelaunch)}, expected ${JSON.stringify(created)}`);
-      }
+      await waitForProjectRowSession(session.window, created, TIMEOUT_MS);
 
       // Proves the list came from wispd's on-disk store, not from the old serve somehow surviving:
       // relaunch() SIGTERMs the old serve and waits for it to exit before starting the app again

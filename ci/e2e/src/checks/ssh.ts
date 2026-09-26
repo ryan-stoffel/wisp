@@ -25,8 +25,8 @@ import {
   fillAddHostInput,
   openHostMenu,
   projectIdFromSession,
-  projectRowSessions,
   waitForHostNamed,
+  waitForSingleProjectRow,
 } from '../wispUi.ts';
 
 /** Where `scripts/ci/ssh-localhost` writes its `KEY=value` result (also read by scripts/ci/e2e). */
@@ -77,16 +77,7 @@ export const sshChecks = [
       // The remote (typed-path) flow, not the native dialog: wispNewProject.ts only offers a
       // folder picker for "this Mac" (isLocalHost), and this host is now "localhost" (0007, #67).
       await createRemoteProject(window, workspace.folder);
-      await window.waitForFunction(
-        () => document.querySelectorAll('.wisp-threads-rows button.wisp-threads-row').length > 0,
-        undefined,
-        { timeout: TIMEOUT_MS },
-      );
-      const rows = await projectRowSessions(window);
-      const rowSession = rows[0];
-      if (rows.length !== 1 || rowSession === undefined) {
-        throw new Error(`expected one project row after creating it over ssh, found ${String(rows.length)}: ${rows.join(', ')}`);
-      }
+      const rowSession = await waitForSingleProjectRow(window, TIMEOUT_MS);
 
       // Ground truth from the ssh-side wispd itself, asked the same way the editor reaches it
       // (over ssh, through the same wrapper): proves the project wispd created is the one the

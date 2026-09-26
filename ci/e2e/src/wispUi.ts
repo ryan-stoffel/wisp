@@ -83,6 +83,49 @@ export async function projectRowSessions(window: Page): Promise<string[]> {
   );
 }
 
+const PROJECT_ROW = '.wisp-threads-rows button.wisp-threads-row';
+
+/**
+ * Waits for the sidebar to show exactly one project row and returns its `data-session`, reading it
+ * from the very same page evaluation that observed the row -- not a separate `projectRowSessions`
+ * call afterward. Two round trips (wait, then read) leave a gap a row can appear and disappear in
+ * (a project's row is added optimistically on `project/create`'s own response and can be briefly
+ * replaced by a resync's re-list, `wispProjectsService.ts`); this was seen twice over ssh, where a
+ * slower connection makes that gap wider.
+ */
+export async function waitForSingleProjectRow(window: Page, timeoutMs: number): Promise<string> {
+  const handle = await window.waitForFunction(
+    (selector) => {
+      const rows = [...document.querySelectorAll(selector)];
+      return rows.length === 1 ? ((rows[0] as HTMLElement).dataset.session ?? '') : undefined;
+    },
+    PROJECT_ROW,
+    { timeout: timeoutMs },
+  );
+  const session = await handle.jsonValue();
+  if (typeof session !== 'string' || session.length === 0) {
+    throw new Error(`waitForSingleProjectRow resolved with ${JSON.stringify(session)}`);
+  }
+  return session;
+}
+
+/** The same, but for a specific `data-session` already known (reconnect.ts, after a kill). */
+export async function waitForProjectRowSession(window: Page, expected: string, timeoutMs: number): Promise<string> {
+  const handle = await window.waitForFunction(
+    ({ selector, expected }) => {
+      const rows = [...document.querySelectorAll(selector)];
+      return rows.length === 1 && (rows[0] as HTMLElement).dataset.session === expected ? expected : undefined;
+    },
+    { selector: PROJECT_ROW, expected },
+    { timeout: timeoutMs },
+  );
+  const session = await handle.jsonValue();
+  if (typeof session !== 'string') {
+    throw new Error(`waitForProjectRowSession resolved with ${JSON.stringify(session)}`);
+  }
+  return session;
+}
+
 /** The project id inside a row's `data-session` (`wisp.project:/<id>`), or the raw value if it doesn't match. */
 export function projectIdFromSession(dataSession: string): string {
   return dataSession.replace(/^wisp\.project:\/?/, '');

@@ -13,7 +13,7 @@ import {
   ready,
   readWispdPid,
 } from '../harness.ts';
-import { projectIdFromSession, projectRowSessions, waitForHostKind } from '../wispUi.ts';
+import { projectIdFromSession, waitForHostKind, waitForProjectRowSession, waitForSingleProjectRow } from '../wispUi.ts';
 import { createLocalProject, stubFolderPicker } from '../wispProject.ts';
 
 export const reconnectChecks = [
@@ -27,16 +27,7 @@ export const reconnectChecks = [
 
       await stubFolderPicker(app, workspace.folder);
       await createLocalProject(window);
-      await window.waitForFunction(
-        () => document.querySelectorAll('.wisp-threads-rows button.wisp-threads-row').length > 0,
-        undefined,
-        { timeout: TIMEOUT_MS },
-      );
-      const beforeKill = await projectRowSessions(window);
-      const beforeSession = beforeKill[0];
-      if (beforeKill.length !== 1 || beforeSession === undefined) {
-        throw new Error(`expected one project row before killing wispd, found ${String(beforeKill.length)}`);
-      }
+      const beforeSession = await waitForSingleProjectRow(window, TIMEOUT_MS);
       const projectId = projectIdFromSession(beforeSession);
       const pidBefore = await readWispdPid(session.wispdDataDir);
 
@@ -71,18 +62,7 @@ export const reconnectChecks = [
       }
 
       // Then the UI: wait for it to catch up to that same single project rather than reading it once.
-      await window.waitForFunction(
-        ({ selector, expected }) => {
-          const rows = [...document.querySelectorAll(selector)] as HTMLElement[];
-          return rows.length === 1 && rows[0]?.dataset.session === expected;
-        },
-        { selector: '.wisp-threads-rows button.wisp-threads-row', expected: beforeSession },
-        { timeout: TIMEOUT_MS },
-      );
-      const afterReconnect = await projectRowSessions(window);
-      if (afterReconnect.length !== 1 || afterReconnect[0] !== beforeSession) {
-        throw new Error(`project list after reconnect is ${JSON.stringify(afterReconnect)}, expected ${JSON.stringify(beforeKill)}`);
-      }
+      await waitForProjectRowSession(window, beforeSession, TIMEOUT_MS);
     } finally {
       await session.close();
       await workspace.cleanup();
