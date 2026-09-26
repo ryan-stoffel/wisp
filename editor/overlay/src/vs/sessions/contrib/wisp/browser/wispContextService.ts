@@ -102,7 +102,9 @@ export class WispContextService extends Disposable implements IWispContextServic
 		// it is gone, not just not listed yet. Absent projects are paused (subscription cleared,
 		// state reset to idle) rather than removed, and a project that comes back is reloaded here
 		// if something is still watching it, so a `wisp-context:` editor left open across the gap
-		// picks its changes back up instead of going quiet forever.
+		// picks its changes back up instead of going quiet forever. `failed` is retried here too
+		// (#106's fourth review): a listing error doesn't mean the project itself was ever paused, but
+		// there is no other reason to wait for a reconnect once the list confirms it is still there.
 		this._register(autorun(reader => {
 			const projects = projectsService.projects.read(reader);
 			if (projectsService.state.read(reader).kind !== 'ready') {
@@ -116,7 +118,7 @@ export class WispContextService extends Disposable implements IWispContextServic
 					watch.generation++;
 					watch.subscription.clear();
 					watch.state.set({ kind: 'idle' }, undefined);
-				} else if (present && watch.watching && kind === 'idle' && this.connection?.kind === 'connected') {
+				} else if (present && watch.watching && (kind === 'idle' || kind === 'failed') && this.connection?.kind === 'connected') {
 					this.load(id, watch);
 				}
 			}
