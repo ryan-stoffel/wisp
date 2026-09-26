@@ -48,9 +48,10 @@ use super::event::ExitInfo;
 use crate::paths::DataDir;
 use crate::spawn::{self, Stdio};
 
-/// Variables no agent inherits from wispd: the SSH session that may have started it (#96).
-/// Whether agents get an `SSH_AUTH_SOCK`, and which, is #96's decision.
-pub const ALWAYS_SCRUBBED: &[&str] = &["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"];
+/// Variables no process wispd starts inherits: the SSH session that may have started it (#96).
+/// That includes its `SSH_AUTH_SOCK`, which stops working when the session ends and which no
+/// agent needs: workers can't push, and wispd makes every commit locally (decision 0014).
+pub const ALWAYS_SCRUBBED: &[&str] = &["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "SSH_AUTH_SOCK"];
 
 /// The longest stdout line a backend reads by default. Longer ones are skipped and reported. It
 /// matches 0007's frame limit, which a notification built from the line has to fit anyway.

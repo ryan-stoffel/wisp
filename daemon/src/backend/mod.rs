@@ -254,6 +254,10 @@ pub struct Capabilities {
     pub reports_cost: bool,
     /// Its runs report limit windows.
     pub rate_limits: bool,
+    /// It enforces the worker sandbox (0013) for a [`ToolPolicy::WorkspaceWrite`] run, so M3's
+    /// runner may start workers on it. Codex and Cursor join once #122 and #123 implement their
+    /// parts of 0013.
+    pub worker_sandbox: bool,
 }
 
 /// Why a run could not start.

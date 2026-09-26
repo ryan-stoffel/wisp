@@ -77,6 +77,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::unix::pipe;
 use tokio::sync::{Notify, mpsc};
 
+pub(crate) use self::stream::version as parse_version;
 use self::stream::{Step, Translator, TurnDone};
 use super::event::{Event, Failure, FailureKind, Outcome, WarningKind};
 use super::process::{
@@ -395,6 +396,7 @@ impl Backend for ClaudeBackend {
             coordinator: true,
             reports_cost: true,
             rate_limits: true,
+            worker_sandbox: true,
         }
     }
 

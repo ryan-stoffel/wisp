@@ -326,3 +326,28 @@ async fn detection_never_touches_files_under_vendor_config_directories() {
         );
     }
 }
+
+#[tokio::test]
+async fn a_version_missing_from_auth_status_comes_from_the_version_banner() {
+    let fixture = Fixture::new();
+    fixture.install(
+        "claude",
+        "#!/bin/sh\n\
+         if [ \"$1\" = --version ]; then echo '2.1.300 (Claude Code)'; exit 0; fi\n\
+         printf '%s' '{\"loggedIn\":true,\"authType\":\"subscription\"}'\n",
+    );
+    let clis = detect(&fixture, fixture.env()).await;
+    let claude = find(&clis, CliKind::Claude);
+    assert_eq!(claude.version.as_deref(), Some("2.1.300"), "{claude:?}");
+    assert_eq!(claude.signed_in, Some(true));
+}
+
+#[test]
+fn only_a_leading_version_number_is_read_from_a_banner() {
+    assert_eq!(
+        super::version_from_banner("2.1.248 (Claude Code)\n").as_deref(),
+        Some("2.1.248")
+    );
+    assert_eq!(super::version_from_banner("Claude Code"), None);
+    assert_eq!(super::version_from_banner(""), None);
+}
