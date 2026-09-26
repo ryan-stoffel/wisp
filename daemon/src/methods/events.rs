@@ -142,7 +142,7 @@ mod tests {
         let log = EventLog::new(10);
         let project = ProjectId::generate();
         for owner in [None, Some(project), None] {
-            log.append(Timestamp::now(), owner, WispEvent::Unknown);
+            log.append_blocking(Timestamp::now(), owner, WispEvent::Unknown);
         }
         let host = cursor(None, 0);
         let (host_id, late_id) = (host.subscription, SubscriptionId::generate());
@@ -163,7 +163,7 @@ mod tests {
         expected.sort_by_key(|&(subscription, seq)| (seq, subscription));
         assert_eq!(delivered, expected);
 
-        log.append(Timestamp::now(), None, WispEvent::Unknown);
+        log.append_blocking(Timestamp::now(), None, WispEvent::Unknown);
         cursors.remove(host_id);
         assert_eq!(drain(&mut cursors, &log), [(late_id, 4)]);
     }
@@ -171,8 +171,8 @@ mod tests {
     #[test]
     fn a_cursor_behind_the_retention_is_reported() {
         let log = EventLog::new(1);
-        log.append(Timestamp::now(), None, WispEvent::Unknown);
-        log.append(Timestamp::now(), None, WispEvent::Unknown);
+        log.append_blocking(Timestamp::now(), None, WispEvent::Unknown);
+        log.append_blocking(Timestamp::now(), None, WispEvent::Unknown);
         let lagging = cursor(None, 0);
         let id = lagging.subscription;
         let mut cursors = Cursors::default();

@@ -529,7 +529,7 @@ mod tests {
         Daemon::for_tests(dir, retention, Duration::from_secs(90))
     }
 
-    fn append(daemon: &Daemon, count: usize) {
+    async fn append(daemon: &Daemon, count: usize) {
         for _ in 0..count {
             let project = Project {
                 id: ProjectId::generate(),
@@ -539,11 +539,14 @@ mod tests {
                 created_at: Timestamp::now(),
                 updated_at: Timestamp::now(),
             };
-            daemon.log.append(
-                Timestamp::now(),
-                None,
-                WispEvent::ProjectCreated { project },
-            );
+            daemon
+                .log
+                .append(
+                    Timestamp::now(),
+                    None,
+                    WispEvent::ProjectCreated { project },
+                )
+                .await;
         }
     }
 
@@ -589,7 +592,7 @@ mod tests {
     async fn an_answer_goes_out_ahead_of_a_long_replay() {
         let dir = tempfile::tempdir().unwrap();
         let daemon = daemon(dir.path(), 10_000);
-        append(&daemon, 5_000);
+        append(&daemon, 5_000).await;
         let (mut frames, _write) = connect(daemon, &requests(0)).await;
 
         let mut events_before_health = 0;
@@ -618,7 +621,7 @@ mod tests {
                 Some(Message::Response(_))
             ));
         }
-        append(&daemon, 1_000);
+        append(&daemon, 1_000).await;
 
         let mut delivered = 0;
         while let Some(message) = next(&mut frames).await {
