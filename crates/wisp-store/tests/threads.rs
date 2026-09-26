@@ -146,7 +146,7 @@ fn a_thread_is_recorded_with_its_run_and_worktree_and_archives() {
 }
 
 #[test]
-fn deleting_a_thread_removes_its_run_worktree_and_events_only() {
+fn deleting_a_thread_removes_its_run_worktree_events_and_turns_only() {
     let (_dir, mut store) = open();
     let repo = store
         .add_repo(Uuid::now_v7(), &repo_fields("/Users/me/src/wisp"))
@@ -175,6 +175,11 @@ fn deleting_a_thread_removes_its_run_worktree_and_events_only() {
             })
             .unwrap();
     }
+    // A run's sent turns (#190) have no foreign key to `runs`, so `delete_thread` has to remove
+    // them itself: nothing else would.
+    for run in [kept, gone] {
+        store.record_turn(run, Uuid::now_v7(), "carry on").unwrap();
+    }
 
     assert!(store.delete_thread(gone).unwrap());
     assert!(
@@ -185,10 +190,12 @@ fn deleting_a_thread_removes_its_run_worktree_and_events_only() {
     assert_eq!(store.get_run(gone).unwrap(), None);
     assert_eq!(store.get_worktree(gone).unwrap(), None);
     assert!(store.run_events(gone, 0, 10, 1 << 20).unwrap().0.is_empty());
+    assert_eq!(store.run_turns(gone).unwrap(), []);
 
     assert!(store.get_thread(kept).unwrap().is_some());
     assert!(store.get_run(kept).unwrap().is_some());
     assert_eq!(store.run_events(kept, 0, 10, 1 << 20).unwrap().0.len(), 1);
+    assert_eq!(store.run_turns(kept).unwrap().len(), 1);
 }
 
 /// Two branches each added a migration: a database that has a newer version but is missing an

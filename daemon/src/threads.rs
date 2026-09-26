@@ -134,12 +134,13 @@ pub(crate) async fn existing_thread(
 }
 
 /// Reports a new thread as `thread.started`, a host-level event.
-pub(crate) fn log_started(daemon: &Daemon, row: &wisp_store::Thread) {
+pub(crate) async fn log_started(daemon: &Daemon, row: &wisp_store::Thread) {
     match thread_entry(row) {
         Ok(thread) => {
             daemon
                 .log
-                .append(thread.created_at, None, WispEvent::ThreadStarted { thread });
+                .append(thread.created_at, None, WispEvent::ThreadStarted { thread })
+                .await;
         }
         Err(error) => warn!(error = %error.message, "could not report a new thread"),
     }
@@ -230,7 +231,7 @@ pub(crate) async fn add_repo(
         let (repo, created) = add(db, id.into(), &fields)?;
         let repo = repo_entry(repo)?;
         if created {
-            log.append(
+            log.append_blocking(
                 repo.created_at,
                 None,
                 WispEvent::RepoAdded { repo: repo.clone() },
@@ -292,7 +293,7 @@ async fn scratch_entry(daemon: &Arc<Daemon>) -> Result<wisp_store::Repo, ErrorOb
         let (row, created) = add(db, RepoId::generate().into(), &fields)?;
         if created {
             let repo = repo_entry(row.clone())?;
-            log.append(repo.created_at, None, WispEvent::RepoAdded { repo });
+            log.append_blocking(repo.created_at, None, WispEvent::RepoAdded { repo });
         }
         Ok(row)
     })
@@ -441,7 +442,7 @@ pub(crate) async fn archive(
                 other => store_error(&other),
             })?;
         let thread = thread_entry(&row)?;
-        log.append(
+        log.append_blocking(
             Timestamp::now(),
             None,
             WispEvent::ThreadUpdated {
@@ -522,11 +523,14 @@ pub(crate) async fn purge(
         remove_context(daemon, run_id);
     }
     let repo = RepoId::try_from(thread.repo_id).map_err(|_| corrupt("thread", thread.id))?;
-    daemon.log.append(
-        Timestamp::now(),
-        None,
-        WispEvent::ThreadDeleted { run_id, repo },
-    );
+    daemon
+        .log
+        .append(
+            Timestamp::now(),
+            None,
+            WispEvent::ThreadDeleted { run_id, repo },
+        )
+        .await;
     info!(run = %run_id, "deleted a thread");
     Ok(())
 }

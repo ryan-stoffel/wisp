@@ -316,12 +316,14 @@ fn a_version_6_database_gains_runs_events_and_worktree_git_dirs() {
             )
             .unwrap();
     }
-    // Roll the database back to what #119 left on develop: schema 6, no runs, events, or
-    // git_dir column.
+    // Roll the database back to what #119 left on develop: schema 6, no runs, events, git_dir
+    // column, turns table (#190's migration 10; dropping `runs` already undoes #157's migration 8
+    // columns on it, since they're columns of the table this drops wholesale), or the normal
+    // threads tables (#110's migration 9).
     {
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch(
-            "DROP TABLE runs; DROP TABLE log_meta; DROP TABLE events;
+            "DROP TABLE runs; DROP TABLE log_meta; DROP TABLE events; DROP TABLE turns;
              DROP TABLE threads; DROP TABLE repos;
              ALTER TABLE worktrees DROP COLUMN git_dir;
              DELETE FROM schema_version WHERE version >= 7;",

@@ -794,6 +794,73 @@ async fn a_run_interrupted_by_a_restart_or_a_crash_resumes_by_its_session() {
     host.server.stop().await;
 }
 
+/// #190 N5: a fresh actor after a restart has no in-memory record of a turn it (or a wispd
+/// before it) already sent, so `agent/send`'s idempotency has to come from the store instead.
+#[tokio::test]
+async fn a_sent_turn_stays_idempotent_across_a_restart() {
+    let dir = temp_dir();
+    let host = Host::start(dir, fake(hang()));
+    let mut client = host.client().await;
+    let project = create(&mut client, project_params(host.dir.path())).await;
+    subscribe(&mut client, project.id, 0).await;
+    let params = start_params(project.id, "Work until cancelled");
+    let run_id = params.run_id;
+    client.call::<AgentStart>(params).await.unwrap();
+    until(
+        &mut client,
+        has_item(AgentOutputItem::Text {
+            message_id: None,
+            text: "Working".to_owned(),
+        }),
+    )
+    .await;
+
+    client
+        .call::<AgentCancel>(AgentCancelParams { run_id })
+        .await
+        .unwrap();
+    until(&mut client, updated_to(AgentStatus::Cancelled)).await;
+
+    // The CLI has exited: sending resumes the session in a new process, and the turn is recorded
+    // with the run, not only kept in the actor's own memory.
+    let turn = TurnId::generate();
+    let sent = client
+        .call::<AgentSend>(send_params(run_id, turn, "carry on"))
+        .await
+        .unwrap();
+    assert_eq!(sent.run.status, AgentStatus::Running);
+    let events = until(
+        &mut client,
+        has_item(AgentOutputItem::TurnStarted {
+            turn_id: Some(turn),
+        }),
+    )
+    .await;
+    let seq_before = events.last().unwrap().seq;
+    drop(client);
+
+    let host = host.restart(fake(hang())).await;
+    let mut client = host.client().await;
+    subscribe(&mut client, project.id, seq_before).await;
+    until(&mut client, updated_to(AgentStatus::Interrupted)).await;
+
+    // A retry with the same text is answered from the stored turn, not sent to the CLI again.
+    let retried = client
+        .call::<AgentSend>(send_params(run_id, turn, "carry on"))
+        .await
+        .unwrap();
+    assert_eq!(retried.run.id, run_id);
+    client.stays_quiet(Duration::from_millis(300)).await;
+
+    // A retry with different text still conflicts, exactly as it would without a restart.
+    let conflict = client
+        .call::<AgentSend>(send_params(run_id, turn, "something else"))
+        .await
+        .unwrap_err();
+    assert_eq!(kind(&conflict), ErrorKind::IdConflict);
+    host.server.stop().await;
+}
+
 #[tokio::test]
 async fn a_worker_learns_its_limits_and_a_fallback_moves_its_usage_to_the_new_account() {
     let dir = temp_dir();

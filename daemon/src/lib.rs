@@ -40,6 +40,7 @@ pub mod backend;
 mod context;
 mod detect;
 mod event_log;
+mod json;
 pub mod keystore;
 pub mod launch_agent;
 pub mod logging;
