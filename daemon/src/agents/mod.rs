@@ -156,7 +156,7 @@ pub(crate) fn store_error(error: &StoreError) -> ErrorObject {
     ErrorObject::internal_error(format!("the project store failed: {error}"))
 }
 
-fn run_not_found(id: RunId) -> ErrorObject {
+pub(super) fn run_not_found(id: RunId) -> ErrorObject {
     ErrorObject::wisp(ErrorKind::RunNotFound, format!("no agent run has id {id}"))
 }
 
@@ -171,30 +171,29 @@ fn requested_account(account: Option<&AccountChoice>) -> Option<String> {
     account.and_then(|account| serde_json::to_string(account).ok())
 }
 
-/// The project's repository, the routing inputs, and the paths a worker for `project` needs,
+/// The project's repository, the routing inputs, and the paths run `run` of `project` needs,
 /// checked: everything that can refuse a worker before anything is created.
 pub(super) async fn prepare(
     daemon: &Arc<Daemon>,
     project: ProjectId,
+    run: RunId,
     requested: Option<AccountChoice>,
 ) -> Result<(Prepared, String), ErrorObject> {
-    let (repo_path, defaults, accounts) = store(daemon, move |db| {
-        let row = db
-            .get_project(project.into())
-            .map_err(|error| store_error(&error))?
-            .ok_or_else(|| {
-                ErrorObject::wisp(
-                    ErrorKind::ProjectNotFound,
-                    format!("no project has id {project}"),
-                )
-            })?;
+    let (repo_path, context_scope, defaults, accounts) = store(daemon, move |db| {
+        let repo_path = crate::threads::scope_path(db, project)?;
+        let context_scope = crate::threads::context_scope(db, project, run)?;
         let defaults = crate::methods::read_defaults(db)?;
         let mut accounts = HashMap::new();
         for account in db.list_accounts().map_err(|error| store_error(&error))? {
             let account = crate::store::key_account(account)?;
             accounts.insert(account.id, account.provider);
         }
-        Ok((row.repo_path, defaults, StoredKeyAccounts(accounts)))
+        Ok((
+            repo_path,
+            context_scope,
+            defaults,
+            StoredKeyAccounts(accounts),
+        ))
     })
     .await?;
     let defaults = Defaults {
@@ -224,7 +223,7 @@ pub(super) async fn prepare(
     }
     let home = worker::home()?;
     let data_dir = sandbox_path(daemon.data_dir.root(), "wispd's data folder")?;
-    let context = crate::context::ensure_dir(&daemon.data_dir, project).map_err(|error| {
+    let context = crate::context::ensure_dir(&daemon.data_dir, context_scope).map_err(|error| {
         worker_unavailable(format!(
             "could not create the shared context folder: {error}"
         ))
@@ -338,13 +337,59 @@ async fn create_worktree(
     }
 }
 
+/// Records a new run and its worktree, with its thread row for a normal thread, in one
+/// transaction. If that fails, removes the worktree again.
+async fn record(
+    daemon: &Arc<Daemon>,
+    run_id: RunId,
+    (fields, state): (RunFields, RunState),
+    is_thread: bool,
+    repo_path: &Path,
+    created: &CreatedWorktree,
+) -> Result<
+    (
+        wisp_store::Run,
+        wisp_store::Worktree,
+        Option<wisp_store::Thread>,
+    ),
+    ErrorObject,
+> {
+    let worktree_fields = WorktreeFields {
+        repo_path: repo_path.to_string_lossy().into_owned(),
+        path: created.path.to_string_lossy().into_owned(),
+        branch: created.branch.clone(),
+        base: created.base.clone(),
+        git_dir: created.git_dir.to_string_lossy().into_owned(),
+    };
+    let scope = fields.project_id;
+    let recorded = store(daemon, move |db| {
+        if is_thread {
+            db.create_thread_run(run_id.into(), scope, &fields, &state, &worktree_fields)
+                .map(|(thread, run, worktree)| (run, worktree, Some(thread)))
+        } else {
+            db.create_run_with_worktree(run_id.into(), &fields, &state, &worktree_fields)
+                .map(|(run, worktree)| (run, worktree, None))
+        }
+        .map_err(|e| store_error(&e))
+    })
+    .await;
+    if recorded.is_err()
+        && let Err(cleanup) = daemon
+            .agents
+            .worktrees
+            .remove(repo_path, &created.path, &created.branch)
+            .await
+    {
+        warn!(run = %run_id, %cleanup, "could not remove a worktree for a run that wasn't recorded");
+    }
+    recorded
+}
+
 /// `agent/start`: see the module documentation. Idempotent on the run id.
 pub(crate) async fn start(
     daemon: Arc<Daemon>,
     params: AgentStartParams,
 ) -> Result<AgentRun, ErrorObject> {
-    let agents = &daemon.agents;
-    let _creating = agents.start_lock.lock().await;
     let AgentStartParams {
         run_id,
         project,
@@ -352,12 +397,66 @@ pub(crate) async fn start(
         account,
         ..
     } = params;
+    let new = NewRun {
+        run_id,
+        scope: project,
+        prompt,
+        account,
+        thread: None,
+    };
+    Ok(create(daemon, new).await?.run)
+}
+
+/// A run to create: a project's worker, or a normal thread (#110), which belongs to a repo entry
+/// instead of a project.
+pub(crate) struct NewRun {
+    pub run_id: RunId,
+    /// The project, or for a thread its repo entry, whose id the run's events go to.
+    pub scope: ProjectId,
+    pub prompt: String,
+    pub account: Option<AccountChoice>,
+    pub thread: Option<NewThread>,
+}
+
+/// What a normal thread adds to a run.
+pub(crate) struct NewThread {
+    /// A thread with no repo's own scratch repository, which the caller made. Its worktree is
+    /// cut from this instead of from the scope's path.
+    pub scratch: Option<PathBuf>,
+}
+
+/// A created run, and its thread row for a normal thread.
+pub(crate) struct CreatedRun {
+    pub run: AgentRun,
+    pub thread: Option<wisp_store::Thread>,
+}
+
+/// Creates and starts a run: see the module documentation. Idempotent on the run id.
+pub(crate) async fn create(daemon: Arc<Daemon>, new: NewRun) -> Result<CreatedRun, ErrorObject> {
+    let agents = &daemon.agents;
+    let _creating = agents.start_lock.lock().await;
+    let NewRun {
+        run_id,
+        scope: project,
+        prompt,
+        account,
+        thread,
+    } = new;
     let requested = requested_account(account.as_ref());
 
     if let Some(run) = existing(&daemon, run_id, project, &prompt, requested.as_deref()).await? {
-        return Ok(run);
+        let row = if thread.is_some() {
+            Some(crate::threads::existing_thread(&daemon, run_id).await?)
+        } else {
+            None
+        };
+        return Ok(CreatedRun { run, thread: row });
     }
-    let (prepared, repo_path) = prepare(&daemon, project, account).await?;
+    let (prepared, scope_path) = prepare(&daemon, project, run_id, account).await?;
+    let repo_path = match thread.as_ref().and_then(|thread| thread.scratch.clone()) {
+        Some(scratch) => scratch.to_string_lossy().into_owned(),
+        None => scope_path,
+    };
     let (created, worktree_path, git_common_dir) =
         create_worktree(agents, Path::new(&repo_path), run_id).await?;
 
@@ -373,31 +472,16 @@ pub(crate) async fn start(
         account_id: prepared.resolved.account_id(),
         ..RunState::default()
     };
-    let worktree_fields = WorktreeFields {
-        repo_path: repo_path.clone(),
-        path: created.path.to_string_lossy().into_owned(),
-        branch: created.branch.clone(),
-        base: created.base.clone(),
-        git_dir: created.git_dir.to_string_lossy().into_owned(),
-    };
-    let recorded = store(&daemon, move |db| {
-        db.create_run_with_worktree(run_id.into(), &fields, &state, &worktree_fields)
-            .map_err(|e| store_error(&e))
-    })
-    .await;
-    let (row, worktree) = match recorded {
-        Ok(recorded) => recorded,
-        Err(error) => {
-            if let Err(cleanup) = agents
-                .worktrees
-                .remove(Path::new(&repo_path), &created.path, &created.branch)
-                .await
-            {
-                warn!(run = %run_id, %cleanup, "could not remove a worktree for a run that wasn't recorded");
-            }
-            return Err(error);
-        }
-    };
+    let is_thread = thread.is_some();
+    let (row, worktree, thread_row) = record(
+        &daemon,
+        run_id,
+        (fields, state),
+        is_thread,
+        Path::new(&repo_path),
+        &created,
+    )
+    .await?;
     let snapshot = agent_run(&row, Some(&worktree))?;
     daemon.log.append(
         snapshot.created_at,
@@ -407,10 +491,21 @@ pub(crate) async fn start(
             run: Some(snapshot),
         },
     );
-    info!(run = %run_id, project = %project, backend = %row.fields.backend, "created an agent run");
+    if let Some(thread) = &thread_row {
+        crate::threads::log_started(&daemon, thread);
+    }
+    info!(run = %run_id, project = %project, backend = %row.fields.backend, thread = is_thread, "created an agent run");
 
     let mut actor = Actor::new(Arc::clone(&daemon), row, Some(worktree));
-    let task = worker::worker_prompt(&prompt, &worktree_path, &prepared.context);
+    let task = match &thread {
+        Some(thread) => worker::thread_prompt(
+            &prompt,
+            &worktree_path,
+            &prepared.context,
+            thread.scratch.is_some(),
+        ),
+        None => worker::worker_prompt(&prompt, &worktree_path, &prepared.context),
+    };
     actor
         .launch(
             prepared,
@@ -423,7 +518,31 @@ pub(crate) async fn start(
     // The actor owns a live CLI from here on, so it is spawned whatever the snapshot says.
     let run = actor.snapshot();
     agents.spawn(actor);
-    run
+    Ok(CreatedRun {
+        run: run?,
+        thread: thread_row,
+    })
+}
+
+impl Agents {
+    /// Holds off every run's creation, and every actor's spawning, while a thread's rows are
+    /// deleted and its actor dropped (#110).
+    pub(crate) async fn creation_lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.start_lock.lock().await
+    }
+
+    /// Drops run `id`'s actor from the map, so no new command reaches it.
+    pub(crate) fn forget(&self, id: RunId) {
+        self.actors
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&id);
+    }
+
+    /// The worktrees every run is created in.
+    pub(crate) fn worktrees(&self) -> &WorktreeManager {
+        &self.worktrees
+    }
 }
 
 /// The command channel of `id`'s actor, spawning one for a run created before this wispd
@@ -459,11 +578,19 @@ async fn ask<T>(
     id: RunId,
     command: impl FnOnce(oneshot::Sender<Result<T, ErrorObject>>) -> Command,
 ) -> Result<T, ErrorObject> {
-    let actor = actor_for(daemon, id).await?;
     let (reply, answer) = oneshot::channel();
+    let mut command = command(reply);
     let stopping = || ErrorObject::internal_error("wispd is stopping");
-    actor.send(command(reply)).await.map_err(|_| stopping())?;
-    answer.await.map_err(|_| stopping())?
+    // An actor that `thread/delete` just stopped has closed its channel: look the run up again,
+    // which then finds it gone.
+    for _ in 0..2 {
+        let actor = actor_for(daemon, id).await?;
+        match actor.send(command).await {
+            Ok(()) => return answer.await.map_err(|_| stopping())?,
+            Err(mpsc::error::SendError(returned)) => command = returned,
+        }
+    }
+    Err(stopping())
 }
 
 /// `agent/send`.
@@ -487,6 +614,12 @@ pub(crate) async fn send(
 /// `agent/cancel`.
 pub(crate) async fn cancel(daemon: Arc<Daemon>, id: RunId) -> Result<AgentRun, ErrorObject> {
     ask(&daemon, id, |reply| Command::Cancel { reply }).await
+}
+
+/// `thread/delete`'s part in the runner: through the run's actor, which stops a running CLI
+/// first and never races the run's own resume, commit, or accept.
+pub(crate) async fn delete(daemon: &Arc<Daemon>, id: RunId) -> Result<(), ErrorObject> {
+    ask(daemon, id, |reply| Command::Delete { reply }).await
 }
 
 /// `agent/accept`: through the run's actor, so it never races the run's own CLI or commit.

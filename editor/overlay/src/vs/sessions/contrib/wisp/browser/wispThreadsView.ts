@@ -34,6 +34,9 @@ import { WISP_SHOW_HOST_MENU_COMMAND } from './wispHostMenu.js';
 import { IWispHostStatusService } from './wispHostStatusService.js';
 import { WISP_NEW_PROJECT_COMMAND } from './wispNewProject.js';
 import { projectSessions, WISP_SEARCH_COMMAND } from './wispSearch.js';
+import { WispThreadSections } from './wispThreadSections.js';
+import { IWispThreadsService } from '../../providers/wisp/browser/wispThreadsService.js';
+import { NEW_SESSION_ACTION_ID } from '../../chat/common/constants.js';
 
 export const WISP_THREADS_CONTAINER_ID = 'wisp.threads';
 export const WISP_THREADS_VIEW_ID = 'wisp.threads.view';
@@ -47,8 +50,8 @@ let instanceCount = 0;
  * wisp's left sidebar in the Agents window (decision record 0011, docs/design/agents-window.md in
  * wisp): actions, then Projects, Repositories, and No Repo, then a footer with the user, the host,
  * and settings. Projects are read through `ISessionsManagementService` and opened through
- * `ISessionsService`. Normal threads, and with them New Chat, Repositories, and No Repo, come with
- * #110.
+ * `ISessionsService`. New Chat opens upstream's new-session composer for a normal thread, and
+ * `WispThreadSections` lists threads under Repositories and No Repo (#110).
  */
 export class WispThreadsView extends ViewPane {
 
@@ -72,6 +75,7 @@ export class WispThreadsView extends ViewPane {
 		@IWispProjectsService private readonly projectsService: IWispProjectsService,
 		@ISessionsManagementService private readonly sessionsManagementService: ISessionsManagementService,
 		@ISessionsService private readonly sessionsService: ISessionsService,
+		@IWispThreadsService private readonly threadsService: IWispThreadsService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 	}
@@ -83,7 +87,8 @@ export class WispThreadsView extends ViewPane {
 		const root = this.root = append(container, $('.wisp-threads'));
 
 		const actions = append(root, $('.wisp-threads-actions', { role: 'group', 'aria-label': localize('wispThreads.actions', "Actions") }));
-		this.firstAction = this.renderAction(actions, Codicon.edit, localize('wispThreads.newChat', "New Chat"), { disabledReason: localize('wispThreads.newChatDisabled', "Chats outside a project are not available yet.") });
+		let setNewChatDisabled: ((reason: string | undefined) => void) | undefined;
+		this.firstAction = this.renderAction(actions, Codicon.edit, localize('wispThreads.newChat', "New Chat"), { run: () => this.commandService.executeCommand(NEW_SESSION_ACTION_ID), keybinding: NEW_SESSION_ACTION_ID, disabledReason: '', onEnabler: setter => setNewChatDisabled = setter });
 		this.renderAction(actions, Codicon.search, localize('wispThreads.search', "Search"), { run: () => this.commandService.executeCommand(WISP_SEARCH_COMMAND), keybinding: WISP_SEARCH_COMMAND });
 		// Automations stays hidden until wisp decides on triggers (M6).
 		this.renderAction(actions, Codicon.settings, localize('wispThreads.customize', "Customize"), { run: () => this.commandService.executeCommand(WISP_SHOW_ACCOUNTS_COMMAND) });
@@ -91,8 +96,21 @@ export class WispThreadsView extends ViewPane {
 		const lists = append(root, $('.wisp-threads-lists'));
 		this.renderProjects(lists, `${idPrefix}-projects`);
 		// Repositories and No Repo render only once they have threads (#110).
+		this._register(this.instantiationService.createInstance(WispThreadSections, lists, idPrefix));
+		this.renderNewChatState(setNewChatDisabled!);
 
 		this.renderFooter(root);
+	}
+
+	/** New Chat needs a host whose wispd runs normal threads (decision record 0017). */
+	private renderNewChatState(setDisabledReason: (reason: string | undefined) => void): void {
+		this._register(autorun(reader => {
+			const connected = this.hostStatusService.status.read(reader).kind === 'connected';
+			const available = this.threadsService.available.read(reader);
+			setDisabledReason(!connected
+				? localize('wispThreads.newChatDisconnected', "Connect to a host to start a chat.")
+				: available ? undefined : localize('wispThreads.newChatUnavailable', "This host's wispd can't run chats yet. Update wisp on the host."));
+		}));
 	}
 
 	private renderProjects(parent: HTMLElement, id: string): void {
@@ -224,7 +242,7 @@ export class WispThreadsView extends ViewPane {
 		}
 	}
 
-	private renderAction(parent: HTMLElement, icon: ThemeIcon, label: string, options: { run?: () => void; disabledReason?: string; keybinding?: string }): HTMLButtonElement {
+	private renderAction(parent: HTMLElement, icon: ThemeIcon, label: string, options: { run?: () => void; disabledReason?: string; keybinding?: string; onEnabler?: (setDisabledReason: (reason: string | undefined) => void) => void }): HTMLButtonElement {
 		const button = append(parent, $<HTMLButtonElement>('button.wisp-threads-action', { type: 'button' }));
 		append(button, $(`span.wisp-threads-action-icon${ThemeIcon.asCSSSelector(icon)}`, { 'aria-hidden': 'true' }));
 		append(button, $('span.wisp-threads-action-label', undefined, label));
@@ -233,7 +251,9 @@ export class WispThreadsView extends ViewPane {
 			append(button, $('span.wisp-threads-action-keybinding', { 'aria-hidden': 'true' }, keybinding));
 			button.setAttribute('aria-keyshortcuts', this.keybindingService.lookupKeybinding(options.keybinding!)?.getAriaLabel() ?? keybinding);
 		}
-		this.enableable(button, label, options.run)(options.disabledReason);
+		const setDisabledReason = this.enableable(button, label, options.run);
+		setDisabledReason(options.disabledReason);
+		options.onEnabler?.(setDisabledReason);
 		return button;
 	}
 

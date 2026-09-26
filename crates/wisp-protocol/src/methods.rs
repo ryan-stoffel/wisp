@@ -37,7 +37,10 @@ use crate::{
     EventsEventParams, EventsSubscribeParams, EventsSubscribeResult, EventsUnsubscribeParams,
     EventsUnsubscribeResult, HostHealthParams, HostHealthResult, HostVersionParams,
     HostVersionResult, InitializeParams, InitializeResult, ProjectCreateParams,
-    ProjectCreateResult, ProjectListParams, ProjectListResult, UsageGetParams, UsageGetResult,
+    ProjectCreateResult, ProjectListParams, ProjectListResult, RepoAddParams, RepoAddResult,
+    ThreadArchiveParams, ThreadArchiveResult, ThreadDeleteParams, ThreadDeleteResult,
+    ThreadListParams, ThreadListResult, ThreadStartParams, ThreadStartResult, UsageGetParams,
+    UsageGetResult,
 };
 
 /// A method that is called with a request and answered with a response.
@@ -189,6 +192,21 @@ method_table! {
         /// `agent/requestChanges`: the reviewer's follow-up to a run, sent as `agent/send` sends
         /// a message. Idempotent on its client-generated turn id.
         AgentRequestChanges = "agent/requestChanges": AgentRequestChangesParams => AgentRunResult;
+        /// `thread/list`: every repo entry and normal thread, and the `seq` the list reflects
+        /// (#110). Gated on the `threads` capability, like every `thread/*` and `repo/*` method.
+        ThreadList = "thread/list": ThreadListParams => ThreadListResult;
+        /// `repo/add`: registers a repository on the host for normal threads, idempotent on its
+        /// client-generated id and on its path.
+        RepoAdd = "repo/add": RepoAddParams => RepoAddResult;
+        /// `thread/start`: starts a normal thread's agent in a worktree of a repo entry, or in a
+        /// scratch repository of its own when no repo is given. Idempotent on its
+        /// client-generated run id.
+        ThreadStart = "thread/start": ThreadStartParams => ThreadStartResult;
+        /// `thread/archive`: archives a normal thread or brings it back.
+        ThreadArchive = "thread/archive": ThreadArchiveParams => ThreadArchiveResult;
+        /// `thread/delete`: deletes a normal thread with its run, worktree, and stored events,
+        /// stopping its CLI first if it runs.
+        ThreadDelete = "thread/delete": ThreadDeleteParams => ThreadDeleteResult;
     }
     notifications {
         /// `$/cancelRequest`: cancels a request, which still gets exactly one response. Either
@@ -254,6 +272,11 @@ mod tests {
                 "agent/file",
                 "agent/accept",
                 "agent/requestChanges",
+                "thread/list",
+                "repo/add",
+                "thread/start",
+                "thread/archive",
+                "thread/delete",
                 "$/cancelRequest",
                 "events/event",
             ]
