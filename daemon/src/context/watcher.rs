@@ -97,7 +97,7 @@ fn observe(daemon: &Daemon, context_root: &Path, path: &Path) {
         .record_external_write(project, &name, &content);
     let writer = daemon.context.writer_of(project, &name);
     let file = context_file(&name, &metadata, writer);
-    let seq = daemon.log.append(
+    let seq = daemon.log.append_blocking(
         jiff::Timestamp::now(),
         Some(project),
         wisp_protocol::WispEvent::ContextChanged { file },

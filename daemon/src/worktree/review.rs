@@ -33,6 +33,7 @@ use super::{
     changed_file, collect, describe_failure, owned_args,
 };
 use crate::backend::process::Output;
+use crate::json::escaped_len as json_len;
 
 /// The largest file [`WorktreeManager::read_blob`] returns: 4 MiB, which base64 turns into about
 /// 5.4 MiB, inside 0007's 8 MiB frame.
@@ -1045,18 +1046,6 @@ fn parse_name_status_z(output: &str) -> Vec<ChangedFile> {
     files
 }
 
-/// The size of `text` as a JSON string's content, as `serde_json` writes it: `"` and `\\` and the
-/// short escapes (`\n`, `\t`, ...) take two bytes, other control characters six (`\u00XX`).
-fn json_len(text: &str) -> usize {
-    text.bytes()
-        .map(|byte| match byte {
-            b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 0x08 | 0x0c => 2,
-            0x00..=0x1f => 6,
-            _ => 1,
-        })
-        .sum()
-}
-
 /// Parses `git diff --name-status -z --no-renames`: `(status letter, path)` per file.
 pub(super) fn parse_changes(output: &str) -> Vec<(char, String)> {
     let mut tokens = z_tokens(output);
@@ -1127,7 +1116,7 @@ fn parse_numstat_z(output: &str) -> Vec<(u64, u64, bool)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{json_len, parse_name_status_z, parse_numstat_z, validate_repo_path};
+    use super::{parse_name_status_z, parse_numstat_z, validate_repo_path};
     use crate::worktree::ChangeStatus;
 
     #[test]
@@ -1159,21 +1148,6 @@ mod tests {
             assert!(validate_repo_path(bad).is_err(), "{bad:?}");
         }
         assert!(validate_repo_path(&"a".repeat(4097)).is_err());
-    }
-
-    #[test]
-    fn json_len_counts_escapes_as_serde_json_writes_them() {
-        for text in [
-            "plain",
-            "quote \" and \\",
-            "tab\tnew\nline\r",
-            "\u{1}\u{1f}\u{7f}",
-            "é✓",
-            "",
-        ] {
-            let encoded = serde_json::to_string(text).unwrap();
-            assert_eq!(json_len(text), encoded.len() - 2, "{text:?}");
-        }
     }
 
     #[test]
