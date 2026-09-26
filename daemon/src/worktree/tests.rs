@@ -2,7 +2,7 @@
 //! `backend::process`'s own tests spawning real processes.
 
 use std::collections::HashSet;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -508,7 +508,20 @@ async fn gc_orphans_removes_an_unknown_worktree_and_keeps_a_known_one() {
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     assert!(known.path.exists());
     assert!(!orphan.path.exists());
-    assert_eq!(worktree_count(&repo), 2, "main plus the known worktree");
+    // gc removes the orphan's folder directly, with no git command against its repository
+    // (#171), so the repo's own worktree bookkeeping still lists the orphan's now-deleted
+    // folder as a prunable entry until something else runs `git worktree prune` there.
+    assert_eq!(
+        worktree_count(&repo),
+        3,
+        "main, the known worktree, and the orphan's now-stale, unpruned entry"
+    );
+    git(&repo, &["worktree", "prune"]);
+    assert_eq!(
+        worktree_count(&repo),
+        2,
+        "pruning the repo separately clears the stale entry gc's direct folder removal left"
+    );
 }
 
 #[tokio::test]
@@ -738,5 +751,114 @@ async fn worktree_git_commands_ignore_a_rewritten_git_file() {
     assert!(
         !sentinel.exists(),
         "a hook from the redirected .git file must not have run"
+    );
+}
+
+// #171: an orphan folder is worker-writable and, by definition, has no `git_dir` pinned for it
+// the way a known worktree does. These tests plant the same class of redirect #166 found (and,
+// for gc, a folder registered to another repository entirely) and a symlink out of the data dir,
+// then check gc never discovers or touches a repository through either, and never follows a
+// symlink out of `WorktreeManager::root`.
+
+#[tokio::test]
+async fn gc_orphans_never_runs_a_git_command_against_a_repository_an_orphan_is_registered_to() {
+    let data_dir = tempfile::tempdir().unwrap();
+    let mgr = manager(data_dir.path());
+
+    // A repository entirely outside wispd's data dir, with no relation to anything wispd
+    // manages, that the orphan folder happens to be a genuine, registered linked worktree of:
+    // exactly what a worker could arrange by the time gc looks at an orphan it left behind.
+    let evil_dir = tempfile::tempdir().unwrap();
+    let evil_repo = init_repo(evil_dir.path()).canonicalize().unwrap();
+    let orphan = mgr.root().join("some-project").join("orphan-run");
+    std::fs::create_dir_all(orphan.parent().unwrap()).unwrap();
+    git(
+        &evil_repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "evil-branch",
+            orphan.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(
+        worktree_count(&evil_repo),
+        2,
+        "the evil repo's main worktree plus the orphan, registered to it"
+    );
+
+    let report = mgr.gc_orphans(&HashSet::new()).await;
+
+    assert_eq!(report.removed.as_slice(), std::slice::from_ref(&orphan));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert!(!orphan.exists());
+    // Before #171's fix, `remove_orphan` discovered the evil repo from the orphan's own `.git`
+    // file and ran `git worktree remove --force`, then `git worktree prune`, directly against
+    // it — an unrelated repository the worker has no business making wispd touch. Its own
+    // worktree bookkeeping must be completely untouched: still listing the folder gc just
+    // deleted, since gc never ran a git command there at all.
+    assert_eq!(
+        worktree_count(&evil_repo),
+        2,
+        "gc must never run a git command against the repository an orphan is registered to"
+    );
+}
+
+#[tokio::test]
+async fn gc_orphans_refuses_a_symlinked_run_folder_instead_of_following_it_out_of_the_data_dir() {
+    let data_dir = tempfile::tempdir().unwrap();
+    let mgr = manager(data_dir.path());
+    let project_dir = mgr.root().join("some-project");
+    std::fs::create_dir_all(&project_dir).unwrap();
+
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("marker.txt"), "do not touch").unwrap();
+    let run_dir = project_dir.join("run-id");
+    symlink(outside.path(), &run_dir).unwrap();
+
+    let report = mgr.gc_orphans(&HashSet::new()).await;
+
+    assert!(report.removed.is_empty(), "{:?}", report.removed);
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert_eq!(report.errors[0].0, run_dir);
+    assert!(
+        run_dir.is_symlink(),
+        "the symlink itself must be left alone, not followed or removed"
+    );
+    assert!(
+        outside.path().join("marker.txt").exists(),
+        "gc must never touch whatever a symlinked run folder points at"
+    );
+}
+
+#[tokio::test]
+async fn gc_orphans_does_not_descend_into_a_symlinked_project_folder() {
+    let data_dir = tempfile::tempdir().unwrap();
+    let mgr = manager(data_dir.path());
+    tokio::fs::create_dir_all(mgr.root()).await.unwrap();
+
+    // A folder outside the data dir that looks, from its contents, exactly like an orphan run
+    // gc would otherwise remove: bait for gc to follow a symlinked project folder into.
+    let outside = tempfile::tempdir().unwrap();
+    let bait = outside.path().join("bait-run");
+    std::fs::create_dir_all(&bait).unwrap();
+    std::fs::write(bait.join("marker.txt"), "do not touch").unwrap();
+
+    let project_symlink = mgr.root().join("some-project");
+    symlink(outside.path(), &project_symlink).unwrap();
+
+    let report = mgr.gc_orphans(&HashSet::new()).await;
+
+    assert!(report.removed.is_empty(), "{:?}", report.removed);
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert!(
+        project_symlink.is_symlink(),
+        "the symlink must be left alone"
+    );
+    assert!(
+        bait.exists(),
+        "gc must never descend through a symlinked project folder to reach what it points at"
     );
 }

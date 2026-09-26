@@ -58,6 +58,13 @@
 //! commands run against `repo_root`, the user's own checkout, which a worker never writes, so
 //! there is no `.git` file or repo-local config of the worker's to distrust there.
 //!
+//! [`WorktreeManager::gc_orphans`] takes a third path (#171): an orphan folder has no
+//! [`CreatedWorktree::git_dir`] pinned for it the way a known worktree does, so it runs no git
+//! command there at all, against any repository. It removes the plain folder directly, after
+//! confirming with `lstat` that the folder (and each project folder above it under
+//! [`WorktreeManager::root`]) is a real directory rather than a symlink a worker could plant to
+//! send that removal somewhere else.
+//!
 //! **Known gap (#175):** a `-c` override wins over a config value no matter how that value was
 //! set, including through an `include`/`includeIf`, so hooks and hooksPath stay closed either
 //! way. Filter drivers (`filter.<name>.clean`/`.smudge`) don't have that `-c` escape hatch, and if
@@ -663,10 +670,14 @@ impl WorktreeManager {
     /// (normally every [`wisp_store::Worktree::path`] the store has), and cleans up any project
     /// folder that becomes empty as a result.
     ///
-    /// A folder that is still a valid linked worktree is removed properly, through the
-    /// repository it belongs to (`git worktree remove`, then `git worktree prune`, so the
-    /// repository's own bookkeeping never keeps a dangling entry). Anything else there, such as a
-    /// folder left behind after its repository disappeared, is removed directly.
+    /// An orphan folder is worker-writable, and gc has no `git_dir` pinned for it the way a known
+    /// worktree does (#171: nothing was ever recorded for something the store has since
+    /// forgotten). So gc never discovers a repository from an orphan's `.git` file, or runs a git
+    /// command against whatever that file names — it could have been rewritten to redirect
+    /// anywhere, the same class of attack #166 closed for the calls scoped to a known worktree.
+    /// gc only ever removes the plain folder, after confirming it (and the project folder above
+    /// it) is a real directory, never a symlink a worker could plant to make gc follow it outside
+    /// [`WorktreeManager::root`].
     pub async fn gc_orphans(&self, known: &HashSet<PathBuf>) -> GcReport {
         let mut report = GcReport::default();
         let project_dirs = match read_dir_entries(&self.root).await {
@@ -679,7 +690,9 @@ impl WorktreeManager {
         };
 
         for project_dir in project_dirs {
-            if !matches!(tokio::fs::metadata(&project_dir).await, Ok(meta) if meta.is_dir()) {
+            if !is_real_dir(&project_dir).await {
+                // Not a genuine directory wispd created: a stray file, or a symlink planted to
+                // make gc follow it outside `root` (#171). Either way, never descended into.
                 continue;
             }
             let run_dirs = match read_dir_entries(&project_dir).await {
@@ -711,44 +724,27 @@ impl WorktreeManager {
         report
     }
 
+    /// Removes an orphan folder directly, with no git command: gc has no pinned `git_dir` for it
+    /// (#171), so nothing here may discover a repository from, or trust, whatever `path`'s own
+    /// `.git` file says — a worker could have rewritten it before wispd ever looked, just as
+    /// #166 found for a known worktree. `path` itself must be a real directory, never a symlink a
+    /// worker could substitute to route this removal outside [`WorktreeManager::root`].
     async fn remove_orphan(&self, path: &Path) -> Result<(), WorktreeError> {
-        if let Some(repo_root) = self.find_repo_of_worktree(path).await {
-            let _guard = self.lock_repo(&repo_root).await;
-            let path_arg = path.to_string_lossy().into_owned();
-            if self
-                .run_git_ok(&repo_root, &["worktree", "remove", "--force", &path_arg])
-                .await
-                .is_ok()
-            {
-                let _ = self.run_git(&repo_root, &["worktree", "prune"]).await;
-                return Ok(());
-            }
+        if !is_real_dir(path).await {
+            return Err(WorktreeError::Io {
+                path: path.to_owned(),
+                source: io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "refusing to remove an orphan entry that is not a plain directory",
+                ),
+            });
         }
-        // Not a linked worktree wispd can still reach through its repository (the repository is
-        // gone, or the folder was never a worktree at all): remove it directly.
         tokio::fs::remove_dir_all(path)
             .await
             .map_err(|source| WorktreeError::Io {
                 path: path.to_owned(),
                 source,
             })
-    }
-
-    /// The main repository a linked worktree at `path` belongs to, if `path` is still a valid
-    /// linked worktree.
-    async fn find_repo_of_worktree(&self, path: &Path) -> Option<PathBuf> {
-        let output = self
-            .run_git(
-                path,
-                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-            )
-            .await
-            .ok()?;
-        if !output.success() {
-            return None;
-        }
-        let git_dir = PathBuf::from(output.stdout.trim());
-        git_dir.parent().map(Path::to_path_buf)
     }
 
     /// `repo_path`'s repository root, and confirmation that it is one.
@@ -1150,4 +1146,15 @@ async fn read_dir_entries(dir: &Path) -> io::Result<Vec<PathBuf>> {
         entries.push(entry.path());
     }
     Ok(entries)
+}
+
+/// Whether `path` itself is a plain directory, checked with `lstat` rather than `stat` (#171): a
+/// symlink to a directory is not a directory here. [`WorktreeManager::gc_orphans`] checks every
+/// path it descends into or removes this way, one level at a time, so a symlink planted at any
+/// level under [`WorktreeManager::root`] is never followed.
+async fn is_real_dir(path: &Path) -> bool {
+    matches!(
+        tokio::fs::symlink_metadata(path).await,
+        Ok(meta) if meta.is_dir()
+    )
 }
