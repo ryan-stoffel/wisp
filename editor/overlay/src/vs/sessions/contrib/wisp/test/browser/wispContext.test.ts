@@ -289,6 +289,33 @@ suite('wisp: shared context', () => {
 			assert.strictEqual(requestsAfter, requestsBefore + 1);
 		});
 
+		test('a reconnect does not reload a paused watch for a project that no longer exists', async () => {
+			const { wispd, contextService, projects } = services();
+			contextService.state(ONE);
+			wispd.setState(connected());
+			await settle();
+			assert.strictEqual(contextService.state(ONE).get().kind, 'ready');
+
+			// ONE leaves the list: paused, per the previous test, but its Watch stays in the map.
+			const originalHandler = wispd.handler!;
+			wispd.handler = async (method, params) => method === 'project/list' ? { projects: [project(TWO, 'magic')], seq: 20 } : originalHandler(method, params);
+			projects.reload();
+			await settle();
+			assert.strictEqual(contextService.state(ONE).get().kind, 'idle');
+
+			// A reconnect (or a host switch) used to reload every watching, idle-or-failed watch
+			// unconditionally, which would ask wispd about ONE again even though its own project/list no
+			// longer has it (#106's third review). It must stay idle and unasked-about.
+			const listsForOne = () => wispd.requests.filter(([method, params]) => method === 'context/list' && (params as { project?: string }).project === ONE).length;
+			const before = listsForOne();
+			wispd.setState(disconnected('exited'));
+			wispd.setState(connecting(2));
+			wispd.setState(connected());
+			await settle();
+			assert.strictEqual(listsForOne(), before, 'ONE is not relisted: its project is gone');
+			assert.strictEqual(contextService.state(ONE).get().kind, 'idle', 'still idle, not turned into a bogus ready or failed list');
+		});
+
 		test('read is a plain passthrough that needs no watch or list', async () => {
 			const { wispd, contextService } = services();
 			wispd.setState(connected());
@@ -507,7 +534,6 @@ suite('wisp: shared context', () => {
 		/** A minimal `ICodeEditor`: only the members `WispContextEditorBanner` calls. */
 		function fakeEditor(initialModel: { uri: URI } | null) {
 			const modelChange = new Emitter<void>();
-			const layoutChange = new Emitter<void>();
 			let model = initialModel;
 			let nextId = 1;
 			let layoutZoneCalls = 0;
@@ -515,7 +541,6 @@ suite('wisp: shared context', () => {
 			const editor = {
 				getModel: () => model,
 				onDidChangeModel: modelChange.event,
-				onDidLayoutChange: layoutChange.event,
 				changeViewZones: (callback: (accessor: IViewZoneChangeAccessor) => void) => {
 					callback({
 						addZone: (zone: IViewZone) => { const id = String(nextId++); zones.set(id, zone); return id; },
@@ -528,14 +553,39 @@ suite('wisp: shared context', () => {
 				editor: editor as unknown as ICodeEditor,
 				zones,
 				setModel: (next: { uri: URI } | null) => { model = next; modelChange.fire(); },
-				fireLayoutChange: () => layoutChange.fire(),
 				layoutZoneCalls: () => layoutZoneCalls,
-				dispose: () => { modelChange.dispose(); layoutChange.dispose(); },
+				dispose: () => modelChange.dispose(),
 			};
 		}
 
 		function fakeHostStatus(host: string): IWispHostStatusService {
 			return { status: observableValue<IWispHostStatus>('status', { host } as unknown as IWispHostStatus) } as unknown as IWispHostStatusService;
+		}
+
+		/**
+		 * Replaces the global `ResizeObserver` for one test: `WispContextEditorBanner` measures its
+		 * inner text element with one instead of `ICodeEditor.onDidLayoutChange`, since upstream's view
+		 * zones start hidden (editor/vscode's viewZones.ts), so the zone's own domNode (and anything
+		 * inside it) measures 0px at the moment `addZone` returns; a `ResizeObserver` is what actually
+		 * notices the hidden-to-shown transition once the browser lays it out for real (#106's third
+		 * review), which nothing in this test double triggers on its own. `trigger` stands in for that.
+		 */
+		function fakeResizeObserver() {
+			const original = globalThis.ResizeObserver;
+			const observed = new Map<Element, ResizeObserverCallback>();
+			let disconnected = 0;
+			class FakeResizeObserver implements ResizeObserver {
+				constructor(private readonly callback: ResizeObserverCallback) { }
+				observe(target: Element): void { observed.set(target, this.callback); }
+				unobserve(target: Element): void { observed.delete(target); }
+				disconnect(): void { disconnected++; }
+			}
+			(globalThis as { ResizeObserver: typeof ResizeObserver }).ResizeObserver = FakeResizeObserver;
+			return {
+				trigger: (target: Element) => observed.get(target)?.([] as unknown as ResizeObserverEntry[], undefined as unknown as ResizeObserver),
+				disconnectCalls: () => disconnected,
+				restore: () => { (globalThis as { ResizeObserver: typeof ResizeObserver }).ResizeObserver = original; },
+			};
 		}
 
 		test('adds a zone naming the host for a wisp-context: model, and removes it for any other', () => {
@@ -572,28 +622,51 @@ suite('wisp: shared context', () => {
 			dispose();
 		});
 
-		test('carries the full message as a hover title, and resizes the zone to the domNode\'s measured height', () => {
-			const { editor, zones, fireLayoutChange, layoutZoneCalls, dispose } = fakeEditor({ uri: toContextUri(ONE, 'notes.md') });
-			const banner = new WispContextEditorBanner(editor, fakeHostStatus('this Mac'));
-			const zone = [...zones.values()][0];
-			const message = wispContextBannerMessage('this Mac');
-			assert.strictEqual(zone.domNode.getAttribute('title'), message, 'the full sentence is readable on hover even if the zone is too short to show it all');
-			assert.strictEqual(zone.heightInPx, 28, 'starts with a single-line guess');
+		test('carries the full message as a hover title, and resizes the zone once it is shown and again on width changes', () => {
+			const resizeObserver = fakeResizeObserver();
+			try {
+				const { editor, zones, layoutZoneCalls, dispose } = fakeEditor({ uri: toContextUri(ONE, 'notes.md') });
+				const banner = new WispContextEditorBanner(editor, fakeHostStatus('this Mac'));
+				const zone = [...zones.values()][0];
+				const message = wispContextBannerMessage('this Mac');
+				assert.strictEqual(zone.domNode.getAttribute('title'), message, 'the full sentence is readable on hover even if the zone is too short to show it all');
+				assert.strictEqual(zone.heightInPx, 28, 'starts with a single-line guess, since the zone is still hidden when it is added');
 
-			// The domNode is never attached to a document in this test double, so its real
-			// `offsetHeight` is always 0; this stands in for the browser measuring wrapped text
-			// taller than one line once the pane is narrow enough to wrap the sentence.
-			Object.defineProperty(zone.domNode, 'offsetHeight', { value: 56, configurable: true });
-			fireLayoutChange();
-			assert.strictEqual(zone.heightInPx, 56, 'relayouts to the measured height');
-			assert.strictEqual(layoutZoneCalls(), 1);
+				const inner = zone.domNode.querySelector<HTMLElement>('.wisp-context-banner-text');
+				assert.ok(inner, 'measures a dedicated inner element, not the zone\'s own domNode, which the zone infrastructure positions itself');
 
-			// A layout change that doesn't change the measured height is a no-op.
-			fireLayoutChange();
-			assert.strictEqual(layoutZoneCalls(), 1);
+				// The zone is hidden when it is first added (upstream's viewZones.ts), so the editor's
+				// own first measurement of anything inside it is 0; a callback reporting that changes
+				// nothing (#106's third review: this used to be read as "no real content yet" and skipped,
+				// but a wrong test bailed the same way on a genuine, later 0, so this checks the guess is
+				// left alone rather than assuming why).
+				Object.defineProperty(inner, 'offsetHeight', { value: 0, configurable: true });
+				resizeObserver.trigger(inner);
+				assert.strictEqual(zone.heightInPx, 28);
+				assert.strictEqual(layoutZoneCalls(), 0);
 
-			banner.dispose();
-			dispose();
+				// The zone is shown and the browser lays the wrapped text out for real.
+				Object.defineProperty(inner, 'offsetHeight', { value: 56, configurable: true });
+				resizeObserver.trigger(inner);
+				assert.strictEqual(zone.heightInPx, 56, 'relayouts to the now-known real height');
+				assert.strictEqual(layoutZoneCalls(), 1);
+
+				// The pane narrows further, wrapping a fourth line.
+				Object.defineProperty(inner, 'offsetHeight', { value: 74, configurable: true });
+				resizeObserver.trigger(inner);
+				assert.strictEqual(zone.heightInPx, 74, 'relayouts again on a later width-driven resize');
+				assert.strictEqual(layoutZoneCalls(), 2);
+
+				// A resize that doesn't change the measured height is a no-op.
+				resizeObserver.trigger(inner);
+				assert.strictEqual(layoutZoneCalls(), 2);
+
+				banner.dispose();
+				assert.strictEqual(resizeObserver.disconnectCalls(), 1, 'disposing the contribution disconnects the observer');
+				dispose();
+			} finally {
+				resizeObserver.restore();
+			}
 		});
 	});
 
