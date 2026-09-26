@@ -55,8 +55,20 @@ pub struct Config {
     pub socket_check_interval: Duration,
     /// How long a shutdown waits for in-flight requests before it cancels them. 10 s by default.
     pub shutdown_grace: Duration,
-    /// How many of the newest events the log keeps for replay. 10,000 by default.
+    /// How many of the newest events the log keeps in memory for `events/subscribe` replay.
+    /// 10,000 by default.
     pub event_retention: usize,
+    /// The in-memory replay window's byte bound (#187): even within `event_retention`, evicts
+    /// older events once their JSON exceeds this many bytes. 64 MiB by default, since a run's
+    /// `agent.output` batches (up to about 256 KiB each) can otherwise hold far more memory than
+    /// `event_retention` alone was sized for.
+    pub event_retention_bytes: usize,
+    /// How many of the newest host and project events (not tied to a run, such as
+    /// `project.created` and `context.changed`) the stored event log keeps; older ones are
+    /// pruned (#187). An agent run's events are never pruned this way: they stay as long as the
+    /// run's own row does, and nothing removes a run's row yet. 10,000 by default, the same
+    /// figure as `event_retention`.
+    pub host_event_retention: usize,
     /// Requests one connection may have in flight before the server stops reading from it.
     /// 32 by default.
     pub max_requests_in_flight: usize,
@@ -80,6 +92,8 @@ impl Config {
             socket_check_interval: Duration::from_secs(60),
             shutdown_grace: Duration::from_secs(10),
             event_retention: 10_000,
+            event_retention_bytes: 64 * 1024 * 1024,
+            host_event_retention: 10_000,
             max_requests_in_flight: 32,
             outbound_queue: 32,
             backends: None,
@@ -267,6 +281,8 @@ impl Server {
             log: Arc::new(EventLog::open(
                 &data_dir.store_file(),
                 config.event_retention,
+                config.event_retention_bytes,
+                config.host_event_retention,
             )),
             store,
             os: methods::os_version(),
@@ -473,7 +489,12 @@ impl Daemon {
         let store = StoreHandle::open(&dir.join("wispd.sqlite3"));
         Arc::new(Self {
             started: Instant::now(),
-            log: Arc::new(EventLog::open(&dir.join("wispd.sqlite3"), event_retention)),
+            log: Arc::new(EventLog::open(
+                &dir.join("wispd.sqlite3"),
+                event_retention,
+                usize::MAX,
+                usize::MAX,
+            )),
             store,
             os: "test".to_owned(),
             cli_detector: CliDetector::new(launcher, crate::detect::PROBE_TIMEOUT),
