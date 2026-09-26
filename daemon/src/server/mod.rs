@@ -59,15 +59,23 @@ pub struct Config {
     /// 10,000 by default.
     pub event_retention: usize,
     /// The in-memory replay window's byte bound (#187): even within `event_retention`, evicts
-    /// older events once their JSON exceeds this many bytes. 64 MiB by default, since a run's
-    /// `agent.output` batches (up to about 256 KiB each) can otherwise hold far more memory than
-    /// `event_retention` alone was sized for.
+    /// older events once the total size of their JSON (not their in-memory heap size, which is
+    /// somewhat larger) exceeds this many bytes. 64 MiB by default, since a run's `agent.output`
+    /// batches (up to about 256 KiB each) can otherwise hold far more memory than
+    /// `event_retention` alone was sized for. Applied on every append and, defensively, right
+    /// after a restart reloads the table too.
     pub event_retention_bytes: usize,
     /// How many of the newest host and project events (not tied to a run, such as
     /// `project.created` and `context.changed`) the stored event log keeps; older ones are
     /// pruned (#187). An agent run's events are never pruned this way: they stay as long as the
     /// run's own row does, and nothing removes a run's row yet. 10,000 by default, the same
     /// figure as `event_retention`.
+    ///
+    /// Must be at least `event_retention` (`EventLog::with` clamps it if not): a restart only
+    /// reloads the newest `event_retention` events, and every host or project event among them is
+    /// necessarily among the newest `event_retention` host and project events too, so a smaller
+    /// `host_event_retention` could prune one the reload still expects — a gap `resyncRequired`
+    /// would never notice (0016).
     pub host_event_retention: usize,
     /// Requests one connection may have in flight before the server stops reading from it.
     /// 32 by default.

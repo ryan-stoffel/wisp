@@ -11,13 +11,18 @@
 //! The table is compacted on a retention policy (#187, decision 0016): an agent run's events stay
 //! as long as its run row does (nothing removes one yet, so in practice they are not pruned by
 //! this log), while host and project events with no `run_id` — `project.created`,
-//! `context.changed` — are pruned to the newest `host_retention` after each one is appended. The
-//! in-memory window that `events/subscribe` replays from only ever shrinks by eviction here, never
-//! by a database read, so that pruning can't change what a live subscriber sees or make
-//! `resyncRequired` fire incorrectly; it only shortens what a restart can reload. That in-memory
-//! window is itself bounded by both count (`retention`) and bytes (`max_bytes`), evicting from the
-//! front once either is exceeded, so a run with many large `agent.output` batches can't hold
-//! unbounded memory.
+//! `context.changed` — are pruned to the newest `host_retention` after each one is appended.
+//! `host_retention` is always at least `retention` (`EventLog::with` enforces it): a restart only
+//! ever reloads the newest `retention` events, and by pigeonhole every host or project event in
+//! that reload is among the newest `retention` host and project events too, so keeping at least
+//! that many never lets pruning remove one a reload still needs. A live subscriber is unaffected
+//! either way, since `events/subscribe`'s replay (`check`/`next`) only ever reads the in-memory
+//! window, never the database; pruning only changes what a later restart can reload, and the
+//! invariant keeps that reload gap-free rather than merely shorter. That in-memory window is
+//! itself bounded by both count (`retention`) and bytes (`max_bytes`), evicting from the front
+//! once either is exceeded — on every append, and once more on load in case a restart's reload
+//! didn't already fit — so a run with many large `agent.output` batches can't hold unbounded
+//! memory even right after a restart.
 //!
 //! Subscribers don't get their own queues. Each subscription is a cursor that reads the log (see
 //! `methods::events::Cursors`), so a slow subscriber costs nothing until it reads, and whoever
@@ -100,6 +105,18 @@ fn kind_of(event: &WispEvent) -> String {
         .unwrap_or_default()
 }
 
+/// Evicts from the front of `events` until it is within both `retention` and `max_bytes`,
+/// keeping `bytes` (the sum of what remains) in sync. Always leaves at least one event, so a
+/// single one over `max_bytes` on its own is never dropped outright. Shared by construction and
+/// by every append, so the bound holds the same way whichever put the log over it.
+fn evict(events: &mut VecDeque<Arc<Entry>>, bytes: &mut usize, retention: usize, max_bytes: usize) {
+    while events.len() > 1 && (events.len() > retention || *bytes > max_bytes) {
+        if let Some(evicted) = events.pop_front() {
+            *bytes = bytes.saturating_sub(evicted.bytes);
+        }
+    }
+}
+
 impl EventLog {
     /// An empty log in memory only, which keeps the newest `retention` events with no byte bound.
     /// For tests that don't care about the byte bound or the store's own host-event pruning.
@@ -151,7 +168,7 @@ impl EventLog {
         });
         let head = db.event_head()?;
         let events = db
-            .latest_events(retention.max(1))?
+            .latest_events(retention.max(1), max_bytes)?
             .into_iter()
             .map(|stored| Arc::new(entry(&stored)))
             .collect();
@@ -173,16 +190,28 @@ impl EventLog {
         retention: usize,
         max_bytes: usize,
         host_retention: usize,
-        events: VecDeque<Arc<Entry>>,
+        mut events: VecDeque<Arc<Entry>>,
         head: u64,
         db: Option<Store>,
     ) -> Self {
-        let bytes = events.iter().map(|entry| entry.bytes).sum();
+        let retention = retention.max(1);
+        let max_bytes = max_bytes.max(1);
+        // A restart can only reload what's in the table already, so `latest_events` applies both
+        // bounds itself; this is a second, defensive pass in case `events` didn't (`new_bounded`
+        // starts empty, so it's a no-op there). `host_retention` must be at least `retention`: a
+        // reload only ever pulls the newest `retention` events, and every host or project event
+        // among them is, by pigeonhole, among the newest `retention` host and project events, so
+        // keeping at least that many host events never lets a restart's window skip one. A
+        // smaller `host_retention` could prune a host event that a reload still expects, leaving
+        // a hole `resyncRequired` would never notice (0016).
+        let host_retention = host_retention.max(retention);
+        let mut bytes = events.iter().map(|entry| entry.bytes).sum();
+        evict(&mut events, &mut bytes, retention, max_bytes);
         Self {
             id,
-            retention: retention.max(1),
-            max_bytes: max_bytes.max(1),
-            host_retention: host_retention.max(1),
+            retention,
+            max_bytes,
+            host_retention,
             inner: Mutex::new(Inner { events, bytes, db }),
             head: watch::Sender::new(head),
         }
@@ -209,6 +238,7 @@ impl EventLog {
         let seq = self.head() + 1;
         let run_id = run_of(&event);
         let payload = serde_json::to_string(&event).unwrap_or_default();
+        let bytes = payload.len();
         if let Some(db) = &inner.db {
             let stored = StoredEvent {
                 seq,
@@ -216,7 +246,7 @@ impl EventLog {
                 project_id: project.map(Uuid::from),
                 run_id: run_id.map(Uuid::from),
                 kind: kind_of(&event),
-                payload: payload.clone(),
+                payload,
             };
             if let Err(error) = db.append_event(&stored) {
                 error!(seq, %error, "could not store an event; it is delivered but not kept");
@@ -233,7 +263,6 @@ impl EventLog {
                 }
             }
         }
-        let bytes = payload.len();
         inner.events.push_back(Arc::new(Entry {
             seq,
             time,
@@ -242,14 +271,12 @@ impl EventLog {
             bytes,
         }));
         inner.bytes += bytes;
-        // Always keep at least the event just appended, even if it alone passes `max_bytes`.
-        while inner.events.len() > 1
-            && (inner.events.len() > self.retention || inner.bytes > self.max_bytes)
-        {
-            if let Some(evicted) = inner.events.pop_front() {
-                inner.bytes = inner.bytes.saturating_sub(evicted.bytes);
-            }
-        }
+        let Inner {
+            events: entries,
+            bytes: total_bytes,
+            ..
+        } = &mut *inner;
+        evict(entries, total_bytes, self.retention, self.max_bytes);
         self.head.send_replace(seq);
         seq
     }
@@ -584,56 +611,81 @@ mod tests {
     }
 
     #[test]
-    fn stored_host_events_are_pruned_but_run_events_and_live_replay_stay_correct() {
+    fn host_retention_below_the_in_memory_retention_is_clamped_up() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("wispd.sqlite3");
         let run = RunId::generate();
-        let log = EventLog::open(&path, 10, usize::MAX, 1);
-        append(&log, None); // seq 1: host, pruned once seq 3 lands
+        // Ask for host_retention 1 with retention 3: without the clamp in `EventLog::with`,
+        // pruning would keep only the single newest host event, taking seq 3 and 4 down with
+        // seq 1 even though they're inside what a restart still reloads.
+        let log = EventLog::open(&path, 3, usize::MAX, 1);
+        append(&log, None); // seq 1: host
         log.append(jiff::Timestamp::now(), None, finished(run)); // seq 2: run, never pruned
-        append(&log, None); // seq 3: host, prunes seq 1
-        append(&log, None); // seq 4: host, prunes seq 3
-
-        // The in-memory window still has everything (`retention` is 10), so a live subscriber
-        // sees every event; pruning is a database-only, restart-only concern.
-        assert_eq!(log.check(0), Ok(()));
-        assert_eq!(log.next(0, None).unwrap().0.unwrap().seq, 1);
+        append(&log, None); // seq 3: host
+        append(&log, None); // seq 4: host
+        append(&log, None); // seq 5: host, old enough that pruning it is legitimate
         let id = log.id();
         drop(log);
 
-        let reopened = EventLog::open(&path, 10, usize::MAX, 1);
+        let reopened = EventLog::open(&path, 3, usize::MAX, 1);
         assert_eq!(reopened.id(), id, "the log did not start over");
+        assert_eq!(reopened.head(), 5);
+
+        // The clamp made the effective host_retention 3, so only seq 1 (older than every host
+        // event the newest-3 window could ever need) was pruned; seq 3 and 4 survived.
         assert_eq!(
-            reopened.head(),
-            4,
-            "seq keeps counting the pruned events too"
-        );
-        assert_eq!(
-            reopened.check(0),
-            Err(Gone::Dropped),
-            "resyncRequired still fires correctly: seq 1 was really pruned"
+            reopened.check(2),
+            Ok(()),
+            "no silent gap: everything the newest-3 window owes seq 2 is still there"
         );
         let mut seqs = Vec::new();
-        let mut after = 1;
+        let mut after = 2;
         while let (Some(entry), seq) = reopened.next(after, None).unwrap() {
             seqs.push(entry.seq);
             after = seq;
         }
-        assert_eq!(
-            seqs,
-            [2, 4],
-            "seq 1 and 3 were pruned from the table; the run event and the newest host event \
-             are what a restart can still reload"
+        assert_eq!(seqs, [3, 4, 5], "no hole between the reloaded events");
+
+        // seq 1 is genuinely gone (it's outside the reloaded window entirely), so a client that
+        // saw it still correctly needs a resync.
+        assert_eq!(reopened.check(0), Err(Gone::Dropped));
+    }
+
+    #[test]
+    fn reopening_with_a_small_byte_bound_trims_the_reloaded_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wispd.sqlite3");
+        let run = RunId::generate();
+        let one = serde_json::to_string(&big_output(run, &"a".repeat(80)))
+            .unwrap()
+            .len();
+        let log = EventLog::open(&path, 1000, usize::MAX, 1000);
+        log.append(
+            jiff::Timestamp::now(),
+            None,
+            big_output(run, &"a".repeat(80)),
         );
-        let (run_entries, more) = reopened.run_events(run, 0, 10, usize::MAX).unwrap();
-        assert_eq!(
-            run_entries
-                .iter()
-                .map(|entry| entry.seq)
-                .collect::<Vec<_>>(),
-            [2],
-            "agent/events still finds the run's only event"
+        log.append(
+            jiff::Timestamp::now(),
+            None,
+            big_output(run, &"b".repeat(80)),
         );
-        assert!(!more);
+        log.append(
+            jiff::Timestamp::now(),
+            None,
+            big_output(run, &"c".repeat(80)),
+        );
+        drop(log);
+
+        // `retention` (1000) is nowhere close to 3, so only the byte bound should trim this on
+        // reload, before any append ever runs against the reopened log.
+        let reopened = EventLog::open(&path, 1000, one + 10, 1000);
+        assert_eq!(
+            reopened.check(0),
+            Err(Gone::Dropped),
+            "the byte bound trimmed what was reloaded, not just what a later append would evict"
+        );
+        assert_eq!(reopened.check(2), Ok(()));
+        assert_eq!(reopened.next(2, None).unwrap().0.unwrap().seq, 3);
     }
 }
