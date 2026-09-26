@@ -1,0 +1,18 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ryan Stoffel <stoffel.thomas.ryan@gmail.com>
+Date: Fri, 25 Sep 2026 20:29:25 -0700
+Subject: [PATCH] chat: show the Agents pill by default
+
+
+diff --git a/src/vs/workbench/contrib/chat/common/sessionChatPills.ts b/src/vs/workbench/contrib/chat/common/sessionChatPills.ts
+index 8d10524e8999496ada14224e03e266aa3876b3b7..30cc76f0afd34169f57c8ca3872aa55cc9f01639 100644
+--- a/src/vs/workbench/contrib/chat/common/sessionChatPills.ts
++++ b/src/vs/workbench/contrib/chat/common/sessionChatPills.ts
+@@ -113,7 +113,6 @@ export function getSessionChatPillMenu(
+  */
+ const defaultHiddenKinds: readonly SessionChatPillKind[] = [
+ 	SessionChatPillKind.Customizations,
+-	SessionChatPillKind.Subagents,
+ ];
+ 
+ const hiddenSessionChatPills = observableMemento<readonly string[]>({
