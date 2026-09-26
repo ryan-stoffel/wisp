@@ -5,6 +5,8 @@
 //! `coordinator`), and `host.rs` advertises the capability in `initialize`.
 
 mod accounts;
+mod context;
+mod defaults;
 mod events;
 mod host;
 mod project;
@@ -18,7 +20,8 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use wisp_protocol::jsonrpc::{ErrorObject, INVALID_REQUEST, Request, RequestId, Response};
 use wisp_protocol::methods::{
-    AccountsKeysAdd, AccountsKeysList, AccountsKeysRemove, AccountsList, AccountsRefresh,
+    AccountsDefaultsGet, AccountsDefaultsSet, AccountsKeysAdd, AccountsKeysList,
+    AccountsKeysRemove, AccountsList, AccountsRefresh, ContextList, ContextRead, ContextWrite,
     EventsSubscribe, EventsUnsubscribe, HostHealth, HostVersion, Initialize, ProjectCreate,
     ProjectList, RequestMethod, UsageGet,
 };
@@ -88,6 +91,21 @@ pub(crate) async fn dispatch(context: Context, request: Request) -> Reply {
                 .await
         }
         UsageGet::NAME => handle::<UsageGet, _, _>(&request, |p| usage::get(&context, p)).await,
+        AccountsDefaultsGet::NAME => {
+            handle::<AccountsDefaultsGet, _, _>(&request, |p| defaults::get(&context, p)).await
+        }
+        AccountsDefaultsSet::NAME => {
+            handle::<AccountsDefaultsSet, _, _>(&request, |p| defaults::set(&context, p)).await
+        }
+        ContextList::NAME => {
+            handle::<ContextList, _, _>(&request, |p| context::list(&context, p)).await
+        }
+        ContextRead::NAME => {
+            handle::<ContextRead, _, _>(&request, |p| context::read(&context, p)).await
+        }
+        ContextWrite::NAME => {
+            handle::<ContextWrite, _, _>(&request, |p| context::write(&context, p)).await
+        }
         EventsSubscribe::NAME => {
             let subscribed = match request.params() {
                 Ok(params) => events::subscribe(&context, params).await,

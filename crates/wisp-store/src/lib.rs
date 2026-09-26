@@ -8,11 +8,13 @@
 //! in this database (#117).
 
 mod accounts;
+mod defaults;
 mod error;
 mod migrations;
 mod project;
 mod timestamp;
 mod usage;
+mod worktree;
 
 use std::fs;
 use std::path::Path;
@@ -22,9 +24,11 @@ use std::time::{Duration, Instant};
 use rusqlite::{Connection, Error as SqliteError, ErrorCode};
 
 pub use accounts::{Account, AccountFields};
+pub use defaults::RoleDefault;
 pub use error::StoreError;
 pub use project::{Project, ProjectFields};
 pub use usage::{LimitSnapshot, SessionModelUsage, UsageDelta, UsageSummary};
+pub use worktree::{Worktree, WorktreeFields};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const WAL_RETRY_INTERVAL: Duration = Duration::from_millis(20);

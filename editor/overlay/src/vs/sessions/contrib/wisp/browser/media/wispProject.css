@@ -99,18 +99,30 @@
 	white-space: nowrap;
 }
 
-.monaco-action-bar .action-item.wisp-composer-footer-host {
+.monaco-action-bar .action-item.wisp-composer-footer-host,
+.monaco-action-bar .action-item.wisp-composer-account {
 	cursor: pointer;
 }
 
-.monaco-action-bar .action-item.wisp-composer-footer-host:hover {
+.monaco-action-bar .action-item.wisp-composer-footer-host:hover,
+.monaco-action-bar .action-item.wisp-composer-account:hover {
 	background-color: var(--vscode-toolbar-hoverBackground);
 	color: var(--vscode-foreground);
 }
 
-.monaco-action-bar .action-item.wisp-composer-footer-host:focus-visible {
+.monaco-action-bar .action-item.wisp-composer-footer-host:focus-visible,
+.monaco-action-bar .action-item.wisp-composer-account:focus-visible {
 	outline: 1px solid var(--vscode-focusBorder);
 	outline-offset: -1px;
+}
+
+.monaco-action-bar .action-item.wisp-composer-account {
+	max-width: 200px;
+}
+
+.wisp-composer-account-chevron {
+	flex: none;
+	opacity: 0.7;
 }
 
 .wisp-composer-footer-text {

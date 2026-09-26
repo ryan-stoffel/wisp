@@ -32,6 +32,8 @@
 mod account;
 mod agent;
 mod cli_account;
+mod context;
+mod defaults;
 mod error;
 mod events;
 pub mod framing;
@@ -56,6 +58,14 @@ pub use agent::{RunId, TurnId};
 pub use cli_account::{
     AccountsListParams, AccountsListResult, AccountsRefreshParams, AccountsRefreshResult, AuthKind,
     CliKind, DetectedCli,
+};
+pub use context::{
+    ContextFile, ContextListParams, ContextListResult, ContextReadParams, ContextReadResult,
+    ContextWriteId, ContextWriteParams, ContextWriteResult,
+};
+pub use defaults::{
+    AccountChoice, AccountsDefaultsGetParams, AccountsDefaultsGetResult, AccountsDefaultsSetParams,
+    Role,
 };
 pub use error::{ErrorData, ErrorKind, IncompatibleProtocolDetail};
 pub use events::{
@@ -219,6 +229,85 @@ mod tests {
             id: AccountId::generate(),
         });
         round_trip(&AccountsKeysRemoveResult {});
+    }
+
+    #[test]
+    fn account_default_types_round_trip() {
+        round_trip(&AccountsDefaultsGetParams {});
+        for account in [
+            None,
+            Some(AccountChoice::Subscription {
+                backend: "claude".to_owned(),
+            }),
+            Some(AccountChoice::Key {
+                id: AccountId::generate(),
+            }),
+        ] {
+            round_trip(&AccountsDefaultsSetParams {
+                role: Role::Coordinator,
+                account: account.clone(),
+            });
+        }
+        round_trip(&AccountsDefaultsGetResult {
+            coordinator: Some(AccountChoice::Subscription {
+                backend: "claude".to_owned(),
+            }),
+            worker: Some(AccountChoice::Key {
+                id: AccountId::generate(),
+            }),
+        });
+        round_trip(&AccountsDefaultsGetResult::default());
+    }
+
+    #[test]
+    fn context_types_round_trip() {
+        for last_writer in [None, Some("editor".to_owned())] {
+            round_trip(&context_file(last_writer));
+        }
+        round_trip(&ContextListParams {
+            project: ProjectId::generate(),
+        });
+        round_trip(&ContextListResult {
+            files: vec![context_file(None), context_file(Some("editor".to_owned()))],
+        });
+        round_trip(&ContextReadParams {
+            project: ProjectId::generate(),
+            path: "notes.md".to_owned(),
+        });
+        round_trip(&ContextReadResult {
+            file: context_file(None),
+            content: "# Notes".to_owned(),
+        });
+        for writer in [None, Some("editor".to_owned())] {
+            round_trip(&ContextWriteParams {
+                id: ContextWriteId::generate(),
+                project: ProjectId::generate(),
+                path: "notes.md".to_owned(),
+                content: "# Notes".to_owned(),
+                writer,
+            });
+        }
+        round_trip(&ContextWriteResult {
+            file: context_file(Some("editor".to_owned())),
+        });
+        round_trip(&EventsEventParams {
+            subscription: SubscriptionId::generate(),
+            seq: 9,
+            time: "2026-09-24T12:00:00Z".parse().unwrap(),
+            project: Some(ProjectId::generate()),
+            event: WispEvent::ContextChanged {
+                file: context_file(Some("editor".to_owned())),
+            },
+        });
+    }
+
+    fn context_file(last_writer: Option<String>) -> ContextFile {
+        ContextFile {
+            path: "notes.md".to_owned(),
+            size: 7,
+            modified_at: "2026-09-24T12:00:00Z".parse().unwrap(),
+            last_writer,
+        }
     }
 
     #[test]

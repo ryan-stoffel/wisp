@@ -498,6 +498,17 @@ impl EventSink {
         self.finished
     }
 
+    /// Discards the running usage total this sink has summed so far and starts over from
+    /// `baseline`, as if nothing had been recorded before it.
+    ///
+    /// For a sink that outlives one account, such as routing's (#119) fallback: once forwarding
+    /// switches to a different run's events, those events belong to a different session, and the
+    /// `Finished` this sink eventually sends must report only that session's own totals, from its
+    /// own baseline, not the account it fell back from added in.
+    pub fn reset_usage(&mut self, baseline: Vec<ModelUsage>) {
+        self.usage = CumulativeUsage::with_baseline(baseline);
+    }
+
     /// Completes once the consumer has dropped the stream. A backend then stops its CLI, since
     /// nothing would record what it does.
     pub async fn closed(&self) {
@@ -694,6 +705,36 @@ mod tests {
                 model: None,
                 usage: input(7)
             }]
+        );
+    }
+
+    #[tokio::test]
+    async fn resetting_usage_drops_what_was_summed_before_it() {
+        let (mut sink, mut stream) = EventSink::channel(8, Vec::new());
+        sink.emit(Event::Usage(ModelUsage {
+            model: None,
+            usage: input(100),
+        }))
+        .await
+        .unwrap();
+        sink.reset_usage(Vec::new());
+        sink.emit(Event::Usage(ModelUsage {
+            model: None,
+            usage: input(4),
+        }))
+        .await
+        .unwrap();
+        sink.finish(Outcome::Completed { result: None })
+            .await
+            .unwrap();
+        while stream.next().await.is_some() {}
+        assert_eq!(
+            stream.usage_totals(),
+            [ModelUsage {
+                model: None,
+                usage: input(4)
+            }],
+            "the reset total, not 104"
         );
     }
 

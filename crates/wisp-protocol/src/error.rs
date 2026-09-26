@@ -29,6 +29,10 @@ pub enum ErrorKind {
     KeychainUnavailable,
     /// A create reused an existing id with different params.
     IdConflict,
+    /// No shared context file has the given path (#155).
+    ContextNotFound,
+    /// The content would be over `context/write`'s per-file or per-project size cap (#155).
+    ContextTooLarge,
     /// A new project's `repoPath` is not the top folder of a git working tree on this host. The
     /// message says what is wrong with it.
     NotARepository,
@@ -124,6 +128,8 @@ mod tests {
             (ErrorKind::AccountNotFound, "accountNotFound"),
             (ErrorKind::KeychainUnavailable, "keychainUnavailable"),
             (ErrorKind::IdConflict, "idConflict"),
+            (ErrorKind::ContextNotFound, "contextNotFound"),
+            (ErrorKind::ContextTooLarge, "contextTooLarge"),
             (ErrorKind::NotARepository, "notARepository"),
         ] {
             assert_eq!(serde_json::to_value(kind).unwrap(), json!(name));

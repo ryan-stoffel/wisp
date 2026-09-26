@@ -81,6 +81,37 @@ const MIGRATIONS: &[Migration] = &[
             PRIMARY KEY (session_id, model)
         );",
     },
+    // A run's worktree (#154): one row per run, keyed by the run id, so startup garbage
+    // collection can tell a worktree the store still knows about from an orphan left behind by
+    // a crash. `base` is the concrete commit the worktree was created from, resolved once at
+    // creation time so a later diff or commit is never against a base that moved.
+    Migration {
+        version: 5,
+        sql: "CREATE TABLE worktrees (
+            id TEXT NOT NULL PRIMARY KEY,
+            repo_path TEXT NOT NULL,
+            path TEXT NOT NULL,
+            branch TEXT NOT NULL,
+            base TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX worktrees_repo_path ON worktrees (repo_path);",
+    },
+    // Per-host role defaults for account routing (#119): the account a task's role falls back to
+    // when it doesn't name one outright. `account_kind` is 'subscription' or 'key'; exactly one of
+    // `backend` (a backend's name, such as 'claude') and `key_account_id` (a row in `accounts`,
+    // though not enforced by a foreign key, since a key account can be removed after being set as
+    // a default) is set, matching `account_kind`.
+    Migration {
+        version: 6,
+        sql: "CREATE TABLE role_defaults (
+            role TEXT NOT NULL PRIMARY KEY,
+            account_kind TEXT NOT NULL,
+            backend TEXT,
+            key_account_id TEXT,
+            updated_at TEXT NOT NULL
+        );",
+    },
 ];
 
 /// Bootstraps the `schema_version` table and applies any migration whose

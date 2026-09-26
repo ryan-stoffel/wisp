@@ -1153,6 +1153,17 @@ async fn cancel_interrupts_the_cli_with_sigint() {
         next(&mut events).await,
         Event::SessionStarted { .. }
     ));
+    // The fake CLI prints `@trap-armed` right after installing its SIGINT trap (fake-claude.sh),
+    // which the translator reports as a malformed line. Waiting for it here is a deterministic
+    // handshake: cancel() below can never race the trap's own installation (#149), unlike waiting
+    // for a wall-clock margin.
+    assert!(matches!(
+        next(&mut events).await,
+        Event::Warning {
+            warning: WarningKind::MalformedLine,
+            ..
+        }
+    ));
     assert!(matches!(next(&mut events).await, Event::Text { .. }));
     let started = Instant::now();
     run.cancel();
