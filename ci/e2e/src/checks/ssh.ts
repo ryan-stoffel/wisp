@@ -15,7 +15,7 @@ import {
   TIMEOUT_MS,
   launchConnectedForSsh,
   projectWorkspace,
-  queryProjectsDirect,
+  queryProjectsOverSsh,
   readEnvFile,
   ready,
 } from '../harness.ts';
@@ -88,10 +88,11 @@ export const sshChecks = [
         throw new Error(`expected one project row after creating it over ssh, found ${String(rows.length)}: ${rows.join(', ')}`);
       }
 
-      // Ground truth from the ssh-side wispd itself (it runs on this same machine, so no ssh is
-      // needed to ask it): proves the project wispd created is the one the sidebar shows.
+      // Ground truth from the ssh-side wispd itself, asked the same way the editor reaches it
+      // (over ssh, through the same wrapper): proves the project wispd created is the one the
+      // sidebar shows.
       const projectId = projectIdFromSession(rowSession);
-      const direct = await queryProjectsDirect(sshLaunch.wispdPath, sshLaunch.sshWispdDataDir);
+      const direct = await queryProjectsOverSsh(sshLaunch.wrapperPath);
       const directProject = direct[0];
       if (direct.length !== 1 || directProject?.id !== projectId) {
         throw new Error(`the ssh-side wispd lists ${JSON.stringify(direct)}, expected exactly the one project ${projectId}`);

@@ -69,8 +69,10 @@ export interface SshLaunch {
   readonly session: Session;
   /** The data dir the ssh-side wispd (started by `ssh localhost ... attach`) uses; see below. */
   readonly sshWispdDataDir: string;
-  /** The bundled wispd's own path, for querying `sshWispdDataDir` directly (queryProjectsDirect). */
+  /** The bundled wispd's own path, for stopping the process holding `sshWispdDataDir`'s lock. */
   readonly wispdPath: string;
+  /** The wrapper script's own path, for `queryProjectsOverSsh`. */
+  readonly wrapperPath: string;
   /** Stops the ssh-side wispd (it runs on this same machine, so no ssh is needed to reach it) and removes its data dir. */
   close(): Promise<void>;
 }
@@ -103,6 +105,7 @@ export async function launchConnectedForSsh(): Promise<SshLaunch> {
     session,
     sshWispdDataDir,
     wispdPath,
+    wrapperPath: wrapper,
     close: async () => {
       await stopWispdAt(sshWispdDataDir);
       await rm(sshWispdDataDir, { recursive: true, force: true, maxRetries: 3 });
@@ -150,18 +153,15 @@ export async function killWispd(session: Session): Promise<void> {
 }
 
 /**
- * Asks a wispd directly for its projects, bypassing the editor entirely: spawns `<wispdExecutable>
- * attach` against `dataDir`, sends `initialize` then `project/list`, and returns the projects the
- * second answers with. Ground truth for "no duplicate project after a reconnect" (reconnect.ts):
- * `WispProjectsService` keeps its old list across a reconnect until the resubscribe's `resync`
- * lands and it re-lists, so reading the UI right after the chip reconnects can see the stale array.
- * wispd's own store has no such lag.
+ * Sends `initialize` then `project/list` to an already-spawned `wispd attach` (or an ssh session
+ * running one) and returns the projects `project/list` answers with. Shared by
+ * {@link queryProjectsDirect} and {@link queryProjectsOverSsh}.
  */
-export async function queryProjectsDirect(wispdExecutable: string, dataDir: string): Promise<readonly { id: string }[]> {
-  const child = spawn(wispdExecutable, ['attach'], {
-    env: { ...process.env, WISPD_DATA_DIR: dataDir },
-    stdio: ['pipe', 'pipe', 'ignore'],
-  });
+async function queryProjects(child: {
+  readonly stdin: import('node:stream').Writable;
+  readonly stdout: import('node:stream').Readable;
+  kill(): boolean;
+}): Promise<readonly { id: string }[]> {
   try {
     const request = (id: number, method: string, params: unknown) =>
       `${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`;
@@ -182,12 +182,45 @@ export async function queryProjectsDirect(wispdExecutable: string, dataDir: stri
     const responses = lines.map((line) => JSON.parse(line) as { id: number; result?: { projects?: { id: string }[] }; error?: unknown });
     const listResponse = responses.find((response) => response.id === 2);
     if (!listResponse || listResponse.error || !listResponse.result?.projects) {
-      throw new Error(`no project/list result from wispd at ${dataDir}: ${lines.join(' | ')}`);
+      throw new Error(`no project/list result from wispd: ${lines.join(' | ')}`);
     }
     return listResponse.result.projects;
   } finally {
     child.kill();
   }
+}
+
+/**
+ * Asks a wispd directly for its projects, bypassing the editor entirely: spawns `<wispdExecutable>
+ * attach` against `dataDir`, and reads back `project/list`. Ground truth for "no duplicate project
+ * after a reconnect" (reconnect.ts): `WispProjectsService` keeps its old list across a reconnect
+ * until the resubscribe's `resync` lands and it re-lists, so reading the UI right after the chip
+ * reconnects can see the stale array. wispd's own store has no such lag.
+ */
+export function queryProjectsDirect(wispdExecutable: string, dataDir: string): Promise<readonly { id: string }[]> {
+  const child = spawn(wispdExecutable, ['attach'], {
+    env: { ...process.env, WISPD_DATA_DIR: dataDir },
+    stdio: ['pipe', 'pipe', 'ignore'],
+  });
+  return queryProjects(child);
+}
+
+/**
+ * The same, but over `ssh localhost` (ssh.ts): querying the ssh-side wispd by spawning
+ * `<wispdExecutable> attach` directly, with `WISPD_DATA_DIR` set on this process, is not reliable
+ * for a *remote* host in general and was not reliable here either -- the two processes are not
+ * guaranteed to resolve the same "too long a path" fallback socket the same way (0007's
+ * `DataDir::socket_path`) when spawned outside versus inside an ssh session on the same machine.
+ * Going through ssh, exactly as the editor does, removes the discrepancy: `wrapperPath` already
+ * sets `WISPD_DATA_DIR` itself (`launchConnectedForSsh`'s wrapper script), so no env is needed here.
+ */
+export function queryProjectsOverSsh(wrapperPath: string, destination = 'localhost'): Promise<readonly { id: string }[]> {
+  const child = spawn(
+    'ssh',
+    ['-T', '-o', 'BatchMode=yes', '-o', 'ControlPath=none', '--', destination, `${wrapperPath} attach`],
+    { stdio: ['pipe', 'pipe', 'ignore'] },
+  );
+  return queryProjects(child);
 }
 
 /** Reads a small `KEY=value` file, such as one `scripts/ci/ssh-localhost` wrote. */
