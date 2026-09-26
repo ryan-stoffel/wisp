@@ -71,26 +71,41 @@ struct StartLocks {
 
 impl StartLocks {
     /// `run_id`'s lock, creating one if this is the first caller to ask for it.
+    ///
+    /// Also sweeps every entry nothing holds any more (#190 review): a waiter whose own task was
+    /// cancelled while queued on `.lock_owned().await` never runs `release`, since it never got
+    /// as far as constructing a `Starting` to drop — its `Arc` simply disappears when its future
+    /// does, which `release` alone can't observe. Left alone, such an entry would sit in the map
+    /// forever holding a lock nobody can ever take again. This sweep, run on every `get`, catches
+    /// it: nothing but the map's own clone remains, so `strong_count` is 1.
     fn get(&self, run_id: RunId) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self.locks.lock().unwrap_or_else(PoisonError::into_inner);
+        locks.retain(|_, lock| Arc::strong_count(lock) > 1);
         Arc::clone(
-            self.locks
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
+            locks
                 .entry(run_id)
                 .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
         )
     }
 
-    /// Drops `run_id`'s entry, so the map doesn't grow forever. Safe to call while another
-    /// caller still holds a clone of the lock from before this runs: the `Arc` keeps it alive for
-    /// them, and a caller that asks afterward simply gets a fresh, uncontended lock, which is
-    /// correct because this is only called once `run_id` already has an actor (or definitely
-    /// failed to start one), so a "fresh" caller's own fast path finds that out immediately.
+    /// Drops `run_id`'s entry, but only if nothing besides this map and the caller's own
+    /// about-to-be-dropped guard still holds it (#190 review): removing it unconditionally would
+    /// let a fresh caller's `get` hand out a *different*, uncontended lock while another caller
+    /// that queued earlier is still waiting on the old one, so both could end up inside the
+    /// critical section together — exactly the double-worktree, double-actor race this whole
+    /// mechanism exists to prevent, and one that only shows up when the first attempt fails
+    /// (`existing()`'s fast path in `start`, and `agents.actor(id)` in `actor_for`, both have
+    /// nothing to find until a start actually succeeds). `Starting::drop` calls this while its own
+    /// `OwnedMutexGuard` is still alive, so a caller with no other waiters sees `strong_count == 2`
+    /// (the map's clone and that guard's); anything higher means a waiter is still queued, and the
+    /// entry is left for `get`'s sweep to clean up once every waiter is done with it.
     fn release(&self, run_id: RunId) {
-        self.locks
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&run_id);
+        let mut locks = self.locks.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(lock) = locks.get(&run_id)
+            && Arc::strong_count(lock) <= 2
+        {
+            locks.remove(&run_id);
+        }
     }
 }
 
@@ -695,5 +710,75 @@ mod tests {
         );
         drop(hold_a);
         waiting.await.unwrap();
+    }
+
+    /// #190 review, blocking item 3: releasing a run id's lock while a queued retry still holds a
+    /// clone of it must not let a *third*, fresh caller in on a different, uncontended lock. That
+    /// would mean the retry and the fresh caller could both end up inside the run's critical
+    /// section at once — exactly what happens after a failed `agent/start`, since the failed
+    /// attempt's fast path (`existing()`) has nothing to find, so a naive `release` looks safe to
+    /// call unconditionally.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_released_lock_is_not_reused_while_a_queued_retry_still_holds_it() {
+        let locks = Arc::new(StartLocks::default());
+        let id = RunId::generate();
+
+        // The first attempt takes the lock, then fails and drops its own guard.
+        let first = locks.get(id);
+        let first_guard = Arc::clone(&first).lock_owned().await;
+
+        // A retry queues behind it, using the very same lock instance.
+        let retry = locks.get(id);
+        assert!(
+            Arc::ptr_eq(&first, &retry),
+            "a queued retry shares the first attempt's own lock"
+        );
+        let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let retry_task = tokio::spawn({
+            let retry = Arc::clone(&retry);
+            let entered = Arc::clone(&entered);
+            async move {
+                let _guard = retry.lock_owned().await;
+                entered.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!retry_task.is_finished(), "the retry is still queued");
+
+        // The first attempt "fails" (a real caller's `Starting` guard would drop here) and
+        // releases, exactly as `agents::start`/`actor_for` do on any error path.
+        drop(first_guard);
+        locks.release(id);
+
+        // A caller arriving after the release, while the retry is still queued, must still be
+        // handed the SAME lock: nothing has succeeded yet, so there is no fast path (`agents.
+        // actor(id)`/`existing()`) to protect a third caller from racing the retry.
+        let fresh = locks.get(id);
+        assert!(
+            Arc::ptr_eq(&retry, &fresh),
+            "a caller after the release still contends for the queued retry's own lock"
+        );
+        assert!(
+            !entered.load(std::sync::atomic::Ordering::SeqCst),
+            "the retry has not run yet: nothing has bypassed it"
+        );
+
+        retry_task.await.unwrap();
+        assert!(entered.load(std::sync::atomic::Ordering::SeqCst));
+
+        // Once nobody but the map itself holds it — dropping every local clone this test kept
+        // around, not just the ones a real caller would have released already — the *next* `get`
+        // sweeps it away and a later caller gets a brand-new, uncontended lock: the entry doesn't
+        // leak forever. Checked with a `Weak` rather than comparing the new `Arc`'s address to
+        // the old one's: once the old allocation is freed, a new one is free to reuse the very
+        // same address, which would make a raw-pointer comparison an unreliable false negative.
+        let old = Arc::downgrade(&retry);
+        drop((first, retry, fresh));
+        let after = locks.get(id);
+        assert!(
+            old.upgrade().is_none(),
+            "the swept lock is still kept alive somewhere"
+        );
+        drop(after);
     }
 }
