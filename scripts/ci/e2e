@@ -1,0 +1,39 @@
+#!/bin/sh
+# Runs ci/e2e's Playwright checks against the packaged app in WISP_APP_BUNDLE (ci.yml's e2e job
+# restores it the same way smoke's own job does), plus, on a macOS runner, scripts/ci/ssh-localhost
+# and #95's own check-ssh-attach. See ci/e2e/src/run.ts for what each check does.
+set -eu
+
+root=$(cd "$(dirname "$0")/../.." && pwd)
+want=$(cut -d. -f1 "$root/.nvmrc")
+have=$(node -p 'process.versions.node.split(".")[0]')
+if [ "$have" != "$want" ]; then
+  echo "${0##*/}: Node $want is required (.nvmrc pins $(cat "$root/.nvmrc")), but node is $(node --version)" >&2
+  exit 1
+fi
+: "${WISP_APP_BUNDLE:?WISP_APP_BUNDLE must point at a built Wisp.app (scripts/ci/README.md)}"
+
+set -x
+
+node --version
+# ci/e2e imports ci/screenshots/src/harness.ts and ci/smoke/src/harness.ts by relative path, the
+# way ci/smoke already imports ci/screenshots'; only ci/screenshots' own node_modules is needed at
+# runtime (its harness.ts is the one file that imports "playwright-core" as a value).
+(cd "$root/ci/screenshots" && npm ci --omit=dev --no-audit --no-fund)
+(cd "$root/ci/e2e" && npm ci --omit=dev --no-audit --no-fund)
+
+status_file=$(mktemp "${TMPDIR:-/tmp}/wisp-e2e-ssh-status.XXXXXX")
+# Stops scripts/ci/ssh-localhost's own sshd once everything that might still be using it (the
+# ssh-side wispd it started, and ci/e2e's own checks) has finished, on any exit from here on:
+# harmless on an ephemeral runner either way, but tidy is better than relying on that.
+stop_sshd() {
+  sshd_pid=$(grep '^WISP_E2E_SSHD_PID=' "$status_file" 2>/dev/null | cut -d= -f2- || true)
+  [ -n "$sshd_pid" ] && kill "$sshd_pid" 2>/dev/null
+  return 0
+}
+trap stop_sshd EXIT
+
+"$root/scripts/ci/ssh-localhost" "$status_file"
+"$root/scripts/ci/check-ssh-attach" "$status_file" "$WISP_APP_BUNDLE/Contents/Resources/app/bin/wispd"
+
+WISP_E2E_SSH_STATUS_FILE=$status_file node "$root/ci/e2e/src/run.ts"
