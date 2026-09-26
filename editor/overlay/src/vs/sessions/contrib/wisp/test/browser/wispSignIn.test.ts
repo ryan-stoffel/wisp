@@ -71,6 +71,7 @@ suite('wisp: sign-in flow', () => {
 		assert.strictEqual(terminal.created[0].config && 'executable' in terminal.created[0].config ? terminal.created[0].config.executable : undefined, 'claude');
 		assert.deepStrictEqual(terminal.created[0].config && 'args' in terminal.created[0].config ? terminal.created[0].config.args : undefined, ['auth', 'login']);
 		assert.strictEqual(notifications.errors.length, 0);
+		terminal.fireExit(0);
 	});
 
 	test('builds the ssh command for a remote host', async () => {
@@ -85,6 +86,7 @@ suite('wisp: sign-in flow', () => {
 		assert.ok(config && 'executable' in config);
 		assert.strictEqual(config.executable, 'ssh');
 		assert.deepStrictEqual(config.args, ['-t', '--', 'mac-mini', 'env', 'NO_OPEN_BROWSER=1', 'agent', 'login']);
+		terminal.fireExit(0);
 	});
 
 	test('refreshes the detected CLIs once the terminal exits, whatever the exit code', async () => {
