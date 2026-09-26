@@ -207,6 +207,36 @@ pub(super) fn worker_prompt(task: &str, worktree: &Path, context: &Path) -> Stri
     )
 }
 
+/// The first message of a normal thread (#110): the same limits as a worker's, for an agent the
+/// user talks to directly, then the user's message. `scratch` is true for a thread with no repo,
+/// whose repository wispd made empty for it.
+pub(super) fn thread_prompt(message: &str, worktree: &Path, notes: &Path, scratch: bool) -> String {
+    let place = if scratch {
+        format!(
+            "You are a wisp agent. Your working folder is {worktree}, a git worktree of an empty \
+             scratch repository wispd made for this conversation; use it for any files you need.",
+            worktree = worktree.display(),
+        )
+    } else {
+        format!(
+            "You are a wisp agent in a git worktree at {worktree}, checked out for this \
+             conversation from the user's repository.",
+            worktree = worktree.display(),
+        )
+    };
+    format!(
+        "{place}\n\
+         - You may write files only in that folder and in the notes folder at {notes}.\n\
+         - Your commands have network access, but this Mac's own services (localhost) are \
+         unreachable.\n\
+         - Don't commit or change git history: wisp commits your changes when you finish.\n\
+         - The repository's dependencies may not be installed.\n\
+         \n\
+         The user's message:\n{message}",
+        notes = notes.display(),
+    )
+}
+
 /// The home folder, for the sandbox's list of unreadable paths.
 pub(super) fn home() -> Result<PathBuf, ErrorObject> {
     let home = std::env::home_dir()

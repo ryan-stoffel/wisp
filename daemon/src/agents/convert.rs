@@ -10,7 +10,8 @@ use wisp_protocol::{
     DiffSummary, ProjectId, RunId,
 };
 
-use crate::backend::{Event, FailureKind, Outcome, TodoStatus, ToolStatus};
+use crate::backend::{Event, FailureKind, Outcome, TodoItem, TodoStatus, ToolStatus};
+use crate::json::escaped_len;
 use crate::worktree::MergeHow;
 
 /// The longest tool output an `agent.output` item carries, in bytes. The rest is cut, since the
@@ -36,9 +37,11 @@ pub(super) const MAX_ID_BYTES: usize = 1024;
 /// The longest one `TodoList` item's `text` gets to be, in bytes.
 pub(super) const MAX_TODO_TEXT_BYTES: usize = 4 * 1024;
 
-/// The most items one `TodoList` carries; the rest are dropped, not only their text, since even a
-/// short text per item adds up at an unbounded count (#190 review).
-pub(super) const MAX_TODO_ITEMS: usize = 500;
+/// The most a `TodoList`'s items add up to, counted as JSON-escaped bytes rather than raw ones
+/// (#190 review): a raw count could undercount a list whose text needs a lot of escaping, letting
+/// the list's real JSON size run well past what the raw count suggested. Items past this are
+/// dropped, not only their text, since even a short text per item adds up at an unbounded count.
+pub(super) const MAX_TODO_LIST_BYTES: usize = 64 * 1024;
 
 pub(super) const STARTING: &str = "starting";
 pub(super) const RUNNING: &str = "running";
@@ -244,6 +247,31 @@ fn tool_input(input: &Value) -> Value {
     }
 }
 
+/// `items`, each truncated to `MAX_TODO_TEXT_BYTES`, kept only while the list's running total
+/// stays within `MAX_TODO_LIST_BYTES` (#190 review): the total is counted in JSON-escaped bytes
+/// (`escaped_len`, as `serde_json` writes a string), not raw ones, so text that needs a lot of
+/// escaping can't make the list's real JSON size exceed the cap. Always keeps at least one item,
+/// matching how the log's own paging never returns an empty, non-progressing page.
+fn capped_todo_items(items: &[TodoItem]) -> Vec<AgentTodoItem> {
+    let mut capped = Vec::new();
+    let mut bytes = 0;
+    for item in items {
+        let text = truncate(&item.text, MAX_TODO_TEXT_BYTES);
+        // + 2 for the quotes JSON puts around the string; a rough but conservative stand-in for
+        // the rest of the item's own JSON (the status field, braces, and separators).
+        let size = escaped_len(&text) + 2;
+        if !capped.is_empty() && bytes + size > MAX_TODO_LIST_BYTES {
+            break;
+        }
+        bytes += size;
+        capped.push(AgentTodoItem {
+            text,
+            status: todo_status(item.status),
+        });
+    }
+    capped
+}
+
 /// The transcript item for a backend event, or `None` for an event that isn't part of the
 /// transcript: limits, fallbacks, and the run's end, which the runner reports on their own.
 pub(super) fn output_item(event: &Event) -> Option<AgentOutputItem> {
@@ -288,14 +316,7 @@ pub(super) fn output_item(event: &Event) -> Option<AgentOutputItem> {
             text: truncate(text, MAX_TEXT_ITEM_BYTES),
         },
         Event::TodoList { items } => AgentOutputItem::TodoList {
-            items: items
-                .iter()
-                .take(MAX_TODO_ITEMS)
-                .map(|item| AgentTodoItem {
-                    text: truncate(&item.text, MAX_TODO_TEXT_BYTES),
-                    status: todo_status(item.status),
-                })
-                .collect(),
+            items: capped_todo_items(items),
         },
         Event::Notice { detail } => AgentOutputItem::Notice {
             detail: truncate(detail, MAX_TEXT_ITEM_BYTES),
@@ -338,7 +359,7 @@ mod tests {
     use wisp_protocol::{AgentOutputItem, AgentToolStatus};
 
     use super::{
-        MAX_ID_BYTES, MAX_TEXT_ITEM_BYTES, MAX_TODO_ITEMS, MAX_TODO_TEXT_BYTES,
+        MAX_ID_BYTES, MAX_TEXT_ITEM_BYTES, MAX_TODO_LIST_BYTES, MAX_TODO_TEXT_BYTES,
         MAX_TOOL_INPUT_BYTES, MAX_TOOL_OUTPUT_BYTES, output_item, truncate,
     };
     use crate::backend::{
@@ -515,11 +536,13 @@ mod tests {
 
     /// #190 review: a `TodoList` is capped on both axes — each item's text, and how many items
     /// one event carries — so neither a single huge item nor an unbounded count of short ones can
-    /// make the event approach 0007's frame.
+    /// make the event approach 0007's frame. The list's total is a JSON-escaped byte budget, not
+    /// a raw one or a plain item count, so text that needs a lot of escaping is charged for what
+    /// it actually costs once serialized.
     #[test]
-    fn a_todo_list_is_capped_on_item_text_and_on_count() {
+    fn a_todo_list_is_capped_on_item_text_and_on_total_escaped_bytes() {
         let big_text = "t".repeat(MAX_TODO_TEXT_BYTES + 1);
-        let items: Vec<TodoItem> = (0..MAX_TODO_ITEMS + 50)
+        let plain: Vec<TodoItem> = (0..MAX_TODO_LIST_BYTES)
             .map(|i| TodoItem {
                 text: if i == 0 {
                     big_text.clone()
@@ -529,17 +552,43 @@ mod tests {
                 status: TodoStatus::Pending,
             })
             .collect();
-        let Some(AgentOutputItem::TodoList { items }) = output_item(&Event::TodoList { items })
+        let Some(AgentOutputItem::TodoList { items: plain }) =
+            output_item(&Event::TodoList { items: plain })
         else {
             panic!("a todo list");
         };
-        assert_eq!(items.len(), MAX_TODO_ITEMS, "extra items are dropped");
         assert!(
-            items[0].text.len() < MAX_TODO_TEXT_BYTES + 64,
-            "{}",
-            items[0].text.len()
+            !plain.is_empty() && plain.len() < MAX_TODO_LIST_BYTES,
+            "extra items are dropped once the total budget is spent: {}",
+            plain.len()
         );
-        assert!(items[0].text.ends_with("bytes cut)"));
+        assert!(
+            plain[0].text.len() < MAX_TODO_TEXT_BYTES + 64,
+            "{}",
+            plain[0].text.len()
+        );
+        assert!(plain[0].text.ends_with("bytes cut)"));
+
+        // Escape-heavy text costs more once serialized (each `"` becomes `\"`), so fewer such
+        // items fit under the same budget than plain ones would: a raw byte count would let this
+        // list's real JSON size run past MAX_TODO_LIST_BYTES.
+        let escaped: Vec<TodoItem> = (0..MAX_TODO_LIST_BYTES)
+            .map(|_| TodoItem {
+                text: "\"\"\"\"".to_owned(),
+                status: TodoStatus::Pending,
+            })
+            .collect();
+        let Some(AgentOutputItem::TodoList { items: escaped }) =
+            output_item(&Event::TodoList { items: escaped })
+        else {
+            panic!("a todo list");
+        };
+        assert!(
+            escaped.len() < plain.len(),
+            "escaped: {}, plain: {}",
+            escaped.len(),
+            plain.len()
+        );
     }
 
     /// #190 review: `truncate` must land on a character boundary even when the cut falls inside a

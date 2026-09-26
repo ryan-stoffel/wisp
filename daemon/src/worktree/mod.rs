@@ -85,6 +85,7 @@
 //! tracks closing it.
 
 mod review;
+mod scratch;
 #[cfg(test)]
 mod tests;
 

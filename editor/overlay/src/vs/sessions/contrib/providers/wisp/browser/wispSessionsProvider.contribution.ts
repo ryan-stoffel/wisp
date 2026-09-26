@@ -12,9 +12,11 @@ import { IWispAgentsService, WispAgentsService } from './wispAgentsService.js';
 import { WispCoordinatorChat } from './wispCoordinatorChat.js';
 import { IWispProjectsService, WispProjectsService } from './wispProjectsService.js';
 import { WispSessionsProvider } from './wispSessionsProvider.js';
+import { IWispThreadsService, WispThreadsService } from './wispThreadsService.js';
 
 registerSingleton(IWispProjectsService, WispProjectsService, InstantiationType.Delayed);
 registerSingleton(IWispAgentsService, WispAgentsService, InstantiationType.Delayed);
+registerSingleton(IWispThreadsService, WispThreadsService, InstantiationType.Delayed);
 
 export class WispSessionsProviderContribution extends Disposable implements IWorkbenchContribution {
 

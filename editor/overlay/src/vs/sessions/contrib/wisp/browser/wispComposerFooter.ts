@@ -19,9 +19,13 @@ import { IInstantiationService, ServicesAccessor } from '../../../../platform/in
 import { isLocalHost } from '../../../../platform/wisp/common/wispdConfiguration.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import type { IChatExecuteActionContext } from '../../../../workbench/contrib/chat/browser/actions/chatExecuteActions.js';
+import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
 import { ChatContextKeys } from '../../../../workbench/contrib/chat/common/actions/chatContextKeys.js';
 import { IWispProjectsService } from '../../providers/wisp/browser/wispProjectsService.js';
 import { projectIdOf, WISP_PROJECT_SESSION_TYPE } from '../../providers/wisp/common/wispProjects.js';
+import { IWispAgentsService } from '../../providers/wisp/browser/wispAgentsService.js';
+import { IWispThreadsService } from '../../providers/wisp/browser/wispThreadsService.js';
+import { agentRunOf, WISP_AGENT_CHAT_TYPE } from '../../providers/wisp/common/wispAgentRuns.js';
 import { WISP_SHOW_HOST_MENU_COMMAND } from './wispHostMenu.js';
 import { IWispHostStatusService } from './wispHostStatusService.js';
 
@@ -29,9 +33,13 @@ export const WISP_COMPOSER_BRANCH_ACTION = 'wisp.composer.branch';
 export const WISP_COMPOSER_HOST_ACTION = 'wisp.composer.host';
 
 const inProject = ChatContextKeys.chatSessionType.isEqualTo(WISP_PROJECT_SESSION_TYPE);
+// A subagent's chat, and a normal thread's, which is the same kind of chat (0015, 0017).
+const inAgent = ChatContextKeys.chatSessionType.isEqualTo(WISP_AGENT_CHAT_TYPE);
+const inFooter = ContextKeyExpr.or(inProject, inAgent);
 
 // The composer footer of a project's thread (docs/design/agents-window.md, note 9): the branch its
-// repository has checked out, then the host it runs on, which opens the host menu.
+// repository has checked out, then the host it runs on, which opens the host menu. An agent's
+// chat, a subagent's or a normal thread's, shows its own worktree's branch instead.
 
 registerAction2(class ComposerBranchAction extends Action2 {
 	constructor() {
@@ -39,7 +47,7 @@ registerAction2(class ComposerBranchAction extends Action2 {
 			id: WISP_COMPOSER_BRANCH_ACTION,
 			title: localize2('wispComposer.branch', "Branch"),
 			icon: Codicon.gitBranch,
-			menu: { id: MenuId.ChatInputSecondary, group: 'navigation', order: 1000, when: inProject },
+			menu: { id: MenuId.ChatInputSecondary, group: 'navigation', order: 1000, when: inFooter },
 		});
 	}
 
@@ -52,7 +60,7 @@ registerAction2(class ComposerHostAction extends Action2 {
 			id: WISP_COMPOSER_HOST_ACTION,
 			title: localize2('wispComposer.host', "Host"),
 			icon: Codicon.server,
-			menu: { id: MenuId.ChatInputSecondary, group: 'navigation', order: 1001, when: inProject },
+			menu: { id: MenuId.ChatInputSecondary, group: 'navigation', order: 1001, when: inFooter },
 		});
 	}
 
@@ -77,6 +85,8 @@ export class WispComposerFooterItem extends BaseActionViewItem {
 		private readonly kind: FooterKind,
 		@IWispProjectsService private readonly projectsService: IWispProjectsService,
 		@IWispHostStatusService private readonly hostStatusService: IWispHostStatusService,
+		@IWispAgentsService private readonly agentsService: IWispAgentsService,
+		@IWispThreadsService private readonly threadsService: IWispThreadsService,
 	) {
 		super(undefined, action);
 	}
@@ -101,8 +111,12 @@ export class WispComposerFooterItem extends BaseActionViewItem {
 		}
 
 		this._register(autorun(reader => {
-			const id = this.sessionResource.read(reader) && projectIdOf(this.sessionResource.read(reader)!);
+			const resource = this.sessionResource.read(reader);
+			const id = resource && projectIdOf(resource);
 			const project = id ? this.projectsService.projects.read(reader).find(candidate => candidate.id === id) : undefined;
+			const agent = resource && agentRunOf(resource);
+			const scope = agent && (this.threadsService.threads.read(reader).find(thread => thread.id === agent.runId)?.repo ?? agent.projectId);
+			const branch = agent ? (scope ? this.agentsService.runs(scope).read(reader).find(run => run.id === agent.runId)?.branch : undefined) : project?.branch;
 			const status = this.hostStatusService.status.read(reader);
 			const local = isLocalHost(this.hostStatusService.configuredHost.read(reader));
 			let iconId: ThemeIcon;
@@ -110,9 +124,9 @@ export class WispComposerFooterItem extends BaseActionViewItem {
 			let ariaLabel: string;
 			if (this.kind === 'branch') {
 				iconId = Codicon.gitBranch;
-				label = project?.branch ?? localize('wispComposer.noBranch', "no branch");
-				ariaLabel = project?.branch
-					? localize('wispComposer.branchAria', "Branch: {0}", project.branch)
+				label = branch ?? localize('wispComposer.noBranch', "no branch");
+				ariaLabel = branch
+					? localize('wispComposer.branchAria', "Branch: {0}", branch)
 					: localize('wispComposer.noBranchAria', "Branch: unknown");
 			} else {
 				iconId = local ? Codicon.deviceDesktop : Codicon.server;
@@ -123,7 +137,7 @@ export class WispComposerFooterItem extends BaseActionViewItem {
 			text.textContent = label;
 			container.setAttribute('aria-label', ariaLabel);
 			container.title = ariaLabel;
-			container.hidden = this.kind === 'branch' && !project;
+			container.hidden = this.kind === 'branch' && !branch;
 		}));
 	}
 

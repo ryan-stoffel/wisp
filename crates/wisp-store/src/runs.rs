@@ -296,7 +296,7 @@ fn update(conn: &Connection, id: Uuid, state: &RunState) -> Result<Run, StoreErr
     fetch(conn, id)?.ok_or(StoreError::NotFound { id })
 }
 
-fn insert_run(
+pub(crate) fn insert_run(
     conn: &Connection,
     id: Uuid,
     fields: &RunFields,

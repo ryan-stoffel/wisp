@@ -120,6 +120,9 @@ struct Inner {
     /// The newest assigned `seq`, or 0 before the first: the log's real counter. Updated in the
     /// same critical section as `events`, so the two never disagree (#190).
     head: u64,
+    /// The oldest `seq` that can still be replayed. Eviction moves it on; [`EventLog::purge_run`]
+    /// doesn't, since the events it removes are gone on purpose, not dropped.
+    floor: u64,
 }
 
 /// A write to the event log's database, run on [`Writer`]'s own thread.
@@ -229,6 +232,10 @@ pub(crate) fn run_of(event: &WispEvent) -> Option<RunId> {
         | WispEvent::AgentAccepted { run_id, .. } => Some(*run_id),
         WispEvent::ProjectCreated { .. }
         | WispEvent::ContextChanged { .. }
+        | WispEvent::RepoAdded { .. }
+        | WispEvent::ThreadStarted { .. }
+        | WispEvent::ThreadUpdated { .. }
+        | WispEvent::ThreadDeleted { .. }
         | WispEvent::Unknown => None,
     }
 }
@@ -244,25 +251,32 @@ fn kind_of(event: &WispEvent) -> String {
 /// keeping `bytes` (the sum of what remains) in sync. Always leaves at least one event, so a
 /// single one over `max_bytes` on its own is never dropped outright. Shared by construction and
 /// by every append, so the bound holds the same way whichever put the log over it.
-fn evict(events: &mut VecDeque<Arc<Entry>>, bytes: &mut usize, retention: usize, max_bytes: usize) {
+fn evict(
+    events: &mut VecDeque<Arc<Entry>>,
+    bytes: &mut usize,
+    floor: &mut u64,
+    retention: usize,
+    max_bytes: usize,
+) {
     while events.len() > 1 && (events.len() > retention || *bytes > max_bytes) {
         if let Some(evicted) = events.pop_front() {
             *bytes = bytes.saturating_sub(evicted.bytes);
+            *floor = evicted.seq + 1;
         }
     }
 }
 
 // The index of the first event after `after`. `seq`s increase but may have gaps: an event that
-// failed to be stored is missing from a log reloaded after a restart. Reads `head` and `events`
-// from the same locked `inner`, so the two are always consistent with each other (#190): `head`
-// never says a `seq` exists that `events` hasn't published yet.
+// failed to be stored is missing from a log reloaded after a restart, and `purge_run` (#110)
+// removes a deleted thread's events from the middle of the window on purpose. Reads `head`,
+// `floor`, and `events` from the same locked `inner`, so all three are always consistent with
+// each other (#190): `head` never says a `seq` exists that `events` hasn't published yet.
 fn start(inner: &Inner, after: u64) -> Result<usize, Gone> {
     let head = inner.head;
     if after > head {
         return Err(Gone::Unknown { head });
     }
-    let oldest = inner.events.front().map_or(head + 1, |event| event.seq);
-    if after + 1 < oldest {
+    if after + 1 < inner.floor {
         return Err(Gone::Dropped);
     }
     Ok(inner.events.partition_point(|event| event.seq <= after))
@@ -288,9 +302,10 @@ fn publish(
     let Inner {
         events,
         bytes: total_bytes,
+        floor,
         ..
     } = &mut *inner;
-    evict(events, total_bytes, retention, max_bytes);
+    evict(events, total_bytes, floor, retention, max_bytes);
 }
 
 impl EventLog {
@@ -402,7 +417,8 @@ impl EventLog {
         // a hole `resyncRequired` would never notice (0016).
         let host_retention = host_retention.max(retention);
         let mut bytes = events.iter().map(|entry| entry.bytes).sum();
-        evict(&mut events, &mut bytes, retention, max_bytes);
+        let mut floor = events.front().map_or(head + 1, |entry| entry.seq);
+        evict(&mut events, &mut bytes, &mut floor, retention, max_bytes);
         Self {
             retention,
             max_bytes,
@@ -411,6 +427,7 @@ impl EventLog {
                 events,
                 bytes,
                 head,
+                floor,
             })),
             writer,
             reader: reader.map(Mutex::new),
@@ -568,9 +585,10 @@ impl EventLog {
         let Inner {
             events,
             bytes: total_bytes,
+            floor,
             ..
         } = &mut *inner;
-        evict(events, total_bytes, self.retention, self.max_bytes);
+        evict(events, total_bytes, floor, self.retention, self.max_bytes);
         seq
     }
 
@@ -611,6 +629,20 @@ impl EventLog {
             entries.push(Arc::clone(entry));
         }
         Ok((entries, false))
+    }
+
+    /// Removes `run`'s events from the in-memory replay window, for a deleted thread (#110), so
+    /// `events/subscribe` stops replaying them. The stored ones go with the run's rows.
+    pub fn purge_run(&self, run: RunId) {
+        let mut inner = self.inner();
+        let Inner { events, bytes, .. } = &mut *inner;
+        events.retain(|entry| {
+            let keep = run_of(&entry.event) != Some(run);
+            if !keep {
+                *bytes = bytes.saturating_sub(entry.bytes);
+            }
+            keep
+        });
     }
 
     /// Whether the events after `after` can all still be replayed.
@@ -712,6 +744,25 @@ mod tests {
         let (event, _) = log.next(1, Some(project)).unwrap();
         assert_eq!(event.unwrap().seq, 3);
         assert_eq!(log.next(3, Some(project)).unwrap().1, 3);
+    }
+
+    #[test]
+    fn purging_a_run_removes_only_its_events_and_drops_nothing_else() {
+        let log = EventLog::new(10);
+        let project = ProjectId::generate();
+        let (gone, kept) = (RunId::generate(), RunId::generate());
+        log.append_blocking(jiff::Timestamp::now(), Some(project), finished(gone));
+        log.append_blocking(jiff::Timestamp::now(), Some(project), finished(kept));
+        log.append_blocking(jiff::Timestamp::now(), Some(project), finished(gone));
+
+        log.purge_run(gone);
+
+        assert_eq!(log.check(0), Ok(()));
+        let (event, seq) = log.next(0, Some(project)).unwrap();
+        assert_eq!((event.unwrap().seq, seq), (2, 2));
+        let (event, seq) = log.next(2, Some(project)).unwrap();
+        assert!(event.is_none());
+        assert_eq!(seq, 3);
     }
 
     #[test]
