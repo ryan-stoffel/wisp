@@ -27,7 +27,7 @@ import { IPathService } from '../../../../workbench/services/path/common/pathSer
 import { ISessionsService } from '../../../services/sessions/browser/sessionsService.js';
 import { IWispProjectsService } from '../../providers/wisp/browser/wispProjectsService.js';
 import { projectGlyph, projectIdOf, tildify, WISP_PROJECT_SESSION_TYPE } from '../../providers/wisp/common/wispProjects.js';
-import { toContextUri } from '../common/wispContextUri.js';
+import { displayWriter, toContextUri } from '../common/wispContextUri.js';
 import { WispContextAddFileFlow } from './wispContextAddFile.js';
 import { IWispContextService, WispContextState } from './wispContextService.js';
 import { IWispHostStatusService } from './wispHostStatusService.js';
@@ -82,8 +82,9 @@ export function factAriaLabel(fact: IWispProjectFact): string {
 /** A shared context file's detail line: who last wrote it, and when, if wispd knows either. */
 export function contextFileDetail(file: ContextFile): string {
 	const when = fromNow(new Date(file.modifiedAt), true);
-	return file.lastWriter
-		? localize('wispProject.contextFileWriter', "{0} · {1}", file.lastWriter, when)
+	const writer = displayWriter(file.lastWriter);
+	return writer
+		? localize('wispProject.contextFileWriter', "{0} · {1}", writer, when)
 		: when;
 }
 
@@ -131,6 +132,7 @@ export class WispProjectView extends ViewPane {
 			const context = project ? this.contextService.state(project.id).read(reader) : undefined;
 			clearNode(root);
 			if (!project) {
+				this.contextStore.clear();
 				append(root, $('p.wisp-project-empty', undefined, localize('wispProject.none', "Open a project to see its repository, plan, and shared context.")));
 				return;
 			}

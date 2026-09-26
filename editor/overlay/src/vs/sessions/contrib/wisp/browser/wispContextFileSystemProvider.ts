@@ -13,6 +13,7 @@ import {
 	IFileWriteOptions, IStat, IWatchOptions,
 } from '../../../../platform/files/common/files.js';
 import { WispdError, WispdUnavailableError } from '../../../../platform/wisp/common/wispd.js';
+import { ErrorCodes } from '../../../../platform/wisp/common/wispProtocol.js';
 import type { ContextFile } from '../../../../platform/wisp/common/wispProtocol.js';
 import { parseContextUri } from '../common/wispContextUri.js';
 import { IWispContextService } from './wispContextService.js';
@@ -22,12 +23,17 @@ function toStat(file: ContextFile): IStat {
 	return { type: FileType.File, ctime: mtime, mtime, size: file.size };
 }
 
-/** Maps a failure from `IWispContextService` to what `IFileService` expects from a provider. */
+/**
+ * Maps a failure from `IWispContextService` to what `IFileService` expects from a provider.
+ * `contextTooLarge` covers wispd's two caps, per file and per project; `FileTooLarge` names only
+ * the first, but wispd's own message tells them apart.
+ */
 function toProviderError(error: unknown): Error {
 	if (error instanceof WispdError) {
-		const code = error.kind === 'contextNotFound' ? FileSystemProviderErrorCode.FileNotFound
+		const code = error.kind === 'contextNotFound' || error.kind === 'projectNotFound' ? FileSystemProviderErrorCode.FileNotFound
 			: error.kind === 'contextTooLarge' ? FileSystemProviderErrorCode.FileTooLarge
-				: FileSystemProviderErrorCode.Unknown;
+				: error.code === ErrorCodes.InvalidParams ? FileSystemProviderErrorCode.NoPermissions
+					: FileSystemProviderErrorCode.Unknown;
 		return createFileSystemProviderError(error.message, code);
 	}
 	if (error instanceof WispdUnavailableError) {
