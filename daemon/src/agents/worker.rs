@@ -27,12 +27,62 @@ const EXTRA_PATH: &[&str] = &[
     "/sbin",
 ];
 
+/// The variables of wispd's own environment that agent CLIs, CLI probes, and worktree git
+/// commands inherit; everything else stays with wispd (0013, decision 0014). A worker has network
+/// access and reads prompt-injectable content, so a token wispd happened to start with, such as
+/// `GITHUB_TOKEN`, `NPM_TOKEN`, `OPENAI_API_KEY`, or `AWS_SECRET_ACCESS_KEY`, must never reach
+/// it. These are what a CLI needs to find itself, its home folder, its temp folder, the user's
+/// locale and terminal, and a corporate network's proxy and certificates. A backend adds its own
+/// variables on top, such as an account's API key or configuration folder, and the launcher
+/// adds `WISPD_DATA_DIR`.
+const INHERITED: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TMPDIR",
+    "LANG",
+    "TERM",
+    "__CF_USER_TEXT_ENCODING",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "NODE_EXTRA_CA_CERTS",
+];
+
+/// Prefixes of inherited variables that are kept too: the locale categories.
+const INHERITED_PREFIXES: &[&str] = &["LC_"];
+
 /// The environment every agent CLI, CLI probe, and worktree git command starts from (#96,
-/// decision 0014): wispd's own, with [`EXTRA_PATH`] filled in. The SSH session's variables,
-/// `SSH_AUTH_SOCK` included, are scrubbed from every spawn by
-/// [`ALWAYS_SCRUBBED`](crate::backend::process::ALWAYS_SCRUBBED).
+/// decision 0014): only the [`INHERITED`] part of wispd's own, with [`EXTRA_PATH`] filled in.
 pub(crate) fn agent_environment() -> Environment {
-    with_extra_path(Environment::inherited(), std::env::home_dir().as_deref())
+    with_extra_path(
+        allowlisted(&Environment::inherited()),
+        std::env::home_dir().as_deref(),
+    )
+}
+
+/// The variables of `env` an agent may inherit: [`INHERITED`] and [`INHERITED_PREFIXES`].
+pub(crate) fn allowlisted(env: &Environment) -> Environment {
+    env.names()
+        .filter(|name| {
+            name.to_str().is_some_and(|name| {
+                INHERITED.contains(&name)
+                    || INHERITED_PREFIXES
+                        .iter()
+                        .any(|prefix| name.starts_with(prefix))
+            })
+        })
+        .filter_map(|name| Some((name.to_owned(), env.get(name)?.to_owned())))
+        .collect()
 }
 
 pub(crate) fn with_extra_path(mut env: Environment, home: Option<&Path>) -> Environment {
@@ -171,7 +221,7 @@ mod tests {
 
     use wisp_protocol::{CliKind, DetectedCli, ErrorKind};
 
-    use super::{check_claude, sandbox_path, with_extra_path};
+    use super::{allowlisted, check_claude, sandbox_path, with_extra_path};
     use crate::backend::process::{ALWAYS_SCRUBBED, Environment};
 
     fn path_entries(env: &Environment) -> Vec<String> {
@@ -239,6 +289,89 @@ mod tests {
         );
         let unset = with_extra_path(Environment::empty(), None);
         assert_eq!(path_entries(&unset)[0], "/opt/homebrew/bin");
+    }
+
+    /// wispd started from a shell that holds credentials for other services: a worker spawned
+    /// from the agent environment sees none of them, but keeps what a CLI needs.
+    #[tokio::test]
+    async fn a_spawned_worker_inherits_only_the_allowlist() {
+        use crate::backend::fake::{FakeBackend, Script, Step};
+        use crate::backend::process::Launcher;
+        use crate::backend::{
+            AccountRef, Backend, Credential, Event, RunId, RunRequest, ToolPolicy,
+        };
+        use crate::paths::DataDir;
+
+        let secrets = [
+            "GITHUB_TOKEN",
+            "GH_TOKEN",
+            "NPM_TOKEN",
+            "OPENAI_API_KEY",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SESSION_TOKEN",
+            "DATABASE_URL",
+        ];
+        let kept = [
+            ("HOME", "/Users/me"),
+            ("LANG", "en_US.UTF-8"),
+            ("LC_CTYPE", "UTF-8"),
+            ("HTTPS_PROXY", "http://proxy:3128"),
+            ("NODE_EXTRA_CA_CERTS", "/etc/corp.pem"),
+        ];
+        let mut wispd_env = Environment::empty();
+        wispd_env.set("PATH", "/usr/bin:/bin");
+        for name in secrets {
+            wispd_env.set(name, "secret-value");
+        }
+        for (name, value) in kept {
+            wispd_env.set(name, value);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let launcher = Launcher::new(
+            DataDir::new(dir.path()).unwrap(),
+            with_extra_path(allowlisted(&wispd_env), None),
+        );
+        let names: Vec<&str> = secrets
+            .iter()
+            .chain(kept.iter().map(|(n, _)| n))
+            .copied()
+            .collect();
+        let script = Script {
+            steps: names
+                .iter()
+                .map(|name| Step::EchoEnv((*name).to_owned()))
+                .collect(),
+        };
+        let backend = FakeBackend::new(launcher, script);
+        let mut started = backend
+            .start(RunRequest {
+                run_id: RunId::generate(),
+                turn_id: None,
+                cwd: dir.path().canonicalize().unwrap(),
+                prompt: "print the environment".into(),
+                policy: ToolPolicy::NoWrite,
+                sandbox: None,
+                account: AccountRef {
+                    id: "fake".into(),
+                    credential: Credential::Subscription { config_home: None },
+                },
+                resume: None,
+                model: None,
+            })
+            .unwrap();
+        let mut seen = Vec::new();
+        while let Some(event) = started.events.next().await {
+            if let Event::Text { text, .. } = event {
+                seen.push(text);
+            }
+        }
+        let expected: Vec<String> = secrets
+            .iter()
+            .map(|_| "<unset>".to_owned())
+            .chain(kept.iter().map(|(_, value)| (*value).to_owned()))
+            .collect();
+        assert_eq!(seen, expected);
     }
 
     #[test]
