@@ -405,11 +405,11 @@ impl Actor {
         }
     }
 
-    /// Records how a CLI process ended. Unless wispd is stopping, commits the worktree's changes
+    /// Records how a CLI process ended. Unless wispd stopped it, commits the worktree's changes
     /// first, through #166's hardened commit, and reports the commit.
     async fn finish(&mut self, outcome: &Outcome) {
         self.flush();
-        if self.stopping {
+        if self.stopping && matches!(outcome, Outcome::Cancelled) {
             info!(run = %self.id, "an agent run was interrupted because wispd is stopping");
             self.append(WispEvent::AgentFinished {
                 run_id: self.id,

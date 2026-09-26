@@ -372,7 +372,7 @@ pub(crate) async fn start(
         base: created.base.clone(),
         git_dir: created.git_dir.to_string_lossy().into_owned(),
     };
-    let (row, worktree) = store(&daemon, move |db| {
+    let recorded = store(&daemon, move |db| {
         let worktree = db
             .create_worktree(run_id.into(), &worktree_fields)
             .map_err(|e| store_error(&e))?;
@@ -381,7 +381,20 @@ pub(crate) async fn start(
             .map_err(|e| store_error(&e))?;
         Ok((row, worktree))
     })
-    .await?;
+    .await;
+    let (row, worktree) = match recorded {
+        Ok(recorded) => recorded,
+        Err(error) => {
+            if let Err(cleanup) = agents
+                .worktrees
+                .remove(Path::new(&repo_path), &created.path, &created.branch)
+                .await
+            {
+                warn!(run = %run_id, %cleanup, "could not remove a worktree for a run that wasn't recorded");
+            }
+            return Err(error);
+        }
+    };
     let snapshot = agent_run(&row, Some(&worktree))?;
     daemon.log.append(
         snapshot.created_at,
