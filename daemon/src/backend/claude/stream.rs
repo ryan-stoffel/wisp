@@ -8,12 +8,30 @@ use std::collections::HashSet;
 use jiff::Timestamp;
 use serde_json::{Map, Value};
 
-use super::NO_WRITE_TOOLS;
+use super::{NO_WRITE_TOOLS, WORKER_MIN_VERSION, WORKER_TOOLS};
 use crate::backend::ToolPolicy;
 use crate::backend::event::{
     Event, Failure, FailureKind, LimitStatus, LimitWindow, ModelUsage, TodoItem, TodoStatus,
     ToolStatus, Usage, WarningKind,
 };
+
+/// A `major.minor.patch` version, for comparing. Anything after the patch number, such as a
+/// pre-release tag, is ignored.
+pub(crate) fn version(text: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = text.splitn(3, '.');
+    let number = |part: Option<&str>| {
+        let digits: String = part?.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
+    };
+    Some((
+        number(parts.next())?,
+        number(parts.next())?,
+        number(parts.next())?,
+    ))
+}
+
+/// The tool that only ends the session, which `--tools` leaves in place (the CLI reference).
+const END_CONVERSATION: &str = "EndConversation";
 
 /// The provider `result.modelUsage` names for Anthropic's own API, which a subscription uses.
 const FIRST_PARTY: &str = "firstParty";
@@ -190,23 +208,36 @@ impl Translator {
             steps.push(violation(FailureKind::UnexpectedApiKey, message));
             return steps;
         }
-        if self.policy == ToolPolicy::NoWrite {
-            let tools = message.get("tools").and_then(Value::as_array);
-            let Some(tools) = tools else {
-                let message = "Claude Code did not list its tools in a no-write run".to_owned();
-                steps.push(violation(FailureKind::PolicyViolation, message));
-                return steps;
-            };
-            let offered: Vec<&str> = tools
-                .iter()
-                .map(|tool| tool.as_str().unwrap_or("<not a string>"))
-                .filter(|tool| !NO_WRITE_TOOLS.contains(tool))
-                .collect();
-            if !offered.is_empty() {
+        let (allowed, run) = match self.policy {
+            ToolPolicy::NoWrite => (NO_WRITE_TOOLS, "a no-write run"),
+            ToolPolicy::WorkspaceWrite => (WORKER_TOOLS, "a worker run"),
+        };
+        let tools = message.get("tools").and_then(Value::as_array);
+        let Some(tools) = tools else {
+            let message = format!("Claude Code did not list its tools in {run}");
+            steps.push(violation(FailureKind::PolicyViolation, message));
+            return steps;
+        };
+        let offered: Vec<&str> = tools
+            .iter()
+            .map(|tool| tool.as_str().unwrap_or("<not a string>"))
+            .filter(|tool| !allowed.contains(tool) && *tool != END_CONVERSATION)
+            .collect();
+        if !offered.is_empty() {
+            let message = format!(
+                "Claude Code offered tools beyond {} in {run}: {}",
+                allowed.join(", "),
+                offered.join(", ")
+            );
+            steps.push(violation(FailureKind::PolicyViolation, message));
+            return steps;
+        }
+        if self.policy == ToolPolicy::WorkspaceWrite {
+            let reported = text(message, "claude_code_version");
+            if reported.and_then(version) < version(WORKER_MIN_VERSION) {
                 let message = format!(
-                    "Claude Code offered tools beyond {} in a no-write run: {}",
-                    NO_WRITE_TOOLS.join(", "),
-                    offered.join(", ")
+                    "Claude Code {} can't sandbox a worker; {WORKER_MIN_VERSION} or later can",
+                    reported.unwrap_or("of an unknown version")
                 );
                 steps.push(violation(FailureKind::PolicyViolation, message));
                 return steps;

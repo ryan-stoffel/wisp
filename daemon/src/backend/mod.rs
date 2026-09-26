@@ -22,6 +22,7 @@ pub mod event;
 pub mod fake;
 pub mod key_account;
 pub mod process;
+pub mod sandbox;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -41,6 +42,7 @@ pub use self::event::{
     Outcome, TodoItem, TodoStatus, ToolStatus, Usage, WarningKind,
 };
 use self::process::{CancelPolicy, Signals, SpawnError};
+pub use self::sandbox::WorkerSandbox;
 
 /// How many events a run buffers before its backend waits for the consumer.
 pub const EVENT_BUFFER: usize = 256;
@@ -122,6 +124,9 @@ pub struct RunRequest {
     pub prompt: String,
     /// What the agent's tools may do.
     pub policy: ToolPolicy,
+    /// Where a [`ToolPolicy::WorkspaceWrite`] run may write and what it may not read (0013).
+    /// Required for a worker, which is refused without one; a no-write run ignores it.
+    pub sandbox: Option<WorkerSandbox>,
     /// The account the run is charged to.
     pub account: AccountRef,
     /// The vendor's session to resume, or a new session.
@@ -167,7 +172,8 @@ pub struct FollowUp {
 pub enum ToolPolicy {
     /// Read-only tools, no hooks, no project settings: the coordinator's policy.
     NoWrite,
-    /// Edits inside the working directory: a worker's policy.
+    /// Edits inside the working directory, and commands in the vendor's OS sandbox: a worker's
+    /// policy, bounded by the run's [`WorkerSandbox`] (0013).
     ///
     /// Backends never commit. Codex's `workspace-write` sandbox keeps `.git` read-only, even in a
     /// linked worktree (0004), so M3's runner commits a worker's changes after its run's
@@ -248,6 +254,10 @@ pub struct Capabilities {
     pub reports_cost: bool,
     /// Its runs report limit windows.
     pub rate_limits: bool,
+    /// It enforces the worker sandbox (0013) for a [`ToolPolicy::WorkspaceWrite`] run, so M3's
+    /// runner may start workers on it. Codex and Cursor join once #122 and #123 implement their
+    /// parts of 0013.
+    pub worker_sandbox: bool,
 }
 
 /// Why a run could not start.
@@ -492,6 +502,17 @@ impl EventSink {
         self.finished
     }
 
+    /// Discards the running usage total this sink has summed so far and starts over from
+    /// `baseline`, as if nothing had been recorded before it.
+    ///
+    /// For a sink that outlives one account, such as routing's (#119) fallback: once forwarding
+    /// switches to a different run's events, those events belong to a different session, and the
+    /// `Finished` this sink eventually sends must report only that session's own totals, from its
+    /// own baseline, not the account it fell back from added in.
+    pub fn reset_usage(&mut self, baseline: Vec<ModelUsage>) {
+        self.usage = CumulativeUsage::with_baseline(baseline);
+    }
+
     /// Completes once the consumer has dropped the stream. A backend then stops its CLI, since
     /// nothing would record what it does.
     pub async fn closed(&self) {
@@ -688,6 +709,36 @@ mod tests {
                 model: None,
                 usage: input(7)
             }]
+        );
+    }
+
+    #[tokio::test]
+    async fn resetting_usage_drops_what_was_summed_before_it() {
+        let (mut sink, mut stream) = EventSink::channel(8, Vec::new());
+        sink.emit(Event::Usage(ModelUsage {
+            model: None,
+            usage: input(100),
+        }))
+        .await
+        .unwrap();
+        sink.reset_usage(Vec::new());
+        sink.emit(Event::Usage(ModelUsage {
+            model: None,
+            usage: input(4),
+        }))
+        .await
+        .unwrap();
+        sink.finish(Outcome::Completed { result: None })
+            .await
+            .unwrap();
+        while stream.next().await.is_some() {}
+        assert_eq!(
+            stream.usage_totals(),
+            [ModelUsage {
+                model: None,
+                usage: input(4)
+            }],
+            "the reset total, not 104"
         );
     }
 

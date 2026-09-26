@@ -11,6 +11,7 @@ import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '.
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IWispHostStatusService, WispHostStatusService } from './wispHostStatusService.js';
+import { IWispAccountsService, WispAccountsService } from './wispAccounts.js';
 import '../../providers/wisp/browser/wispSessionsProvider.contribution.js';
 import './wispThreads.contribution.js';
 import './wispNoHost.contribution.js';
@@ -19,8 +20,11 @@ import './wispNewProject.js';
 import './wispSearch.js';
 import './wispProject.contribution.js';
 import './wispComposerFooter.js';
+import './wispAccountsEditor.js';
+import './wispComposerAccount.js';
 
 registerSingleton(IWispHostStatusService, WispHostStatusService, InstantiationType.Delayed);
+registerSingleton(IWispAccountsService, WispAccountsService, InstantiationType.Delayed);
 
 // Settings that turn off what the exclusion list leaves behind. Registered in code so the
 // first launch gets them too. In this window, a setting's own `agentsWindow.default` wins over

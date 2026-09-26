@@ -23,6 +23,8 @@ pub use setup::prepare_data_dir;
 use setup::{InstanceLock, Socket};
 
 use crate::VERSION;
+use crate::agents::{self, Agents};
+use crate::backend::claude::ClaudeBackend;
 use crate::backend::process::{Environment, Launcher};
 use crate::context::ContextIndex;
 use crate::detect::CliDetector;
@@ -30,7 +32,9 @@ use crate::event_log::EventLog;
 use crate::keystore::{KeyStore, KeychainStore};
 use crate::methods;
 use crate::paths::DataDir;
+use crate::routing::BackendRegistry;
 use crate::store::StoreHandle;
+use crate::worktree::WorktreeManager;
 
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
@@ -58,6 +62,12 @@ pub struct Config {
     pub max_requests_in_flight: usize,
     /// Replies one connection may have waiting to be written. 32 by default.
     pub outbound_queue: usize,
+    /// The backends workers run on (#156). `None`, the default, registers Claude Code for
+    /// Anthropic accounts; tests register a fake.
+    pub backends: Option<BackendRegistry>,
+    /// The environment agent CLIs, CLI probes, and worktree git commands start from. `None`, the
+    /// default, is wispd's own with the usual install folders on `PATH` (#96, decision 0014).
+    pub agent_environment: Option<Environment>,
 }
 
 impl Config {
@@ -72,6 +82,8 @@ impl Config {
             event_retention: 10_000,
             max_requests_in_flight: 32,
             outbound_queue: 32,
+            backends: None,
+            agent_environment: None,
         }
     }
 }
@@ -164,11 +176,13 @@ pub(crate) struct Daemon {
     pub cli_detector: CliDetector,
     /// Where key accounts' API keys live (#117): the real login Keychain, except in tests.
     pub keys: Arc<dyn KeyStore>,
-    /// wispd's data folder, so `context/*` (#155) and #156's backends can find a project's shared
-    /// context folder.
+    /// wispd's data folder, so `context/*` (#155) and the runner (#156) can find a project's
+    /// shared context folder.
     pub data_dir: DataDir,
     /// In-memory bookkeeping for shared context writes (#155): idempotency and `lastWriter`.
     pub context: ContextIndex,
+    /// Agent runs (#156).
+    pub agents: Agents,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -233,11 +247,28 @@ impl Server {
             );
         }
         let (socket, listener) = Socket::bind(&socket_path.path)?;
-        let launcher = Launcher::new(data_dir.clone(), Environment::inherited());
+        let environment = config
+            .agent_environment
+            .clone()
+            .unwrap_or_else(agents::worker::agent_environment);
+        let launcher = Launcher::new(data_dir.clone(), environment);
+        let backends = config.backends.clone().unwrap_or_else(|| {
+            let mut backends = BackendRegistry::new();
+            backends.register(
+                wisp_protocol::Provider::Anthropic,
+                Arc::new(ClaudeBackend::new(launcher.clone())),
+            );
+            backends
+        });
+        let worktrees = WorktreeManager::new(launcher.clone(), data_dir.root());
+        let store = StoreHandle::open(&data_dir.store_file());
         let daemon = Arc::new(Daemon {
             started: Instant::now(),
-            log: Arc::new(EventLog::new(config.event_retention)),
-            store: StoreHandle::open(&data_dir.store_file()),
+            log: Arc::new(EventLog::open(
+                &data_dir.store_file(),
+                config.event_retention,
+            )),
+            store,
             os: methods::os_version(),
             cli_detector: CliDetector::new(launcher, crate::detect::PROBE_TIMEOUT),
             limits: Limits {
@@ -248,6 +279,7 @@ impl Server {
             keys: Arc::new(KeychainStore::new()),
             data_dir: data_dir.clone(),
             context: ContextIndex::default(),
+            agents: Agents::new(backends, worktrees),
         });
         // Best effort: a project's context folder is also ensured lazily on its first
         // `context/*` call (#155), so a watcher that fails to start only loses live updates for
@@ -314,6 +346,7 @@ impl Server {
                 return Err(error);
             }
         };
+        agents::recover(&daemon).await;
         let connections = TaskTracker::new();
         let abort = CancellationToken::new();
         let euid = rustix::process::geteuid().as_raw();
@@ -365,6 +398,7 @@ impl Server {
             abort.cancel();
             connections.wait().await;
         }
+        daemon.agents.shutdown().await;
         daemon.store.stop().await;
         lock.release();
         info!("stopped");
@@ -435,10 +469,12 @@ impl Daemon {
             DataDir::new(dir.join("cli-detect")).expect("resolve a data folder for the launcher"),
             Environment::empty(),
         );
+        let worktrees = WorktreeManager::new(launcher.clone(), dir);
+        let store = StoreHandle::open(&dir.join("wispd.sqlite3"));
         Arc::new(Self {
             started: Instant::now(),
-            log: Arc::new(EventLog::new(event_retention)),
-            store: StoreHandle::open(&dir.join("wispd.sqlite3")),
+            log: Arc::new(EventLog::open(&dir.join("wispd.sqlite3"), event_retention)),
+            store,
             os: "test".to_owned(),
             cli_detector: CliDetector::new(launcher, crate::detect::PROBE_TIMEOUT),
             limits: Limits {
@@ -449,6 +485,7 @@ impl Daemon {
             keys: Arc::new(crate::keystore::MemoryKeyStore::new()),
             data_dir: DataDir::new(dir).unwrap(),
             context: ContextIndex::default(),
+            agents: Agents::new(BackendRegistry::new(), worktrees),
         })
     }
 }

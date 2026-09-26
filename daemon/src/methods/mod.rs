@@ -1,11 +1,13 @@
 //! The methods wispd answers, one module per group, routed through `wisp_protocol`'s method
 //! table so every params and result type is the protocol's own.
 //!
-//! Later milestones add a module here for each capability (M3 `agents`: agents and context; M4
+//! Each capability gets a module here (M3 `agents`: `agent.rs` and `context.rs`; M4
 //! `coordinator`), and `host.rs` advertises the capability in `initialize`.
 
 mod accounts;
+mod agent;
 mod context;
+mod defaults;
 mod events;
 mod host;
 mod project;
@@ -19,12 +21,15 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 use wisp_protocol::jsonrpc::{ErrorObject, INVALID_REQUEST, Request, RequestId, Response};
 use wisp_protocol::methods::{
-    AccountsKeysAdd, AccountsKeysList, AccountsKeysRemove, AccountsList, AccountsRefresh,
-    ContextList, ContextRead, ContextWrite, EventsSubscribe, EventsUnsubscribe, HostHealth,
-    HostVersion, Initialize, ProjectCreate, ProjectList, RequestMethod, UsageGet,
+    AccountsDefaultsGet, AccountsDefaultsSet, AccountsKeysAdd, AccountsKeysList,
+    AccountsKeysRemove, AccountsList, AccountsRefresh, AgentCancel, AgentEvents, AgentList,
+    AgentSend, AgentStart, ContextList, ContextRead, ContextWrite, EventsSubscribe,
+    EventsUnsubscribe, HostHealth, HostVersion, Initialize, ProjectCreate, ProjectList,
+    RequestMethod, UsageGet,
 };
 use wisp_protocol::{EventsSubscribeResult, EventsUnsubscribeResult, SubscriptionId};
 
+pub(crate) use defaults::read_defaults;
 pub(crate) use events::{Cursor, Cursors};
 pub(crate) use host::{Session, initialize, os_version};
 
@@ -89,6 +94,12 @@ pub(crate) async fn dispatch(context: Context, request: Request) -> Reply {
                 .await
         }
         UsageGet::NAME => handle::<UsageGet, _, _>(&request, |p| usage::get(&context, p)).await,
+        AccountsDefaultsGet::NAME => {
+            handle::<AccountsDefaultsGet, _, _>(&request, |p| defaults::get(&context, p)).await
+        }
+        AccountsDefaultsSet::NAME => {
+            handle::<AccountsDefaultsSet, _, _>(&request, |p| defaults::set(&context, p)).await
+        }
         ContextList::NAME => {
             handle::<ContextList, _, _>(&request, |p| context::list(&context, p)).await
         }
@@ -97,6 +108,17 @@ pub(crate) async fn dispatch(context: Context, request: Request) -> Reply {
         }
         ContextWrite::NAME => {
             handle::<ContextWrite, _, _>(&request, |p| context::write(&context, p)).await
+        }
+        AgentStart::NAME => {
+            handle::<AgentStart, _, _>(&request, |p| agent::start(&context, p)).await
+        }
+        AgentSend::NAME => handle::<AgentSend, _, _>(&request, |p| agent::send(&context, p)).await,
+        AgentCancel::NAME => {
+            handle::<AgentCancel, _, _>(&request, |p| agent::cancel(&context, p)).await
+        }
+        AgentList::NAME => handle::<AgentList, _, _>(&request, |p| agent::list(&context, p)).await,
+        AgentEvents::NAME => {
+            handle::<AgentEvents, _, _>(&request, |p| agent::events(&context, p)).await
         }
         EventsSubscribe::NAME => {
             let subscribed = match request.params() {

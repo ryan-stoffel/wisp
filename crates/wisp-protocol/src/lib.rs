@@ -33,6 +33,7 @@ mod account;
 mod agent;
 mod cli_account;
 mod context;
+mod defaults;
 mod error;
 mod events;
 pub mod framing;
@@ -53,7 +54,12 @@ pub use account::{
     AccountsKeysListResult, AccountsKeysRemoveParams, AccountsKeysRemoveResult, KeyAccount,
     Provider, RawKey,
 };
-pub use agent::{RunId, TurnId};
+pub use agent::{
+    AgentCancelParams, AgentEventsParams, AgentEventsResult, AgentFailureKind, AgentListParams,
+    AgentListResult, AgentOutcome, AgentOutputItem, AgentPolicy, AgentRun, AgentRunResult,
+    AgentRunState, AgentSendParams, AgentStartParams, AgentStatus, AgentTodoItem, AgentTodoStatus,
+    AgentToolStatus, DiffSummary, LoggedEvent, RunId, TurnId,
+};
 pub use cli_account::{
     AccountsListParams, AccountsListResult, AccountsRefreshParams, AccountsRefreshResult, AuthKind,
     CliKind, DetectedCli,
@@ -61,6 +67,10 @@ pub use cli_account::{
 pub use context::{
     ContextFile, ContextListParams, ContextListResult, ContextReadParams, ContextReadResult,
     ContextWriteId, ContextWriteParams, ContextWriteResult,
+};
+pub use defaults::{
+    AccountChoice, AccountsDefaultsGetParams, AccountsDefaultsGetResult, AccountsDefaultsSetParams,
+    Role,
 };
 pub use error::{ErrorData, ErrorKind, IncompatibleProtocolDetail};
 pub use events::{
@@ -224,6 +234,34 @@ mod tests {
             id: AccountId::generate(),
         });
         round_trip(&AccountsKeysRemoveResult {});
+    }
+
+    #[test]
+    fn account_default_types_round_trip() {
+        round_trip(&AccountsDefaultsGetParams {});
+        for account in [
+            None,
+            Some(AccountChoice::Subscription {
+                backend: "claude".to_owned(),
+            }),
+            Some(AccountChoice::Key {
+                id: AccountId::generate(),
+            }),
+        ] {
+            round_trip(&AccountsDefaultsSetParams {
+                role: Role::Coordinator,
+                account: account.clone(),
+            });
+        }
+        round_trip(&AccountsDefaultsGetResult {
+            coordinator: Some(AccountChoice::Subscription {
+                backend: "claude".to_owned(),
+            }),
+            worker: Some(AccountChoice::Key {
+                id: AccountId::generate(),
+            }),
+        });
+        round_trip(&AccountsDefaultsGetResult::default());
     }
 
     #[test]

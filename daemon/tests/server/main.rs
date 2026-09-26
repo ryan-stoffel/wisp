@@ -3,6 +3,7 @@
 //! Most tests run the `wispd serve` binary. Tests of timers and limits that the command line
 //! doesn't expose run the same server in-process with a shorter `Config`.
 
+mod agents;
 mod context;
 mod events;
 mod handshake;

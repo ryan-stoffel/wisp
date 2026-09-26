@@ -26,14 +26,17 @@ use ts_rs::TS;
 
 use crate::jsonrpc::CancelRequestParams;
 use crate::{
+    AccountsDefaultsGetParams, AccountsDefaultsGetResult, AccountsDefaultsSetParams,
     AccountsKeysAddParams, AccountsKeysAddResult, AccountsKeysListParams, AccountsKeysListResult,
     AccountsKeysRemoveParams, AccountsKeysRemoveResult, AccountsListParams, AccountsListResult,
-    AccountsRefreshParams, AccountsRefreshResult, ContextListParams, ContextListResult,
-    ContextReadParams, ContextReadResult, ContextWriteParams, ContextWriteResult,
-    EventsEventParams, EventsSubscribeParams, EventsSubscribeResult, EventsUnsubscribeParams,
-    EventsUnsubscribeResult, HostHealthParams, HostHealthResult, HostVersionParams,
-    HostVersionResult, InitializeParams, InitializeResult, ProjectCreateParams,
-    ProjectCreateResult, ProjectListParams, ProjectListResult, UsageGetParams, UsageGetResult,
+    AccountsRefreshParams, AccountsRefreshResult, AgentCancelParams, AgentEventsParams,
+    AgentEventsResult, AgentListParams, AgentListResult, AgentRunResult, AgentSendParams,
+    AgentStartParams, ContextListParams, ContextListResult, ContextReadParams, ContextReadResult,
+    ContextWriteParams, ContextWriteResult, EventsEventParams, EventsSubscribeParams,
+    EventsSubscribeResult, EventsUnsubscribeParams, EventsUnsubscribeResult, HostHealthParams,
+    HostHealthResult, HostVersionParams, HostVersionResult, InitializeParams, InitializeResult,
+    ProjectCreateParams, ProjectCreateResult, ProjectListParams, ProjectListResult, UsageGetParams,
+    UsageGetResult,
 };
 
 /// A method that is called with a request and answered with a response.
@@ -142,6 +145,12 @@ method_table! {
         /// `usage/get`: per-account tokens and cost for today and this week (local time on this
         /// host), and the latest limit windows.
         UsageGet = "usage/get": UsageGetParams => UsageGetResult;
+        /// `accounts/defaults/get`: this host's default account for the coordinator role and for
+        /// a worker role, absent where none is set (#119).
+        AccountsDefaultsGet = "accounts/defaults/get": AccountsDefaultsGetParams => AccountsDefaultsGetResult;
+        /// `accounts/defaults/set`: sets or clears one role's default account, and returns both
+        /// roles' defaults as they stand after the change.
+        AccountsDefaultsSet = "accounts/defaults/set": AccountsDefaultsSetParams => AccountsDefaultsGetResult;
         /// `context/list`: a project's shared context files (0005), each with its size, when it
         /// was last modified, and who last wrote it, if known.
         ContextList = "context/list": ContextListParams => ContextListResult;
@@ -151,6 +160,20 @@ method_table! {
         /// `context/write`: writes a shared context file in full, idempotent on its
         /// client-generated id. The last write to a path wins when two race.
         ContextWrite = "context/write": ContextWriteParams => ContextWriteResult;
+        /// `agent/start`: starts a worker in its own worktree of the project's repository, with
+        /// the worker sandbox (0013) and the shared context folder, idempotent on its
+        /// client-generated run id. Gated on the `agents` capability, like every `agent/*`
+        /// method.
+        AgentStart = "agent/start": AgentStartParams => AgentRunResult;
+        /// `agent/send`: a message to a run (0011): its next turn while it runs, or a resumed
+        /// session once it has ended. Idempotent on the message's client-generated turn id.
+        AgentSend = "agent/send": AgentSendParams => AgentRunResult;
+        /// `agent/cancel`: stops a running agent. Does nothing to a run that isn't running.
+        AgentCancel = "agent/cancel": AgentCancelParams => AgentRunResult;
+        /// `agent/list`: every run, or one project's, and the `seq` the list reflects.
+        AgentList = "agent/list": AgentListParams => AgentListResult;
+        /// `agent/events`: one run's events from wispd's log, a page at a time.
+        AgentEvents = "agent/events": AgentEventsParams => AgentEventsResult;
     }
     notifications {
         /// `$/cancelRequest`: cancels a request, which still gets exactly one response. Either
@@ -202,9 +225,16 @@ mod tests {
                 "accounts/list",
                 "accounts/refresh",
                 "usage/get",
+                "accounts/defaults/get",
+                "accounts/defaults/set",
                 "context/list",
                 "context/read",
                 "context/write",
+                "agent/start",
+                "agent/send",
+                "agent/cancel",
+                "agent/list",
+                "agent/events",
                 "$/cancelRequest",
                 "events/event",
             ]

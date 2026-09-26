@@ -125,6 +125,14 @@ jobs:
         timeout-minutes: 10
         run: scripts/ci/check-fork
 
+      # Browser-layer wisp tests (sessions/contrib/wisp) need a real DOM, so they run through
+      # upstream's Playwright-backed runner instead of test-wisp's Node one. No wispd or packaged
+      # app needed, so this runs here on the tree check-fork already prepared, not in the rust job.
+      - name: Run wisp's browser unit tests
+        if: steps.decide.outputs.run == 'true'
+        timeout-minutes: 10
+        run: scripts/editor/test-wisp-browser
+
       - name: Record the pass
         if: steps.decide.outputs.run == 'true' && steps.earlier.outputs.cache-hit != 'true'
         run: git rev-parse HEAD > .fork-check-passed
@@ -135,17 +143,86 @@ jobs:
           path: .fork-check-passed
           key: ${{ steps.inputs.outputs.key }}
 
-  # Builds the packaged Wisp.app, or restores the build of the same inputs from an earlier run (scripts/ci/README.md).
+  # Builds the packaged Wisp.app for arm64, or restores the build of the same inputs from an
+  # earlier run (scripts/ci/README.md). Runs on every PR and push. x64 only ships in releases
+  # (#43) and nothing else in ci.yml checks it, so it builds separately, in app-x64 below, only on
+  # a push, and a PR's required ci check never waits on it (#177).
   app:
     runs-on: macos-26
     timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [arm64, x64]
     env:
-      ARCH: ${{ matrix.arch }}
-      ZIP: dist/editor/wisp-darwin-${{ matrix.arch }}.zip
+      ARCH: arm64
+      ZIP: dist/editor/wisp-darwin-arm64.zip
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The inputs are what scripts/editor/build-app reads, plus this job's own definition. screenshots.yml restores the same key.
+      - name: Hash the inputs of the app build
+        id: inputs
+        run: |
+          key=$(scripts/ci/app-cache-key "$ARCH")
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the app built from the same inputs
+        id: cached
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.ZIP }}
+          key: ${{ steps.inputs.outputs.key }}
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: ${{ steps.cached.outputs.cache-hit != 'true' && 'npm' || '' }}
+          # Upstream's lockfiles exist only after scripts/editor/prepare runs, and the pin decides them.
+          cache-dependency-path: editor/upstream.json
+
+      # build-app also builds wispd for this leg's architecture (#62), only needed on a miss.
+      # The key matches the rust job's, so the two jobs can share one cached toolchain download.
+      - name: Cache Rust toolchain
+        if: steps.cached.outputs.cache-hit != 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.rustup/toolchains/*
+            !~/.rustup/toolchains/stable-*
+          key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
+
+      - name: Install Rust toolchain
+        if: steps.cached.outputs.cache-hit != 'true'
+        run: rustup toolchain install --no-self-update
+
+      - name: Build the app
+        if: steps.cached.outputs.cache-hit != 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          bundle=$(scripts/editor/build-app "$ARCH")
+          mkdir -p "$(dirname "$ZIP")"
+          ditto -c -k --keepParent --norsrc --noextattr --noacl "$bundle" "$ZIP"
+
+      - name: Check the app
+        run: scripts/ci/check-app "$ZIP" "$ARCH"
+
+      - name: Save the app for runs with the same inputs
+        if: steps.cached.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.ZIP }}
+          key: ${{ steps.inputs.outputs.key }}
+
+  # Same steps as app, but for x64, and only on a push to develop or main (#177): a PR's required ci
+  # check must not wait on it. The ci job below treats a skipped app-x64 as success, since that's the
+  # normal outcome on a PR, but a failure here (which only happens on a push) still fails ci.
+  app-x64:
+    if: github.event_name == 'push'
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      ARCH: x64
+      ZIP: dist/editor/wisp-darwin-x64.zip
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -338,16 +415,18 @@ jobs:
   # Branch protection requires this job's name, ci, as the only check (#6). Renaming it blocks every merge.
   ci:
     if: always()
-    needs: [rust, screenshots, fork, app, smoke, e2e, actionlint]
+    needs: [rust, screenshots, fork, app, app-x64, smoke, e2e, actionlint]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Require every job to succeed
+      # app-x64 only runs on a push (#177), so it is normally "skipped" on a PR; that counts as
+      # success here. Every other job, and app-x64 itself when it does run, must be "success".
+      - name: Require every job to succeed, except a skipped app-x64
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: |
           jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$NEEDS"
-          if ! jq -e 'all(.[]; .result == "success")' <<< "$NEEDS" > /dev/null; then
+          if ! jq -e 'to_entries | all(.value.result == "success" or (.key == "app-x64" and .value.result == "skipped"))' <<< "$NEEDS" > /dev/null; then
             echo "::error::Every job in ci.yml must succeed."
             exit 1
           fi

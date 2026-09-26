@@ -8,13 +8,10 @@
 //! remove`, and `worktree prune` only touch `.git/worktrees` metadata and refs, and `status`,
 //! `rev-parse`, and `diff` are read-only.
 //!
-//! This module is not wired to the protocol yet; #156 (`agent/start` end to end) is the first
-//! caller, and #157 is what a client sees. Storing a worktree's row and deciding when to persist
-//! it is left to that caller: `wisp-store`'s blocking SQLite calls already run on
-//! [`crate::store::StoreHandle`]'s own thread for everything else the async server touches, and
-//! #156 owns wiring the run lifecycle (and its own runs/events tables) into that. What this module
-//! gives #156 is the `worktrees` table and CRUD (`wisp_store::Store::{create,get,list,delete}_worktree`)
-//! and a [`WorktreeManager`] ready to be called with whatever path set the store produces.
+//! The runner (`crate::agents`, #156) is its caller: `agent/start` creates a run's worktree here
+//! and stores its row, including [`CreatedWorktree::git_dir`], in `wisp-store`'s `worktrees`
+//! table, and a finished run is committed with [`WorktreeManager::commit_all`] and measured with
+//! [`WorktreeManager::diff_stat`]. #157 is what a client sees of the diff.
 //!
 //! # Layout and naming
 //!
@@ -32,9 +29,43 @@
 //! leaves `base` unset (today's only case: the repo's current branch `HEAD`), creation refuses if
 //! the repo's working tree is dirty, since a new worktree cut from `HEAD` would silently drop
 //! those uncommitted changes; an explicit `base` skips that check. [`WorktreeManager::commit_all`]
-//! scrubs every environment variable that could override the repo's configured
-//! `user.name`/`user.email` (`GIT_AUTHOR_*`, `GIT_COMMITTER_*`, `EMAIL`), so a commit is always
-//! attributed to whatever the repo itself says, never to whatever wispd inherited.
+//! resolves `user.name`/`user.email` itself, from the repository the user actually works in
+//! (`repo_root`, see [`WorktreeManager::resolve_identity`]), and scrubs every environment
+//! variable that could override them anyway (`GIT_AUTHOR_*`, `GIT_COMMITTER_*`, `EMAIL`), so a
+//! commit is always attributed to whatever the repo itself says, never to whatever wispd
+//! inherited.
+//!
+//! # A worker's worktree is hostile input (#166)
+//!
+//! An agent run (#137, decision 0013) can write every file in its worktree. `commit_all`,
+//! `diff`, and `changed_files` run git there on the worker's behalf, so the worktree's own
+//! tracked content and git state must never be able to make that git process run the worker's
+//! code: a hook, a repository-configured `core.hooksPath` pointing at a tracked folder (as husky
+//! does), a `.gitattributes` diff or filter driver, or a `.git` file rewritten to point somewhere
+//! else entirely.
+//!
+//! [`WorktreeManager::create`] resolves the linked worktree's own private git directory once,
+//! right after `git worktree add`, the one moment its `.git` file is still trustworthy (nothing
+//! has run in the new worktree yet). [`CreatedWorktree::git_dir`] carries that path, and every
+//! later call that touches the worktree (`changed_files`, `diff`, `commit_all`) takes it and pins
+//! `--git-dir`/`--work-tree` explicitly, so a `.git` file the worker rewrites afterward is never
+//! consulted again. Those calls also run with hooks, the pager, external diff and textconv
+//! drivers, and remote helper protocols disabled by `-c`, and with `GIT_CONFIG_NOSYSTEM`, a
+//! `/dev/null` `GIT_CONFIG_GLOBAL`, and a scrubbed, dedicated `HOME`, so the only config git can
+//! still read is the pinned repository's own local config, which the worker cannot write.
+//!
+//! [`WorktreeManager::create`] and [`WorktreeManager::remove`] are not scoped this way: their git
+//! commands run against `repo_root`, the user's own checkout, which a worker never writes, so
+//! there is no `.git` file or repo-local config of the worker's to distrust there.
+//!
+//! **Known gap (#175):** a `-c` override wins over a config value no matter how that value was
+//! set, including through an `include`/`includeIf`, so hooks and hooksPath stay closed either
+//! way. Filter drivers (`filter.<name>.clean`/`.smudge`) don't have that `-c` escape hatch, and if
+//! the pinned repository's own local config contains an *absolute* `include.path` pointing into
+//! the worktree, the included file can still define one, for a worker's `.gitattributes` to
+//! trigger. A *relative* `include.path` doesn't reach the worktree — it resolves against the
+//! repository's git folder — so this needs an unusual repository configuration to matter; #175
+//! tracks closing it.
 
 #[cfg(test)]
 mod tests;
@@ -54,7 +85,7 @@ use tracing::warn;
 use wisp_protocol::RunId;
 
 use crate::backend::process::{
-    Exit, Launcher, Output, Process, ProcessSpec, SpawnError, StdinMode,
+    Environment, Exit, Launcher, Output, Process, ProcessSpec, SpawnError, StdinMode,
 };
 
 /// How long a single git invocation may run before wispd gives up on it and kills its process
@@ -84,6 +115,7 @@ const GIT_SCRUBBED: &[&str] = &[
     "GIT_CONFIG_SYSTEM",
     "GIT_CONFIG_NOSYSTEM",
     "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_PARAMETERS",
     "GIT_PAGER",
     "GIT_EDITOR",
     "GIT_SEQUENCE_EDITOR",
@@ -99,6 +131,64 @@ const GIT_SCRUBBED: &[&str] = &[
     "GIT_SSH",
     "GIT_SSH_COMMAND",
 ];
+
+/// Extra environment variables scrubbed from a call scoped to a worker's worktree (#166), on top
+/// of [`GIT_SCRUBBED`]: `XDG_CONFIG_HOME` could otherwise point git at a config file outside the
+/// dedicated, empty `HOME` these calls inject.
+const WORKTREE_GIT_EXTRA_SCRUBBED: &[&str] = &["XDG_CONFIG_HOME"];
+
+/// The names, from `base`, of any `GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>` pair (git's way of
+/// setting config from the environment, indexed rather than named, so [`GIT_SCRUBBED`] can't list
+/// them). [`GIT_SCRUBBED`] already removes `GIT_CONFIG_COUNT`, without which git ignores every
+/// indexed pair regardless of index, so this is defense in depth for a worktree-scoped call
+/// (#166): scrubbed by name too, in case something downstream ever sets its own count.
+fn indexed_git_config_vars(base: &Environment) -> Vec<OsString> {
+    base.names()
+        .filter(|name| {
+            let name = name.to_string_lossy();
+            name.starts_with("GIT_CONFIG_KEY_") || name.starts_with("GIT_CONFIG_VALUE_")
+        })
+        .map(OsString::from)
+        .collect()
+}
+
+/// The folder under a manager's data directory used as `HOME` for every git command scoped to a
+/// worker's worktree (#166): empty, so there is no `~/.gitconfig`, `~/.git-credentials`, or
+/// `~/.ssh` for a worker's tracked files, or an inherited ambient environment, to route git
+/// through.
+const GIT_SAFE_HOME_DIR: &str = "git-safe-home";
+
+/// `-c` overrides applied to every git command scoped to a worker's worktree (#166), neutralizing
+/// what repo-local config and tracked files can otherwise make git execute:
+///
+/// - `core.hooksPath=/dev/null` — no hooks run, wherever `core.hooksPath` points, including a
+///   tracked folder such as husky's `.husky/_`. `--no-verify` alone only skips `pre-commit` and
+///   `commit-msg`; `post-commit` and (on `git add`) `post-index-change` still run without this.
+/// - `core.fsmonitor=false` — no filesystem monitor hook.
+/// - `core.pager=cat`, `diff.external=` — no pager or external diff tool.
+/// - `core.sshCommand=false` — if anything ever triggered a transport, no attacker-chosen SSH
+///   command.
+/// - `protocol.allow=never` — no remote helper protocol (for example `ext::`) runs.
+///
+/// Filter drivers (`filter.<name>.clean`/`.smudge`) can't be neutralized this way, because `-c`
+/// needs the filter's name and `man git-config` gives no wildcard form. Instead, worktree-scoped
+/// calls run with `GIT_CONFIG_NOSYSTEM=1`, a `/dev/null` `GIT_CONFIG_GLOBAL`, and a dedicated,
+/// empty `HOME` (see [`GIT_SAFE_HOME_DIR`]), so the pinned repository's own local config — never
+/// worker-writable — is the only place left a filter, or a diff or merge driver, could be
+/// configured.
+const WORKTREE_GIT_CONFIG: &[(&str, &str)] = &[
+    ("core.hooksPath", "/dev/null"),
+    ("core.fsmonitor", "false"),
+    ("core.pager", "cat"),
+    ("core.sshCommand", "false"),
+    ("diff.external", ""),
+    ("protocol.allow", "never"),
+];
+
+/// Extra flags for a diff-family subcommand (`diff`, `show`, `log`) scoped to a worker's worktree
+/// (#166): a `.gitattributes` `diff=` driver's `textconv`, or `GIT_EXTERNAL_DIFF`-style external
+/// diff, must not run either.
+const NO_DIFF_DRIVERS: &[&str] = &["--no-ext-diff", "--no-textconv"];
 
 /// Why a worktree operation failed.
 #[derive(Debug, thiserror::Error)]
@@ -186,6 +276,12 @@ pub struct CreatedWorktree {
     pub branch: String,
     /// The concrete commit it was created from, resolved once so it never moves under it.
     pub base: String,
+    /// The linked worktree's own private git directory (`<repo>/.git/worktrees/<name>`),
+    /// resolved once at creation from the `.git` file `git worktree add` just wrote, before any
+    /// worker code has run. Every later call passes this back so it never has to trust that
+    /// `.git` file again (#166): the worktree it names is worker-writable, and a worker could
+    /// rewrite it to point anywhere.
+    pub git_dir: PathBuf,
 }
 
 /// How a changed file differs from the base.
@@ -229,6 +325,17 @@ pub struct Diff {
     pub truncated: bool,
 }
 
+/// How much a worktree differs from its base, from [`WorktreeManager::diff_stat`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DiffStat {
+    /// Files changed.
+    pub files: u64,
+    /// Lines added.
+    pub insertions: u64,
+    /// Lines removed.
+    pub deletions: u64,
+}
+
 /// The commit [`WorktreeManager::commit_all`] made.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commit {
@@ -252,6 +359,7 @@ pub struct GcReport {
 pub struct WorktreeManager {
     launcher: Launcher,
     root: PathBuf,
+    git_safe_home: PathBuf,
     timeout: Duration,
     max_diff_bytes: usize,
     repo_locks: Arc<StdMutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>>,
@@ -265,6 +373,7 @@ impl WorktreeManager {
         Self {
             launcher,
             root: data_dir_root.join(WORKTREES_DIR),
+            git_safe_home: data_dir_root.join(GIT_SAFE_HOME_DIR),
             timeout: DEFAULT_TIMEOUT,
             max_diff_bytes: DEFAULT_MAX_DIFF_BYTES,
             repo_locks: Arc::new(StdMutex::new(HashMap::new())),
@@ -341,15 +450,28 @@ impl WorktreeManager {
         )
         .await?;
 
+        // The one moment the new worktree's `.git` file is trusted: git just wrote it, and no
+        // worker has run yet. Every later call pins this path explicitly instead (#166).
+        let git_dir_output = self
+            .run_git_ok(&path, &["rev-parse", "--absolute-git-dir"])
+            .await?;
+        let git_dir = PathBuf::from(git_dir_output.trim());
+
         Ok(CreatedWorktree {
             path,
             branch,
             base: resolved_base,
+            git_dir,
         })
     }
 
     /// Files that differ between `base` (a commit git can resolve, normally
     /// [`CreatedWorktree::base`]) and the worktree's current state, committed or not.
+    ///
+    /// `git_dir` must be [`CreatedWorktree::git_dir`] for `worktree_path`: it pins the git
+    /// command to the worktree's real git directory instead of trusting its `.git` file, and
+    /// disables the execution vectors a worker's tracked files or repo-local config could
+    /// otherwise reach (#166).
     ///
     /// # Errors
     ///
@@ -357,21 +479,15 @@ impl WorktreeManager {
     pub async fn changed_files(
         &self,
         worktree_path: &Path,
+        git_dir: &Path,
         base: &str,
     ) -> Result<Vec<ChangedFile>, WorktreeError> {
-        self.stage_all(worktree_path).await?;
+        self.stage_all(worktree_path, git_dir).await?;
+        let mut args = vec!["diff", "--cached", "--no-color", "--find-renames"];
+        args.extend_from_slice(NO_DIFF_DRIVERS);
+        args.extend_from_slice(&["--name-status", base]);
         let output = self
-            .run_git_ok(
-                worktree_path,
-                &[
-                    "diff",
-                    "--cached",
-                    "--no-color",
-                    "--find-renames",
-                    "--name-status",
-                    base,
-                ],
-            )
+            .run_worktree_git_ok(worktree_path, git_dir, &args)
             .await?;
         Ok(parse_name_status(&output))
     }
@@ -379,52 +495,116 @@ impl WorktreeManager {
     /// A unified diff between `base` and the worktree's current state, committed or not, cut off
     /// at this manager's diff size cap.
     ///
+    /// `git_dir` must be [`CreatedWorktree::git_dir`] for `worktree_path`; see
+    /// [`WorktreeManager::changed_files`].
+    ///
     /// # Errors
     ///
     /// [`WorktreeError::GitFailed`], [`WorktreeError::Timeout`], or [`WorktreeError::Spawn`].
-    pub async fn diff(&self, worktree_path: &Path, base: &str) -> Result<Diff, WorktreeError> {
-        self.stage_all(worktree_path).await?;
+    pub async fn diff(
+        &self,
+        worktree_path: &Path,
+        git_dir: &Path,
+        base: &str,
+    ) -> Result<Diff, WorktreeError> {
+        self.stage_all(worktree_path, git_dir).await?;
+        let mut args = vec!["diff", "--cached", "--no-color", "--find-renames"];
+        args.extend_from_slice(NO_DIFF_DRIVERS);
+        args.push(base);
         let output = self
-            .run_git_ok(
-                worktree_path,
-                &["diff", "--cached", "--no-color", "--find-renames", base],
-            )
+            .run_worktree_git_ok(worktree_path, git_dir, &args)
             .await?;
         Ok(cap_diff(output, self.max_diff_bytes))
     }
 
+    /// How many files and lines differ between `base` and the worktree's current state, committed
+    /// or not: `git diff --numstat`, pinned and hardened like [`WorktreeManager::diff`]. A binary
+    /// file counts as a changed file with no lines.
+    ///
+    /// # Errors
+    ///
+    /// [`WorktreeError::GitFailed`], [`WorktreeError::Timeout`], or [`WorktreeError::Spawn`].
+    pub async fn diff_stat(
+        &self,
+        worktree_path: &Path,
+        git_dir: &Path,
+        base: &str,
+    ) -> Result<DiffStat, WorktreeError> {
+        self.stage_all(worktree_path, git_dir).await?;
+        let mut args = vec!["diff", "--cached", "--no-color", "--find-renames"];
+        args.extend_from_slice(NO_DIFF_DRIVERS);
+        args.extend_from_slice(&["--numstat", base]);
+        let output = self
+            .run_worktree_git_ok(worktree_path, git_dir, &args)
+            .await?;
+        Ok(parse_numstat(&output))
+    }
+
+    /// The shared git folder of the repository at `repo_path` (`git rev-parse --git-common-dir`),
+    /// as an absolute path. It runs in the user's own checkout, never in a worker's worktree, so
+    /// no worker-written file decides the answer. The worker sandbox (0013) makes it read-only.
+    ///
+    /// # Errors
+    ///
+    /// [`WorktreeError::NotAGitRepo`], or [`WorktreeError::GitFailed`],
+    /// [`WorktreeError::Timeout`], or [`WorktreeError::Spawn`].
+    pub async fn git_common_dir(&self, repo_path: &Path) -> Result<PathBuf, WorktreeError> {
+        let repo_root = self.repo_root(repo_path).await?;
+        let output = self
+            .run_git_ok(
+                &repo_root,
+                &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            )
+            .await?;
+        Ok(PathBuf::from(output.trim()))
+    }
+
     /// Stages every change in the worktree and commits it with `message`, using the repository's
-    /// own configured `user.name`/`user.email`. Returns `None`, committing nothing, if there is
+    /// own configured `user.name`/`user.email`, resolved from `repo_root` (see
+    /// [`WorktreeManager::resolve_identity`]). Returns `None`, committing nothing, if there is
     /// nothing to commit.
     ///
     /// Runs with `--no-verify` and `--no-gpg-sign`: hooks and interactive signing assume a person
     /// is at the keyboard, and a headless commit that triggers either must not hang wispd.
+    /// `--no-verify` alone only skips the `pre-commit` and `commit-msg` hooks; `git_dir` must be
+    /// [`CreatedWorktree::git_dir`] for `worktree_path`, which additionally disables every other
+    /// hook and execution vector a worker's worktree could reach (#166); see
+    /// [`WorktreeManager::changed_files`].
     ///
     /// # Errors
     ///
-    /// [`WorktreeError::MissingIdentity`] if there is something to commit but the repository has
-    /// no configured identity, or [`WorktreeError::GitFailed`], [`WorktreeError::Timeout`], or
+    /// [`WorktreeError::MissingIdentity`] if there is something to commit but `repo_root` has no
+    /// configured identity, or [`WorktreeError::GitFailed`], [`WorktreeError::Timeout`], or
     /// [`WorktreeError::Spawn`].
     pub async fn commit_all(
         &self,
         worktree_path: &Path,
+        git_dir: &Path,
+        repo_root: &Path,
         message: &str,
     ) -> Result<Option<Commit>, WorktreeError> {
-        self.stage_all(worktree_path).await?;
+        self.stage_all(worktree_path, git_dir).await?;
         let staged = self
-            .run_git_ok(worktree_path, &["diff", "--cached", "--name-only"])
+            .run_worktree_git_ok(worktree_path, git_dir, &["diff", "--cached", "--name-only"])
             .await?;
         if staged.trim().is_empty() {
             return Ok(None);
         }
-        if !self.has_identity(worktree_path).await? {
+        let Some((name, email)) = self.resolve_identity(repo_root).await? else {
             return Err(WorktreeError::MissingIdentity {
-                repo: worktree_path.to_owned(),
+                repo: repo_root.to_owned(),
             });
-        }
-        self.run_git_ok(
+        };
+        let user_name_arg = format!("user.name={name}");
+        let user_email_arg = format!("user.email={email}");
+        self.run_worktree_git_ok(
             worktree_path,
+            git_dir,
             &[
+                "-c",
+                user_name_arg.as_str(),
+                "-c",
+                user_email_arg.as_str(),
                 "commit",
                 "--no-verify",
                 "--no-gpg-sign",
@@ -434,7 +614,7 @@ impl WorktreeManager {
         )
         .await?;
         let sha = self
-            .run_git_ok(worktree_path, &["rev-parse", "HEAD"])
+            .run_worktree_git_ok(worktree_path, git_dir, &["rev-parse", "HEAD"])
             .await?;
         Ok(Some(Commit {
             sha: sha.trim().to_owned(),
@@ -618,8 +798,9 @@ impl WorktreeManager {
     /// the index (`--cached`) after staging, rather than the working tree directly. That gives the
     /// same answer before and after a run's changes are committed: once committed, staging finds
     /// nothing new, and the index already matches `HEAD`.
-    async fn stage_all(&self, worktree_path: &Path) -> Result<(), WorktreeError> {
-        self.run_git_ok(worktree_path, &["add", "-A"]).await?;
+    async fn stage_all(&self, worktree_path: &Path, git_dir: &Path) -> Result<(), WorktreeError> {
+        self.run_worktree_git_ok(worktree_path, git_dir, &["add", "-A"])
+            .await?;
         Ok(())
     }
 
@@ -630,13 +811,37 @@ impl WorktreeManager {
         Ok(!status.trim().is_empty())
     }
 
-    async fn has_identity(&self, cwd: &Path) -> Result<bool, WorktreeError> {
-        let configured = |output: GitOutput| output.success() && !output.stdout.trim().is_empty();
-        let name = self.run_git(cwd, &["config", "--get", "user.name"]).await?;
-        let email = self
-            .run_git(cwd, &["config", "--get", "user.email"])
+    /// The repository's configured `user.name`/`user.email`, or `None` if either is unset.
+    ///
+    /// Resolved against `repo_root` (the user's own checkout) through the ordinary,
+    /// unrestricted [`WorktreeManager::run_git`], not the locked-down
+    /// [`WorktreeManager::run_worktree_git`] a worker's worktree calls go through: `repo_root`
+    /// isn't worker-writable (#137, decision 0013), so there is nothing to harden here, and an
+    /// identity configured only in `~/.gitconfig` — true for most users — must still resolve.
+    /// [`WorktreeManager::commit_all`] passes the result back into the worktree-scoped commit
+    /// explicitly, with `-c user.name=`/`-c user.email=`, since that call's own environment
+    /// can't see it.
+    async fn resolve_identity(
+        &self,
+        repo_root: &Path,
+    ) -> Result<Option<(String, String)>, WorktreeError> {
+        let configured = |output: GitOutput| -> Option<String> {
+            if !output.success() {
+                return None;
+            }
+            let value = output.stdout.trim();
+            (!value.is_empty()).then(|| value.to_owned())
+        };
+        let name = self
+            .run_git(repo_root, &["config", "--get", "user.name"])
             .await?;
-        Ok(configured(name) && configured(email))
+        let email = self
+            .run_git(repo_root, &["config", "--get", "user.email"])
+            .await?;
+        Ok(match (configured(name), configured(email)) {
+            (Some(name), Some(email)) => Some((name, email)),
+            _ => None,
+        })
     }
 
     async fn lock_repo(&self, repo_root: &Path) -> tokio::sync::OwnedMutexGuard<()> {
@@ -694,6 +899,91 @@ impl WorktreeManager {
         }
         Ok(output.stdout)
     }
+
+    /// Runs `git args` against `work_tree`, with the git directory pinned to `git_dir` and every
+    /// execution vector `work_tree`'s tracked files or repo-local config could reach neutralized
+    /// (#166): see the module documentation and [`WORKTREE_GIT_CONFIG`]. Like [`Self::run_git`],
+    /// only [`WorktreeError::Spawn`], [`WorktreeError::Timeout`], and now [`WorktreeError::Io`]
+    /// (preparing the dedicated `HOME`) are possible failures; [`Self::run_worktree_git_ok`] also
+    /// turns a non-zero exit into an error.
+    async fn run_worktree_git(
+        &self,
+        work_tree: &Path,
+        git_dir: &Path,
+        args: &[&str],
+    ) -> Result<GitOutput, WorktreeError> {
+        tokio::fs::create_dir_all(&self.git_safe_home)
+            .await
+            .map_err(|source| WorktreeError::Io {
+                path: self.git_safe_home.clone(),
+                source,
+            })?;
+
+        let mut spec = ProcessSpec::new("git", work_tree);
+        spec.args = worktree_argv(work_tree, git_dir, args);
+        spec.scrub = GIT_SCRUBBED
+            .iter()
+            .chain(WORKTREE_GIT_EXTRA_SCRUBBED)
+            .map(|name| OsString::from(*name))
+            .chain(indexed_git_config_vars(self.launcher.base()))
+            .collect();
+        spec.inject.set("GIT_TERMINAL_PROMPT", "0");
+        spec.inject.set("GIT_CONFIG_NOSYSTEM", "1");
+        spec.inject.set("GIT_CONFIG_GLOBAL", "/dev/null");
+        spec.inject
+            .set("HOME", self.git_safe_home.to_string_lossy().into_owned());
+        spec.stdin = StdinMode::Null;
+
+        let process = self.launcher.spawn(&spec)?;
+        match timeout(self.timeout, collect(process)).await {
+            Ok((stdout, exit)) => Ok(GitOutput {
+                stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                exit,
+            }),
+            Err(_) => Err(WorktreeError::Timeout {
+                cwd: work_tree.to_owned(),
+                args: owned_args(args),
+                timeout: self.timeout,
+            }),
+        }
+    }
+
+    /// Like [`WorktreeManager::run_worktree_git`], but a non-zero exit becomes
+    /// [`WorktreeError::GitFailed`] and only stdout is returned.
+    async fn run_worktree_git_ok(
+        &self,
+        work_tree: &Path,
+        git_dir: &Path,
+        args: &[&str],
+    ) -> Result<String, WorktreeError> {
+        let output = self.run_worktree_git(work_tree, git_dir, args).await?;
+        if !output.success() {
+            return Err(WorktreeError::GitFailed {
+                cwd: work_tree.to_owned(),
+                args: owned_args(args),
+                detail: describe_failure(&output),
+            });
+        }
+        Ok(output.stdout)
+    }
+}
+
+/// Builds the full argument list for a git command scoped to a worker's worktree (#166):
+/// `--git-dir`/`--work-tree` pinned explicitly, ahead of any auto-discovery from a `.git` file,
+/// then [`WORKTREE_GIT_CONFIG`]'s `-c` overrides, then `args` as the caller gave them.
+fn worktree_argv(work_tree: &Path, git_dir: &Path, args: &[&str]) -> Vec<OsString> {
+    let mut full_args = Vec::with_capacity(2 + WORKTREE_GIT_CONFIG.len() * 2 + args.len());
+    full_args.push(OsString::from(format!("--git-dir={}", git_dir.display())));
+    full_args.push(OsString::from(format!(
+        "--work-tree={}",
+        work_tree.display()
+    )));
+    for (key, value) in WORKTREE_GIT_CONFIG {
+        full_args.push(OsString::from("-c"));
+        full_args.push(OsString::from(format!("{key}={value}")));
+    }
+    full_args.extend(args.iter().map(|arg| OsString::from(*arg)));
+    full_args
 }
 
 /// The result of running one git command to completion.
@@ -810,6 +1100,25 @@ fn parse_name_status(output: &str) -> Vec<ChangedFile> {
             }
         })
         .collect()
+}
+
+/// Sums `git diff --numstat`'s output: `added\tdeleted\tpath` per file, with `-` for both counts
+/// of a binary file.
+fn parse_numstat(output: &str) -> DiffStat {
+    let mut stat = DiffStat::default();
+    for line in output.lines().filter(|line| !line.is_empty()) {
+        let mut fields = line.split('\t');
+        let mut count = || {
+            fields
+                .next()
+                .and_then(|field| field.parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        stat.insertions += count();
+        stat.deletions += count();
+        stat.files += 1;
+    }
+    stat
 }
 
 /// Cuts `text` to at most `max_bytes`, on a UTF-8 boundary, and notes when it did.

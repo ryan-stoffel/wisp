@@ -13,7 +13,9 @@
 //! The child gets its arguments as the vendor CLIs would: the resume id, the prompt as a JSON
 //! string, the policy, and the model. Follow-ups reach it on stdin, one JSON string per line.
 //! With an API key account, the key is in `FAKE_API_KEY`; with a subscription it is scrubbed, as
-//! 0004 has the Claude backend do with Anthropic's variables.
+//! 0004 has the Claude backend do with Anthropic's variables. Like every backend, it refuses a
+//! workspace-write run without a [`WorkerSandbox`](super::WorkerSandbox) (0013), though it
+//! enforces none of it.
 
 use std::collections::VecDeque;
 use std::fmt::Write as _;
@@ -29,6 +31,7 @@ use super::event::{Event, Failure, FailureKind, ModelUsage, Outcome, WarningKind
 use super::process::{
     CancelPolicy, Exit, Launcher, Output, OutputLimits, Process, ProcessSpec, StdinMode,
 };
+use super::sandbox::worker_sandbox;
 use super::{
     Backend, CancelSwitch, Capabilities, Credential, EVENT_BUFFER, EventSink, FollowUp, RunHandle,
     RunRequest, StartError, Started, ToolPolicy, TurnId,
@@ -102,6 +105,14 @@ pub enum Step {
     /// Waits for a follow-up on stdin and prints [`Event::Text`] with it. Exits with code 0 if
     /// stdin ends first.
     AwaitFollowUp,
+    /// Writes `content` to the file at `path`, relative to the working directory or absolute,
+    /// replacing it, as an agent's edit would.
+    WriteFile {
+        /// Where to write.
+        path: String,
+        /// What to write, exactly.
+        content: String,
+    },
     /// Prints [`Event::TurnFinished`]; the backend fills in the turn id.
     EndTurn {
         /// The turn's result.
@@ -175,6 +186,7 @@ impl Backend for FakeBackend {
             coordinator: true,
             reports_cost: true,
             rate_limits: true,
+            worker_sandbox: true,
         }
     }
 
@@ -190,6 +202,7 @@ impl Backend for FakeBackend {
                 resume.session_id
             )));
         }
+        worker_sandbox(&request)?;
         let script = compile(&self.script).map_err(StartError::Invalid)?;
 
         let mut spec = ProcessSpec::new("sh", &request.cwd);
@@ -637,6 +650,10 @@ fn compile(script: &Script) -> Result<String, String> {
             Step::AwaitFollowUp => {
                 out.push_str("IFS= read -r line || exit 0\n");
                 print_text(&mut out, "\"$line\"", true);
+            }
+            Step::WriteFile { path, content } => {
+                writeln!(out, "printf '%s' {} > {}", quote(content), quote(path))
+                    .expect("infallible");
             }
             Step::EndTurn { result } => {
                 let event = Event::TurnFinished {

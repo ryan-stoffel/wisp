@@ -10,12 +10,13 @@ use serde_json::Value;
 use tempfile::TempDir;
 
 use super::stream::{Step, Translator};
-use super::{ClaudeBackend, NO_WRITE_ARGS};
+use super::{ClaudeBackend, NO_WRITE_ARGS, WORKER_TOOL_LIST, WORKER_TOOLS, WORKSPACE_WRITE_ARGS};
 use crate::backend::process::{CancelPolicy, Environment, Launcher, SpawnError};
 use crate::backend::{
     AccountRef, ApiKey, Backend, Credential, Event, EventStream, FailureKind, FollowUp,
     LimitStatus, LimitWindow, ModelUsage, Outcome, Resume, RunId, RunRequest, SendError,
     StartError, Started, TodoItem, TodoStatus, ToolPolicy, ToolStatus, TurnId, Usage, WarningKind,
+    WorkerSandbox,
 };
 use crate::paths::DataDir;
 
@@ -160,6 +161,7 @@ fn request(cwd: &Path) -> RunRequest {
         cwd: cwd.to_owned(),
         prompt: "Summarize the README.\nKeep it short.".into(),
         policy: ToolPolicy::NoWrite,
+        sandbox: None,
         account: AccountRef {
             id: "claude-max".into(),
             credential: Credential::Subscription { config_home: None },
@@ -340,20 +342,168 @@ async fn a_read_only_run_maps_the_stream_and_uses_the_no_write_policy() {
     );
 }
 
-/// A worker's policy, model, and second account reached the CLI.
+/// A sandbox as #156 builds it, for a worktree at `cwd`.
+fn worker_sandbox(cwd: &Path) -> WorkerSandbox {
+    WorkerSandbox::for_worktree(
+        Path::new("/Users/u"),
+        Path::new("/Users/u/Library/Application Support/wisp"),
+        cwd,
+        Path::new("/Users/u/src/app/.git"),
+        Path::new("/Users/u/Library/Application Support/wisp/context/p"),
+    )
+}
+
+/// A worker's policy, sandbox, model, and second account reached the CLI.
 fn assert_worker_invocation(fake: &Fake) {
     let argv = fake.argv();
+    let cwd = fake.root().display().to_string();
+    let mut expected: Vec<&str> = WORKSPACE_WRITE_ARGS.to_vec();
+    expected.push("--settings");
+    assert_eq!(argv[6..6 + expected.len()], expected);
     assert_eq!(
-        argv[6..],
+        WORKSPACE_WRITE_ARGS.join(" "),
+        "--restricted --tools Read,Edit,Write,Glob,Grep,NotebookEdit,Bash,WebFetch,WebSearch,\
+         TodoWrite --strict-mcp-config --permission-mode acceptEdits",
+        "0013's worker policy, exactly"
+    );
+    assert_eq!(WORKER_TOOL_LIST, WORKER_TOOLS.join(","));
+
+    let settings: Value = serde_json::from_str(&argv[6 + expected.len()]).unwrap();
+    let mut deny_read: Vec<String> = worker_sandbox(Path::new(&cwd))
+        .unreadable
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect();
+    deny_read.push("/tmp/claude-second-account".into());
+    assert_eq!(
+        settings,
+        serde_json::json!({
+            "disableAllHooks": true,
+            "permissions": {
+                "allow": ["WebFetch(domain:*)", "WebSearch"],
+                "deny": [
+                    "WebFetch(domain:localhost)",
+                    "WebFetch(domain:127.0.0.1)",
+                    "WebFetch(domain:[::1])",
+                    "WebFetch(domain:0.0.0.0)",
+                    "WebFetch(domain:[::])",
+                ],
+            },
+            "sandbox": {
+                "enabled": true,
+                "failIfUnavailable": true,
+                "autoAllowBashIfSandboxed": true,
+                "allowUnsandboxedCommands": false,
+                "excludedCommands": [],
+                "network": {
+                    "strictAllowlist": true,
+                    "deniedDomains": ["localhost", "127.0.0.1", "[::1]", "0.0.0.0", "[::]"],
+                    "allowLocalBinding": false,
+                },
+                "filesystem": {
+                    "denyRead": deny_read,
+                    "allowRead": [cwd, "/Users/u/Library/Application Support/wisp/context/p"],
+                    "denyWrite": [format!("{cwd}/.git"), "/Users/u/src/app/.git"],
+                },
+            },
+        })
+    );
+    assert_eq!(
+        argv[7 + expected.len()..],
         [
-            "--permission-mode",
-            "acceptEdits",
+            "--add-dir",
+            "/Users/u/Library/Application Support/wisp/context/p",
             "--model",
             "claude-sonnet-4-6"
         ]
     );
-    assert!(!argv.iter().any(|arg| arg == "--tools"), "{argv:?}");
+    for flag in [
+        "--setting-sources",
+        "--allowedTools",
+        "--dangerously-skip-permissions",
+    ] {
+        assert!(!argv.iter().any(|arg| arg == flag), "{flag}: {argv:?}");
+    }
     fake.assert_no_inherited_credentials(Some("/tmp/claude-second-account"));
+}
+
+#[test]
+fn a_worker_s_settings_deny_every_name_for_this_mac_to_commands_and_web_fetch() {
+    let sandbox = worker_sandbox(Path::new("/Users/u/wt"));
+    let settings = super::worker_settings(&sandbox, Path::new("/Users/u/wt"), None);
+    let list = |pointer: &str| -> Vec<String> {
+        settings
+            .pointer(pointer)
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .map(|entry| entry.as_str().unwrap().to_owned())
+            .collect()
+    };
+    let denied_hosts = list("/sandbox/network/deniedDomains");
+    let denied_fetches = list("/permissions/deny");
+    for host in ["localhost", "127.0.0.1", "[::1]", "0.0.0.0", "[::]"] {
+        assert!(
+            denied_hosts.iter().any(|h| h == host),
+            "commands reach {host}"
+        );
+        let rule = format!("WebFetch(domain:{host})");
+        assert!(denied_fetches.contains(&rule), "WebFetch reaches {host}");
+    }
+    assert_eq!(
+        list("/permissions/allow"),
+        ["WebFetch(domain:*)", "WebSearch"]
+    );
+}
+
+#[test]
+fn a_worker_without_a_usable_sandbox_is_refused_before_anything_runs() {
+    let fake = Fake::new("tool-call");
+    let mut worker = request(&fake.root());
+    worker.policy = ToolPolicy::WorkspaceWrite;
+    let refused = |request: RunRequest| match fake.backend.start(request) {
+        Err(StartError::Invalid(message)) => message,
+        Err(other) => panic!("expected Invalid, got {other:?}"),
+        Ok(_) => panic!("expected Invalid, got a run"),
+    };
+    assert!(refused(worker.clone()).contains("0013"));
+
+    let mut relative = worker_sandbox(&fake.root());
+    relative.writable.push("context".into());
+    worker.sandbox = Some(relative);
+    assert!(refused(worker.clone()).contains("context"));
+
+    let mut empty = worker_sandbox(&fake.root());
+    empty.unreadable.clear();
+    worker.sandbox = Some(empty);
+    assert!(refused(worker.clone()).contains("nothing unreadable"));
+
+    for glob in [
+        "/Users/u/src/app[old]/.git",
+        "/Users/u/src/app]/.git",
+        "/Users/u/src/a*/.git",
+        "/Users/u/src/a?/.git",
+    ] {
+        let mut sandbox = worker_sandbox(&fake.root());
+        sandbox.read_only[1] = glob.into();
+        worker.sandbox = Some(sandbox);
+        assert!(refused(worker.clone()).contains(glob), "{glob}");
+    }
+    let mut glob_cwd = worker.clone();
+    glob_cwd.sandbox = Some(worker_sandbox(&fake.root()));
+    glob_cwd.cwd = "/Users/u/src/app[old]".into();
+    assert!(refused(glob_cwd).contains("app[old]"));
+
+    worker.sandbox = Some(worker_sandbox(&fake.root()));
+    worker.account.credential = Credential::Subscription {
+        config_home: Some("second-account".into()),
+    };
+    assert!(refused(worker.clone()).contains("second-account"));
+    worker.account.credential = Credential::Subscription {
+        config_home: Some("/Users/u/.claude-*".into()),
+    };
+    assert!(refused(worker).contains(".claude-*"));
+    assert_eq!(fake.argv(), Vec::<String>::new(), "nothing ran");
 }
 
 #[tokio::test]
@@ -361,6 +511,7 @@ async fn a_worker_run_edits_in_its_cwd_and_reports_its_tool_calls() {
     let fake = Fake::new("tool-call");
     let mut request = request(&fake.root());
     request.policy = ToolPolicy::WorkspaceWrite;
+    request.sandbox = Some(worker_sandbox(&fake.root()));
     request.model = Some("claude-sonnet-4-6".into());
     request.account.credential = Credential::Subscription {
         config_home: Some("/tmp/claude-second-account".into()),
@@ -1002,6 +1153,17 @@ async fn cancel_interrupts_the_cli_with_sigint() {
         next(&mut events).await,
         Event::SessionStarted { .. }
     ));
+    // The fake CLI prints `@trap-armed` right after installing its SIGINT trap (fake-claude.sh),
+    // which the translator reports as a malformed line. Waiting for it here is a deterministic
+    // handshake: cancel() below can never race the trap's own installation (#149), unlike waiting
+    // for a wall-clock margin.
+    assert!(matches!(
+        next(&mut events).await,
+        Event::Warning {
+            warning: WarningKind::MalformedLine,
+            ..
+        }
+    ));
     assert!(matches!(next(&mut events).await, Event::Text { .. }));
     let started = Instant::now();
     run.cancel();
@@ -1092,10 +1254,47 @@ fn output_before_the_init_is_refused() {
 }
 
 fn init_line(tools: &str) -> Vec<u8> {
+    init_with_version(tools, "2.1.281")
+}
+
+fn init_with_version(tools: &str, version: &str) -> Vec<u8> {
     format!(
-        r#"{{"type":"system","subtype":"init","session_id":"s","apiKeySource":"none","tools":{tools}}}"#
+        r#"{{"type":"system","subtype":"init","session_id":"s","apiKeySource":"none","claude_code_version":"{version}","tools":{tools}}}"#
     )
     .into_bytes()
+}
+
+#[test]
+fn a_worker_on_a_claude_code_too_old_to_sandbox_it_is_stopped() {
+    for (reported, refused) in [
+        ("2.1.247", true),
+        ("2.0.999", true),
+        ("1.9.300", true),
+        ("not-a-version", true),
+        ("2.1.248", false),
+        ("2.1.281", false),
+        ("2.2.0", false),
+        ("10.0.0-beta.1", false),
+    ] {
+        let mut translator = Translator::new(ToolPolicy::WorkspaceWrite, "none");
+        let steps = translator.line(&init_with_version(r#"["Bash"]"#, reported));
+        let expected = refused.then_some(FailureKind::PolicyViolation);
+        assert_eq!(violation_kind(&steps), expected, "{reported}");
+    }
+    let mut translator = Translator::new(ToolPolicy::WorkspaceWrite, "none");
+    let unversioned =
+        br#"{"type":"system","subtype":"init","session_id":"s","apiKeySource":"none","tools":["Bash"]}"#;
+    assert_eq!(
+        violation_kind(&translator.line(unversioned)),
+        Some(FailureKind::PolicyViolation)
+    );
+    let mut translator = Translator::new(ToolPolicy::NoWrite, "none");
+    let old_reader = init_with_version(r#"["Read"]"#, "2.1.200");
+    assert_eq!(
+        violation_kind(&translator.line(&old_reader)),
+        None,
+        "no-write runs have no floor"
+    );
 }
 
 fn violation_kind(steps: &[Step]) -> Option<FailureKind> {
@@ -1103,6 +1302,29 @@ fn violation_kind(steps: &[Step]) -> Option<FailureKind> {
         Step::Violation(failure) => Some(failure.failure),
         _ => None,
     })
+}
+
+#[test]
+fn a_worker_run_allows_only_the_worker_tools() {
+    let allowed = init_line(
+        r#"["Read","Edit","Write","Glob","Grep","NotebookEdit","Bash","WebFetch","WebSearch","TodoWrite","EndConversation"]"#,
+    );
+    let mut translator = Translator::new(ToolPolicy::WorkspaceWrite, "none");
+    assert_eq!(violation_kind(&translator.line(&allowed)), None);
+    for extra in [
+        r#"["Bash","Monitor"]"#,
+        r#"["Bash","Task"]"#,
+        r#"["Bash","Agent"]"#,
+        r#"["Bash","Skill"]"#,
+        r#"["Bash","mcp__github__create_issue"]"#,
+    ] {
+        let mut translator = Translator::new(ToolPolicy::WorkspaceWrite, "none");
+        assert_eq!(
+            violation_kind(&translator.line(&init_line(extra))),
+            Some(FailureKind::PolicyViolation),
+            "{extra}"
+        );
+    }
 }
 
 #[test]

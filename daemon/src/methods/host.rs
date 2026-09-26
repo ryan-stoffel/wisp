@@ -73,11 +73,12 @@ pub(crate) fn initialize(
 
 /// The capabilities this wispd advertises. M2 adds `accounts` (#117) and `agentClis` (#114),
 /// distinct capabilities since the two features (stored API keys and detected CLIs) can ship
-/// independently; M3 adds `agents`.
+/// independently; M3 adds `agents` (#156): the `agent/*` methods and `agent.*` events.
 fn capabilities_advertised() -> Capabilities {
     Capabilities(BTreeMap::from([
         ("accounts".to_owned(), serde_json::Map::new()),
         ("agentClis".to_owned(), serde_json::Map::new()),
+        ("agents".to_owned(), serde_json::Map::new()),
     ]))
 }
 
@@ -86,7 +87,7 @@ pub(crate) fn health(context: &Context, _: HostHealthParams) -> HostHealthResult
     HostHealthResult {
         uptime_seconds: daemon.started.elapsed().as_secs(),
         store: daemon.store.state(),
-        running_agents: 0,
+        running_agents: daemon.agents.running(),
     }
 }
 
