@@ -97,6 +97,21 @@ const MIGRATIONS: &[Migration] = &[
         );
         CREATE INDEX worktrees_repo_path ON worktrees (repo_path);",
     },
+    // Per-host role defaults for account routing (#119): the account a task's role falls back to
+    // when it doesn't name one outright. `account_kind` is 'subscription' or 'key'; exactly one of
+    // `backend` (a backend's name, such as 'claude') and `key_account_id` (a row in `accounts`,
+    // though not enforced by a foreign key, since a key account can be removed after being set as
+    // a default) is set, matching `account_kind`.
+    Migration {
+        version: 6,
+        sql: "CREATE TABLE role_defaults (
+            role TEXT NOT NULL PRIMARY KEY,
+            account_kind TEXT NOT NULL,
+            backend TEXT,
+            key_account_id TEXT,
+            updated_at TEXT NOT NULL
+        );",
+    },
 ];
 
 /// Bootstraps the `schema_version` table and applies any migration whose

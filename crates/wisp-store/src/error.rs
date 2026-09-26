@@ -38,6 +38,16 @@ pub enum StoreError {
     #[error("stored id is not a valid UUID: {0}")]
     InvalidId(#[from] uuid::Error),
 
+    /// A stored role default's `account_kind` is not `subscription` or `key`, or its matching
+    /// column (`backend` or `key_account_id`) is missing.
+    #[error("stored default for role {role:?} has an invalid account_kind {kind:?}")]
+    InvalidRoleDefault {
+        /// The role whose row is corrupt.
+        role: String,
+        /// The `account_kind` value that was found.
+        kind: String,
+    },
+
     /// A stored timestamp is not valid RFC 3339.
     #[error("stored timestamp is invalid: {0}")]
     InvalidTimestamp(#[from] jiff::Error),

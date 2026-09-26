@@ -22,9 +22,10 @@ use tracing::{error, info};
 use uuid::Uuid;
 use wisp_protocol::jsonrpc::ErrorObject;
 use wisp_protocol::{
-    AccountId, ErrorKind, KeyAccount, Project, ProjectCreateParams, ProjectId, Provider, StoreState,
+    AccountChoice, AccountId, ErrorKind, KeyAccount, Project, ProjectCreateParams, ProjectId,
+    Provider, Role, StoreState,
 };
-use wisp_store::{AccountFields, ProjectFields, Store, StoreError};
+use wisp_store::{AccountFields, ProjectFields, RoleDefault, Store, StoreError};
 
 use crate::repo;
 
@@ -280,6 +281,87 @@ pub(crate) fn account_fields(
         provider: provider_text(provider).to_owned(),
         label,
         masked_key,
+    }
+}
+
+/// `role`'s text for the `role_defaults.role` column.
+pub(crate) fn role_text(role: Role) -> &'static str {
+    match role {
+        Role::Coordinator => "coordinator",
+        Role::Worker => "worker",
+    }
+}
+
+/// A stored [`RoleDefault`] as the protocol's [`AccountChoice`].
+///
+/// wispd writes only version 7 ids, so a row with another kind of id was written by something
+/// else, and the request fails rather than hide the row.
+pub(crate) fn account_choice(default: RoleDefault) -> Result<AccountChoice, ErrorObject> {
+    match default {
+        RoleDefault::Subscription { backend } => Ok(AccountChoice::Subscription { backend }),
+        RoleDefault::Key { account_id } => {
+            let id = AccountId::try_from(account_id).map_err(|_| {
+                error!(id = %account_id, "a stored role default's key account id is not a UUIDv7");
+                ErrorObject::internal_error(format!(
+                    "the stored default account {account_id} has an invalid id"
+                ))
+            })?;
+            Ok(AccountChoice::Key { id })
+        }
+    }
+}
+
+/// Vendor CLIs wispd ships or plans an adapter for (0004), ahead of #170's real detection of which
+/// are actually installed and signed in (#114). `role_default` checks a `Subscription` choice's
+/// backend name against this fixed list; #170 replaces it with something wispd has actually
+/// probed.
+const KNOWN_BACKENDS: &[&str] = &["claude", "codex", "cursor"];
+
+/// An `accounts/defaults/set` choice as the store's [`RoleDefault`], checked against `db_store`
+/// first: a `Key` must be a real row in `accounts` (#117), and a `Subscription`'s backend must be
+/// one of [`KNOWN_BACKENDS`]. Unvalidated, a typo or a removed key account would only surface
+/// later, as a `RoutingError` when a task tries to start (#119).
+///
+/// # Errors
+///
+/// `invalidParams`, naming the missing account or backend, or an internal error if the check
+/// itself fails.
+pub(crate) fn role_default(
+    db_store: &wisp_store::Store,
+    choice: &AccountChoice,
+) -> Result<RoleDefault, ErrorObject> {
+    match choice {
+        AccountChoice::Subscription { backend } => {
+            if KNOWN_BACKENDS.contains(&backend.as_str()) {
+                Ok(RoleDefault::Subscription {
+                    backend: backend.clone(),
+                })
+            } else {
+                Err(ErrorObject::invalid_params(format!(
+                    "{backend:?} is not a backend wispd knows"
+                )))
+            }
+        }
+        AccountChoice::Key { id } => {
+            let uuid = (*id).into();
+            let exists = db_store
+                .get_account(uuid)
+                .map_err(|error| {
+                    error!(error = %error, "the project store failed checking a key account");
+                    ErrorObject::internal_error(format!("the project store failed: {error}"))
+                })?
+                .is_some();
+            if exists {
+                Ok(RoleDefault::Key { account_id: uuid })
+            } else {
+                Err(ErrorObject::invalid_params(format!(
+                    "no key account {id} exists"
+                )))
+            }
+        }
+        AccountChoice::Unknown => Err(ErrorObject::invalid_params(
+            "account must be a subscription or a key",
+        )),
     }
 }
 
