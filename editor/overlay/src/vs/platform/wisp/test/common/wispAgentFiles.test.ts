@@ -8,7 +8,7 @@ import { Event } from '../../../../base/common/event.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { FileSystemProviderError, FileSystemProviderErrorCode } from '../../../files/common/files.js';
-import { agentFileUri, agentReviewItems, agentReviewUri, parseAgentFileUri, parseAgentReviewUri, WispAgentFileSystemProvider } from '../../common/wispAgentFiles.js';
+import { agentFileUri, agentReviewItems, agentReviewUri, parseAgentFileUri, parseAgentReviewUri, reviewedCommit, WispAgentFileSystemProvider } from '../../common/wispAgentFiles.js';
 import { IWispdService, WispdError, WispdMethod } from '../../common/wispd.js';
 import type { AgentDiffResult, AgentFileParams, AgentFileResult, WispRequests } from '../../common/wispProtocol.js';
 
@@ -46,7 +46,8 @@ function file(params: AgentFileParams, content: string | undefined, commit = par
 		return { path: params.path, side: params.side, commit, exists: false, tooLarge: false };
 	}
 	const bytes = VSBuffer.fromString(content);
-	return { path: params.path, side: params.side, commit, exists: true, size: bytes.byteLength, content: encodeBase64(bytes), tooLarge: false };
+	const result: AgentFileResult = { path: params.path, side: params.side, commit, exists: true, size: bytes.byteLength, tooLarge: false };
+	return params.sizeOnly ? result : { ...result, content: encodeBase64(bytes) };
 }
 
 async function code(promise: Promise<unknown>): Promise<string> {
@@ -103,9 +104,26 @@ suite('wispAgentFiles', () => {
 		assert.strictEqual(VSBuffer.wrap(head).toString(), 'hello\r\nworld ✓');
 		const base = await provider.readFile(agentFileUri({ runId: RUN, side: 'base', path: 'README.md', commit: BASE }));
 		assert.strictEqual(VSBuffer.wrap(base).toString(), 'hello\n');
+		assert.deepStrictEqual(wispd.asked[0], { runId: RUN, path: 'README.md', side: 'head' });
+	});
+
+	test('stat asks for the size only, never the content', async () => {
+		const wispd = new FakeWispd(params => file(params, 'hello\n'));
+		const provider = store.add(new WispAgentFileSystemProvider(wispd));
 		const stat = await provider.stat(agentFileUri({ runId: RUN, side: 'base', path: 'README.md', commit: BASE }));
 		assert.strictEqual(stat.size, 6);
-		assert.deepStrictEqual(wispd.asked[0], { runId: RUN, path: 'README.md', side: 'head' });
+		assert.deepStrictEqual(wispd.asked, [{ runId: RUN, path: 'README.md', side: 'base', sizeOnly: true }]);
+		const big = store.add(new WispAgentFileSystemProvider(new FakeWispd(params => ({ path: params.path, side: params.side, commit: HEAD, exists: true, size: 50_000_000, tooLarge: true }))));
+		assert.strictEqual((await big.stat(agentFileUri({ runId: RUN, side: 'head', path: 'big.bin', commit: HEAD }))).size, 50_000_000);
+	});
+
+	test('accept sends the commit that was reviewed, so a newer commit is refused', () => {
+		const run = { id: RUN, diff: { commit: 'newer0000000000000000000000000000000000000' } };
+		assert.strictEqual(reviewedCommit(run, agentReviewUri(RUN, HEAD)), HEAD, 'the open review\'s head, not the latest commit');
+		assert.strictEqual(reviewedCommit(run, agentReviewUri(RUN, HEAD), BASE), BASE, 'a named commit wins');
+		assert.strictEqual(reviewedCommit(run, agentReviewUri('01a0d360-1a2b-7c3d-8e4f-5a6b7c8d9e99', HEAD)), run.diff.commit, 'another run\'s review does not count');
+		assert.strictEqual(reviewedCommit(run, undefined), run.diff.commit);
+		assert.strictEqual(reviewedCommit({ id: RUN }, undefined), undefined);
 	});
 
 	test('a missing, too large, outdated, or accepted file is an error, never empty content', async () => {

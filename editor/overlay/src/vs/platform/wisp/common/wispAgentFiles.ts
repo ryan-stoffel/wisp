@@ -8,7 +8,7 @@ import { Disposable, IDisposable } from '../../../base/common/lifecycle.js';
 import { URI } from '../../../base/common/uri.js';
 import { createFileSystemProviderError, FileSystemProviderCapabilities, FileSystemProviderErrorCode, FileType, IFileChange, IFileDeleteOptions, IFileOverwriteOptions, IFileSystemProviderWithFileReadWriteCapability, IFileWriteOptions, IStat, IWatchOptions } from '../../files/common/files.js';
 import { IWispdService, WispdError } from './wispd.js';
-import type { AgentDiffFile, AgentDiffResult, AgentFileSide, RunId } from './wispProtocol.js';
+import type { AgentDiffFile, AgentDiffResult, AgentFileResult, AgentFileSide, RunId } from './wispProtocol.js';
 
 /**
  * The scheme of a file in an agent run's diff (#157): `wisp-agent://<runId>/<base|head>/<path>?<commit>`.
@@ -63,6 +63,23 @@ export function parseAgentReviewUri(uri: URI): { readonly runId: RunId; readonly
 	return { runId: uri.authority as RunId, head: uri.path.slice(1) };
 }
 
+/**
+ * The commit to send as `agent/accept`'s `commit`, so wispd refuses if the run committed after it
+ * was reviewed: the one the caller names, else the head of the run's review open in the editor
+ * (`activeReview`, the active multi-diff editor's source), else the run's latest commit, which the
+ * accept confirmation describes.
+ */
+export function reviewedCommit(run: { readonly id: RunId; readonly diff?: { readonly commit: string } }, activeReview: URI | undefined, named?: string): string | undefined {
+	if (named) {
+		return named;
+	}
+	const review = activeReview && parseAgentReviewUri(activeReview);
+	if (review && review.runId === run.id) {
+		return review.head;
+	}
+	return run.diff?.commit;
+}
+
 export interface IAgentReviewItem {
 	/** The base side; absent for an added file. */
 	readonly original: URI | undefined;
@@ -106,22 +123,31 @@ export class WispAgentFileSystemProvider extends Disposable implements IFileSyst
 		return Disposable.None;
 	}
 
+	/** Asks wispd for the file's size only (`sizeOnly`), so a `stat` never downloads the file. */
 	async stat(resource: URI): Promise<IStat> {
-		if (parseAgentFileUri(resource)) {
-			const content = await this.readFile(resource);
-			return { type: FileType.File, ctime: 0, mtime: 0, size: content.byteLength };
-		}
-		throw createFileSystemProviderError(`${resource.toString()} is not an agent run's file`, FileSystemProviderErrorCode.FileNotFound);
+		const { result } = await this.fetch(resource, true);
+		return { type: FileType.File, ctime: 0, mtime: 0, size: result.size ?? 0 };
 	}
 
 	async readFile(resource: URI): Promise<Uint8Array> {
+		const { ref, result } = await this.fetch(resource, false);
+		if (result.tooLarge || result.content === undefined) {
+			throw createFileSystemProviderError(`${ref.path} is too large to review here (${result.size ?? 0} bytes)`, FileSystemProviderErrorCode.FileTooLarge);
+		}
+		return decodeBase64(result.content).buffer;
+	}
+
+	/** One `agent/file` call, with every answer that isn't a file on the review's commit as an error. */
+	private async fetch(resource: URI, sizeOnly: boolean): Promise<{ readonly ref: IAgentFileRef; readonly result: AgentFileResult }> {
 		const ref = parseAgentFileUri(resource);
 		if (!ref) {
 			throw createFileSystemProviderError(`${resource.toString()} is not an agent run's file`, FileSystemProviderErrorCode.FileNotFound);
 		}
-		let result;
+		let result: AgentFileResult;
 		try {
-			result = await this.wispdService.request('agent/file', { runId: ref.runId, path: ref.path, side: ref.side });
+			result = await this.wispdService.request('agent/file', sizeOnly
+				? { runId: ref.runId, path: ref.path, side: ref.side, sizeOnly: true }
+				: { runId: ref.runId, path: ref.path, side: ref.side });
 		} catch (error) {
 			if (error instanceof WispdError && (error.kind === 'runNotFound' || error.kind === 'runAccepted')) {
 				throw createFileSystemProviderError(error.message, FileSystemProviderErrorCode.FileNotFound);
@@ -134,10 +160,7 @@ export class WispAgentFileSystemProvider extends Disposable implements IFileSyst
 		if (!result.exists) {
 			throw createFileSystemProviderError(`${ref.path} does not exist on the ${ref.side} side`, FileSystemProviderErrorCode.FileNotFound);
 		}
-		if (result.tooLarge || result.content === undefined) {
-			throw createFileSystemProviderError(`${ref.path} is too large to review here (${result.size ?? 0} bytes)`, FileSystemProviderErrorCode.FileTooLarge);
-		}
-		return decodeBase64(result.content).buffer;
+		return { ref, result };
 	}
 
 	async writeFile(resource: URI, _content: Uint8Array, _opts: IFileWriteOptions): Promise<void> {

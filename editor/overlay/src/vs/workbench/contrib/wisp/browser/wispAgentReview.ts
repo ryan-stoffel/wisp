@@ -17,12 +17,13 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
-import { agentReviewItems, agentReviewUri, parseAgentReviewUri, WISP_AGENT_REVIEW_SCHEME, WISP_AGENT_SCHEME, WispAgentFileSystemProvider } from '../../../../platform/wisp/common/wispAgentFiles.js';
+import { agentReviewItems, agentReviewUri, parseAgentReviewUri, reviewedCommit, WISP_AGENT_REVIEW_SCHEME, WISP_AGENT_SCHEME, WispAgentFileSystemProvider } from '../../../../platform/wisp/common/wispAgentFiles.js';
 import { IWispdService, WispdState } from '../../../../platform/wisp/common/wispd.js';
 import type { AgentRun, RunId } from '../../../../platform/wisp/common/wispProtocol.js';
 import { generateUuidV7 } from '../../../../platform/wisp/common/uuidv7.js';
 import { IWorkbenchContribution, WorkbenchPhase, registerWorkbenchContribution2 } from '../../../common/contributions.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
+import { MultiDiffEditorInput } from '../../multiDiffEditor/browser/multiDiffEditorInput.js';
 import { IMultiDiffSourceResolver, IMultiDiffSourceResolverService, IResolvedMultiDiffSource, MultiDiffEditorItem } from '../../multiDiffEditor/browser/multiDiffSourceResolverService.js';
 
 export const WISP_REVIEW_AGENT_CHANGES = 'wisp.reviewAgentChanges';
@@ -102,11 +103,23 @@ async function findRun(wispdService: IWispdService, runId: RunId): Promise<Agent
 	return runs.find(run => run.id === runId);
 }
 
-/** The run a command was given, or one the user picks. */
+/** The source of the agent run review open in the active editor, if one is. */
+function activeReview(editorService: IEditorService): URI | undefined {
+	const editor = editorService.activeEditor;
+	return editor instanceof MultiDiffEditorInput && editor.multiDiffSource.scheme === WISP_AGENT_REVIEW_SCHEME
+		? editor.multiDiffSource
+		: undefined;
+}
+
+/** The run a command was given, else the one whose review is open, else one the user picks. */
 async function chooseRun(accessor: ServicesAccessor, runId: unknown, placeHolder: string): Promise<AgentRun | undefined> {
 	const wispdService = accessor.get(IWispdService);
 	const quickInputService = accessor.get(IQuickInputService);
 	const notificationService = accessor.get(INotificationService);
+	const open = activeReview(accessor.get(IEditorService));
+	if (typeof runId !== 'string' && open) {
+		runId = parseAgentReviewUri(open)?.runId;
+	}
 	if (typeof runId === 'string') {
 		const run = await findRun(wispdService, runId);
 		if (!run) {
@@ -179,10 +192,12 @@ registerAction2(class AcceptAgentChangesAction extends Action2 {
 		});
 	}
 
-	async run(accessor: ServicesAccessor, runId?: unknown): Promise<void> {
+	/** `commit` is the head the caller's review showed; the review bar (#105) passes it. */
+	async run(accessor: ServicesAccessor, runId?: unknown, commit?: unknown): Promise<void> {
 		const wispdService = accessor.get(IWispdService);
 		const dialogService = accessor.get(IDialogService);
 		const notificationService = accessor.get(INotificationService);
+		const open = activeReview(accessor.get(IEditorService));
 		try {
 			const run = await chooseRun(accessor, runId, localize('wispAgentReview.pickAccept', "Choose an agent run to accept"));
 			if (!run?.diff) {
@@ -196,7 +211,8 @@ registerAction2(class AcceptAgentChangesAction extends Action2 {
 			if (!confirmed) {
 				return;
 			}
-			const { merge } = await wispdService.request('agent/accept', { runId: run.id, id: generateUuidV7(), commit: run.diff.commit });
+			const reviewed = reviewedCommit(run, open, typeof commit === 'string' ? commit : undefined);
+			const { merge } = await wispdService.request('agent/accept', reviewed ? { runId: run.id, id: generateUuidV7(), commit: reviewed } : { runId: run.id, id: generateUuidV7() });
 			const message = merge.how === 'upToDate'
 				? localize('wispAgentReview.upToDate', "{0} already had the changes from {1}.", merge.into, taskTitle(run.prompt))
 				: localize('wispAgentReview.accepted', "Merged {0} into {1} ({2}).", taskTitle(run.prompt), merge.into, merge.commit.slice(0, 8));
