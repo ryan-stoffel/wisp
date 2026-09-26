@@ -1,8 +1,8 @@
 // Review Agent Changes (#157) opens the multi-diff editor on a real agent run's commit, read over
 // wispd's agent/diff and agent/file through the wisp-agent: file system, never from the worktree.
 // The run is real too: the packaged app's own wispd runs the fake `claude` (fixtures/fake-cli) as a
-// worker, which writes REVIEW.md, and wispd commits it. The check starts that run over its own
-// `wispd attach` to the same data folder, since starting runs from the Agents window is #105's.
+// worker, which writes FAKE_AGENT_NOTES.md, and wispd commits it. The check starts that run over its
+// own `wispd attach` to the same data folder, so it doesn't depend on the Agents panel's own flow.
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -60,6 +60,7 @@ export const agentReviewChecks = [
       ...options.env,
       HOME: home,
       PATH: `${fakeCliDir}${delimiter}${process.env.PATH ?? ''}`,
+      FAKE_CLAUDE_DELAY: '0',
     };
     const withFakeCli: LaunchOptions = { ...options, env };
     let step = 'launch';
@@ -69,7 +70,7 @@ export const agentReviewChecks = [
       const { window } = session;
       await ready(session);
 
-      step = "wispd runs the fake worker, which writes REVIEW.md, and commits the run's worktree";
+      step = "wispd runs the fake worker, which writes FAKE_AGENT_NOTES.md, and commits the run's worktree";
       if (!options.executablePath) {
         throw new Error('app-launch gave no executablePath');
       }
@@ -111,12 +112,12 @@ export const agentReviewChecks = [
       await pick.waitFor({ state: 'visible', timeout: 30_000 });
       await pick.click();
 
-      step = 'the multi-diff editor shows REVIEW.md with its added lines';
-      const entry = window.locator('.multiDiffEntry').filter({ hasText: 'REVIEW.md' }).first();
+      step = 'the multi-diff editor shows FAKE_AGENT_NOTES.md with its added lines';
+      const entry = window.locator('.multiDiffEntry').filter({ hasText: 'FAKE_AGENT_NOTES.md' }).first();
       await entry.waitFor({ state: 'visible', timeout: 30_000 });
       await window.waitForFunction(
         () => [...document.querySelectorAll('.multiDiffEntry .view-line')]
-          .some((line) => line.textContent.replaceAll(String.fromCharCode(160), ' ').includes('Written by the smoke test')),
+          .some((line) => line.textContent.replaceAll(String.fromCharCode(160), ' ').includes('Notes from the fake agent')),
         undefined,
         { timeout: 30_000 },
       );

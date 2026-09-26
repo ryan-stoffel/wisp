@@ -1,0 +1,174 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ryan Stoffel <stoffel.thomas.ryan@gmail.com>
+Date: Fri, 25 Sep 2026 20:14:37 -0700
+Subject: [PATCH] chat: present the Agents pill as a panel
+
+
+diff --git a/src/vs/workbench/browser/chatDropdownPill.ts b/src/vs/workbench/browser/chatDropdownPill.ts
+index 53f47656dce6c364001d121be5f5cfe771f91619..476014a75abd0fd886df354692c49c39d320d8ed 100644
+--- a/src/vs/workbench/browser/chatDropdownPill.ts
++++ b/src/vs/workbench/browser/chatDropdownPill.ts
+@@ -10,6 +10,7 @@ import { IAction } from '../../base/common/actions.js';
+ import { Codicon } from '../../base/common/codicons.js';
+ import { onUnexpectedError } from '../../base/common/errors.js';
+ import { IObservable, autorun, derived } from '../../base/common/observable.js';
++import { IDisposable, toDisposable } from '../../base/common/lifecycle.js';
+ import { ThemeIcon } from '../../base/common/themables.js';
+ import { asCssVariable } from '../../platform/theme/common/colorUtils.js';
+ import { ActionListItemKind, IActionListDelegate, IActionListItem } from '../../platform/actionWidget/browser/actionList.js';
+@@ -55,6 +56,20 @@ export interface IChatDropdownPillOptions {
+ 	readonly singleEntry?: ChatPillSingleEntry;
+ }
+ 
++/** A panel that replaces a pill's summary and dropdown, registered by the pill's widget id. */
++export interface IChatPillPanel {
++	summary(entries: readonly IChatPillEntry[]): { readonly label: string; readonly icon?: ThemeIcon; readonly trailing?: readonly HTMLElement[]; readonly ariaLabel: string };
++	/** Shows the panel for `trigger`; it calls `onDidHide` once it closes. Disposing it closes it. */
++	show(trigger: HTMLElement, sections: IObservable<readonly IChatPillSection[]>, onDidHide: () => void): IDisposable;
++}
++
++const chatPillPanels = new Map<string, IChatPillPanel>();
++
++export function registerChatPillPanel(widgetId: string, panel: IChatPillPanel): IDisposable {
++	chatPillPanels.set(widgetId, panel);
++	return toDisposable(() => chatPillPanels.get(widgetId) === panel && chatPillPanels.delete(widgetId));
++}
++
+ /**
+  * The entry a pill shows in place of its summary, or `undefined` when it
+  * summarizes. The single place {@link IChatDropdownPillOptions.singleEntry} is
+@@ -66,6 +81,9 @@ function getInlineEntry(entries: readonly IChatPillEntry[], options: IChatDropdo
+ 		return undefined;
+ 	}
+ 	const entry = entries[0];
++	if (chatPillPanels.has(options.widgetId)) {
++		return undefined;
++	}
+ 	switch (options.singleEntry ?? ChatPillSingleEntry.Inline) {
+ 		case ChatPillSingleEntry.Inline: return entry;
+ 		case ChatPillSingleEntry.InlineResource: return entry.resource ? entry : undefined;
+@@ -96,6 +114,7 @@ export class ChatDropdownPillActionViewItem extends ChatPillActionViewItem {
+ 	}
+ 
+ 	private _dropdownVisible = false;
++	private _panel: IDisposable | undefined;
+ 	private _entries: readonly IChatPillEntry[] = [];
+ 	private _summaryIcon: ThemeIcon | undefined;
+ 
+@@ -105,7 +124,8 @@ export class ChatDropdownPillActionViewItem extends ChatPillActionViewItem {
+ 			this._entries = getChatPillEntries(this._sections.read(reader));
+ 			this._summaryIcon = ThemeIcon.isThemeIcon(this._pillOptions.icon) ? this._pillOptions.icon : this._pillOptions.icon.read(reader);
+ 			const current = this._getPresentation();
+-			if (previous.label !== current.label || previous.summarized !== current.summarized || !iconsEqual(previous.icon, current.icon)) {
++			const panelChanged = chatPillPanels.has(this._pillOptions.widgetId) && previous.ariaLabel !== current.ariaLabel;
++			if (panelChanged || previous.label !== current.label || previous.summarized !== current.summarized || !iconsEqual(previous.icon, current.icon)) {
+ 				this.updateLabel();
+ 			}
+ 			if (previous.hoverContent !== current.hoverContent || !actionsEqual(previous.toolbarActions, current.toolbarActions)) {
+@@ -120,7 +140,7 @@ export class ChatDropdownPillActionViewItem extends ChatPillActionViewItem {
+ 			if (previous.summarized !== current.summarized) {
+ 				this._updatePopupState();
+ 			}
+-			if (this._dropdownVisible) {
++			if (this._dropdownVisible && !this._panel) {
+ 				if (current.summarized) {
+ 					this._actionWidgetService.updateItems(this._getDropdownItems(), undefined, { preserveHover: true, animateItemMove: true });
+ 				} else {
+@@ -153,7 +173,7 @@ export class ChatDropdownPillActionViewItem extends ChatPillActionViewItem {
+ 			return;
+ 		}
+ 		if (this.isSummarized) {
+-			element.setAttribute('aria-haspopup', 'listbox');
++			element.setAttribute('aria-haspopup', chatPillPanels.has(this._pillOptions.widgetId) ? 'dialog' : 'listbox');
+ 			element.setAttribute('aria-expanded', String(this._dropdownVisible));
+ 		} else {
+ 			element.removeAttribute('aria-haspopup');
+@@ -184,7 +204,8 @@ export class ChatDropdownPillActionViewItem extends ChatPillActionViewItem {
+ 	}
+ 
+ 	protected override getIconElement(): HTMLElement | undefined {
+-		const icon = this.isSummarized ? this._summaryIcon : this.entries.at(0)?.icon;
++		const panel = chatPillPanels.get(this._pillOptions.widgetId);
++		const icon = panel ? panel.summary(this.entries).icon : this.isSummarized ? this._summaryIcon : this.entries.at(0)?.icon;
+ 		return icon ? this.createIconElement(icon) : undefined;
+ 	}
+ 
+@@ -200,16 +221,28 @@ export class ChatDropdownPillActionViewItem extends ChatPillActionViewItem {
+ 	}
+ 
+ 	protected override getLabelText(): string {
++		const panel = chatPillPanels.get(this._pillOptions.widgetId);
++		if (panel) {
++			return panel.summary(this.entries).label;
++		}
+ 		return this.isSummarized
+ 			? this._pillOptions.summaryLabel(this.entries.length)
+ 			: this.entries.at(0)?.pillLabel ?? this.entries.at(0)?.label ?? '';
+ 	}
+ 
+ 	protected override getAdditionalLabelContent(): Array<HTMLElement | string> {
++		const panel = chatPillPanels.get(this._pillOptions.widgetId);
++		if (panel) {
++			return [...panel.summary(this.entries).trailing ?? []];
++		}
+ 		return this.isSummarized ? [$(`span.chat-pill-chevron${ThemeIcon.asCSSSelector(Codicon.chevronDownCompact)}`, { 'aria-hidden': 'true' })] : [];
+ 	}
+ 
+ 	protected override getTooltip(): string {
++		const panel = chatPillPanels.get(this._pillOptions.widgetId);
++		if (panel) {
++			return panel.summary(this.entries).ariaLabel;
++		}
+ 		if (this.isSummarized) {
+ 			return this._pillOptions.summaryAriaLabel(this.entries.length);
+ 		}
+@@ -224,6 +257,10 @@ export class ChatDropdownPillActionViewItem extends ChatPillActionViewItem {
+ 	}
+ 
+ 	protected override getAriaLabel(): string | undefined {
++		const panel = chatPillPanels.get(this._pillOptions.widgetId);
++		if (panel) {
++			return panel.summary(this.entries).ariaLabel;
++		}
+ 		return this.isSummarized
+ 			? this._pillOptions.summaryAriaLabel(this.entries.length)
+ 			: this.entries.at(0)?.ariaLabel ?? super.getAriaLabel();
+@@ -251,6 +288,10 @@ export class ChatDropdownPillActionViewItem extends ChatPillActionViewItem {
+ 		// The action widget's own body handler already dismissed the dropdown by
+ 		// the time this runs, so reopening here would make the trigger unable to
+ 		// close it. `hasOpenDropdown` suppresses that second open.
++		if (this._panel) {
++			this._panel.dispose();
++			return;
++		}
+ 		this.showDropdown();
+ 	}
+ 
+@@ -273,6 +314,17 @@ export class ChatDropdownPillActionViewItem extends ChatPillActionViewItem {
+ 			return;
+ 		}
+ 
++		const panel = chatPillPanels.get(this._pillOptions.widgetId);
++		if (panel) {
++			this._dropdownVisible = true;
++			this._updatePopupState();
++			this._panel = panel.show(trigger, this._sections, () => {
++				this._panel = undefined;
++				this._dropdownVisible = false;
++				this._updatePopupState();
++			});
++			return;
++		}
+ 		const items = this._getDropdownItems(sections);
+ 		const delegate: IActionListDelegate<IChatPillEntry> = {
+ 			onSelect: entry => {
+@@ -331,7 +383,8 @@ export class ChatDropdownPillActionViewItem extends ChatPillActionViewItem {
+ 	}
+ 
+ 	override dispose(): void {
+-		if (this._dropdownVisible) {
++		this._panel?.dispose();
++		if (this._dropdownVisible && !this._panel) {
+ 			this._actionWidgetService.hide(true);
+ 		}
+ 		super.dispose();

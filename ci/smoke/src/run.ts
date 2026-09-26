@@ -1,11 +1,12 @@
 import type { Check } from './check.ts';
 import { accountsChecks } from './checks/accounts.ts';
 import { agentReviewChecks } from './checks/agent-review.ts';
+import { agentsChecks } from './checks/agents.ts';
 import { agentsWindowChecks } from './checks/agents-window.ts';
 import { editorChecks } from './checks/editor.ts';
 import { exclusionChecks } from './checks/exclusions.ts';
 
-const checks: readonly Check[] = [...agentsWindowChecks, ...accountsChecks, ...agentReviewChecks, ...editorChecks, ...exclusionChecks];
+const checks: readonly Check[] = [...agentsWindowChecks, ...accountsChecks, ...agentsChecks, ...agentReviewChecks, ...editorChecks, ...exclusionChecks];
 
 const names = new Set<string>();
 for (const { name } of checks) {

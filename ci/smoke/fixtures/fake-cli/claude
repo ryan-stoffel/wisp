@@ -1,17 +1,17 @@
 #!/bin/sh
-# A fake `claude` CLI for the smoke checks. wispd's own detection (#114) runs "claude auth status"
-# to decide whether the CLI is installed and signed in, and "claude --version" for the version a
-# worker needs (0013); this always answers signed in, with a version new enough.
+# A fake `claude` CLI for the smoke checks. Its output is synthetic, written from the documented
+# stream-json format (decision record 0004), not recorded from a real run.
 #
-# Sign in (#115): clicking Sign in runs "claude auth login" in an integrated terminal, and this
-# script answers that by writing its own argv to $WISP_SIGNIN_PROOF_FILE, standing in for a
-# completed login. wisp never reads this file; only the smoke check does, to prove which command
-# the terminal ran.
-#
-# Agent review (#157): run as a worker ("claude -p ... --input-format stream-json"), it reads the
-# prompt from stdin, writes REVIEW.md in its working directory (the run's worktree), and answers
-# in Claude Code's stream-json format, as a real worker that edits one file would. wispd then
-# commits the worktree, which gives the review a diff.
+# - "auth status" answers signed in, for wispd's detection (#114), so the Accounts view's Sign in
+#   action is enabled and the worker role has a default account.
+# - "auth login" writes its own argv to $WISP_SIGNIN_PROOF_FILE, standing in for a completed
+#   login (#115). wisp never reads this file; only the sign-in check does.
+# - "--version" reports a Claude Code new enough to run a sandboxed worker (0013).
+# - "-p" runs a worker turn (#105): it reads one user message from stdin, answers it, and waits
+#   for stdin to close, as wispd closes it once no turn is outstanding. A task writes
+#   FAKE_AGENT_NOTES.md in its worktree, so the run has a change to review; a resumed session
+#   (a message sent with agent/send) echoes the message. $FAKE_CLAUDE_DELAY holds each answer
+#   back a little, so the check can see the agent running.
 case "${1:-} ${2:-}" in
   "auth status")
     printf '{"loggedIn":true,"subscriptionType":"Test Plan"}'
@@ -23,23 +23,52 @@ case "${1:-} ${2:-}" in
     fi
     exit 0
     ;;
-  "--version "*)
-    printf '2.1.281 (Claude Code)\n'
-    exit 0
-    ;;
-  "-p "*)
-    ;;
-  *)
-    exit 1
-    ;;
 esac
 
-IFS= read -r prompt || exit 0
-turn=$(printf '%s' "$prompt" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')
-session=5b1e3c9a-8f2d-4c6e-9a1b-3d7f0e2c4a68
-printf '# Review me\n\nWritten by the smoke test'"'"'s fake agent.\n' >REVIEW.md
-printf '{"type":"system","subtype":"init","cwd":"%s","session_id":"%s","tools":["Read","Edit","Write"],"mcp_servers":[],"model":"claude-smoke","permissionMode":"acceptEdits","apiKeySource":"none","claude_code_version":"2.1.281","uuid":"a0000000-0000-4000-8000-000000000001"}\n' "$PWD" "$session"
-printf '{"type":"assistant","message":{"id":"msg_smoke","type":"message","role":"assistant","model":"claude-smoke","content":[{"type":"text","text":"Added REVIEW.md."}],"stop_reason":null,"usage":{"input_tokens":1,"output_tokens":1}},"parent_tool_use_id":null,"session_id":"%s","uuid":"a0000000-0000-4000-8000-000000000002"}\n' "$session"
-printf '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"stop_reason":"end_turn","session_id":"%s","result":"Added REVIEW.md.","usage":{"input_tokens":1,"output_tokens":1},"user_message_uuids":["%s"],"uuid":"a0000000-0000-4000-8000-000000000003"}\n' "$session" "$turn"
-cat >/dev/null
+case "${1:-}" in
+  --version)
+    printf '2.1.300 (Claude Code)\n'
+    exit 0
+    ;;
+  -p) ;;
+  *) exit 1 ;;
+esac
+
+resume=
+previous=
+for arg in "$@"; do
+  if [ "$previous" = "--resume" ]; then
+    resume=$arg
+  fi
+  previous=$arg
+done
+
+IFS= read -r line || exit 0
+uuid=$(printf '%s\n' "$line" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')
+session=${resume:-5b1e3c9a-8f2d-4c6e-9a1b-$(printf '%012d' "$$")}
+
+emit() {
+  printf '%s\n' "$1"
+}
+
+emit '{"type":"system","subtype":"init","cwd":"'"$PWD"'","session_id":"'"$session"'","tools":["Read","Edit","Write","Glob","Grep","Bash","TodoWrite"],"mcp_servers":[],"model":"claude-fake","permissionMode":"acceptEdits","apiKeySource":"none","claude_code_version":"2.1.300","uuid":"a0000000-0000-4000-8000-000000000001"}'
+sleep "${FAKE_CLAUDE_DELAY:-2}"
+
+if [ -n "$resume" ]; then
+  # The message's text, from {"message":{"content":"...","role":"user"},...}; the checks send
+  # plain words, so no JSON escapes need undoing.
+  text=$(printf '%s\n' "$line" | sed -n 's/.*"content":"\([^"]*\)".*/\1/p')
+  answer="Fake agent heard: $text"
+else
+  printf 'Notes from the fake agent.\n' >FAKE_AGENT_NOTES.md
+  emit '{"type":"assistant","message":{"id":"msg_fake_1","type":"message","role":"assistant","model":"claude-fake","content":[{"type":"tool_use","id":"toolu_fake_write","name":"Write","input":{"file_path":"'"$PWD"'/FAKE_AGENT_NOTES.md","content":"Notes from the fake agent."}}]},"parent_tool_use_id":null,"session_id":"'"$session"'","uuid":"a0000000-0000-4000-8000-000000000002"}'
+  emit '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_fake_write","type":"tool_result","content":"File created successfully.","is_error":false}]},"parent_tool_use_id":null,"session_id":"'"$session"'","uuid":"a0000000-0000-4000-8000-000000000003"}'
+  answer="Fake agent wrote FAKE_AGENT_NOTES.md."
+fi
+
+emit '{"type":"assistant","message":{"id":"msg_fake_2","type":"message","role":"assistant","model":"claude-fake","content":[{"type":"text","text":"'"$answer"'"}]},"parent_tool_use_id":null,"session_id":"'"$session"'","uuid":"a0000000-0000-4000-8000-000000000004"}'
+emit '{"type":"result","subtype":"success","is_error":false,"duration_ms":2000,"num_turns":1,"session_id":"'"$session"'","result":"'"$answer"'","modelUsage":{"claude-fake":{"provider":"firstParty","inputTokens":10,"outputTokens":20,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0}},"user_message_uuids":["'"$uuid"'"],"uuid":"a0000000-0000-4000-8000-000000000005"}'
+
+# wispd closes stdin once no turn is outstanding; the CLI then exits.
+while IFS= read -r _; do :; done
 exit 0
