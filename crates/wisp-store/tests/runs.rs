@@ -269,7 +269,7 @@ fn a_version_6_database_gains_runs_events_and_worktree_git_dirs() {
         conn.execute_batch(
             "DROP TABLE runs; DROP TABLE log_meta; DROP TABLE events;
              ALTER TABLE worktrees DROP COLUMN git_dir;
-             DELETE FROM schema_version WHERE version = 7;",
+             DELETE FROM schema_version WHERE version >= 7;",
         )
         .unwrap();
     }

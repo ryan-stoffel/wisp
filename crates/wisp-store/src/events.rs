@@ -191,4 +191,25 @@ impl Store {
         self.conn.execute("DELETE FROM log_meta", [])?;
         Ok(())
     }
+
+    /// Deletes host and project events (those with no `run_id`, such as `project.created` and
+    /// `context.changed`) beyond the newest `keep`, to bound the table's growth (#187). An agent
+    /// run's events are never touched here: they stay as long as the run's own row does, and
+    /// nothing removes a run's row yet. Returns how many rows were deleted.
+    ///
+    /// # Errors
+    ///
+    /// A database error.
+    pub fn prune_host_events(&self, keep: usize) -> Result<usize, StoreError> {
+        let keep = i64::try_from(keep).unwrap_or(i64::MAX);
+        let deleted = self.conn.execute(
+            "DELETE FROM events
+             WHERE run_id IS NULL
+               AND seq NOT IN (
+                   SELECT seq FROM events WHERE run_id IS NULL ORDER BY seq DESC LIMIT ?1
+               )",
+            params![keep],
+        )?;
+        Ok(deleted)
+    }
 }
