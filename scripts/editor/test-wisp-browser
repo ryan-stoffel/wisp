@@ -1,0 +1,74 @@
+#!/bin/sh
+set -eu
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/editor/test-wisp-browser
+
+Runs the browser-layer tests of wisp's own editor code, under
+editor/overlay/src/vs/sessions/contrib/**/wisp/**/test (for example
+sessions/contrib/wisp/test/browser), in upstream's browser test runner,
+test/unit/browser/index.js, against headless Chromium through Playwright.
+These touch vs/base/browser (DOM, ARIA, the real window), so they cannot run
+in test-wisp's Node runner, which excludes anything under a "browser"
+directory.
+
+Steps: scripts/editor/prepare, then npm ci --ignore-scripts in editor/vscode
+and editor/vscode/build unless node_modules exists, upstream's
+transpile-client, npx playwright install for Chromium, and
+test/unit/browser/index.js against the wisp test files. Fails if that glob
+matches no tests, so a typo cannot silently pass. Needs no wispd and no
+packaged app, so unlike test-wisp it is not limited to macOS.
+EOF
+}
+
+fail() {
+  echo "${0##*/}: $*" >&2
+  exit 1
+}
+
+case "${1-}" in
+  '') ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
+
+root=$(cd "$(dirname "$0")/../.." && pwd)
+
+want=$(cut -d. -f1 "$root/.nvmrc")
+have=$(node -p 'process.versions.node.split(".")[0]')
+[ "$have" = "$want" ] || fail "Node $want is required (.nvmrc pins $(cat "$root/.nvmrc")), but node is $(node --version)"
+
+"$root/scripts/editor/prepare" >&2
+
+cd "$root/editor/vscode"
+# Keeps an existing development install, as check-fork and test-wisp do.
+[ -d node_modules ] || npm ci --ignore-scripts --no-audit --no-fund
+[ -d build/node_modules ] || (cd build && npm ci --ignore-scripts --no-audit --no-fund)
+node build/next/index.ts transpile
+
+case "$(uname)" in
+  Linux) npx playwright install --with-deps chromium ;;
+  *) npx playwright install chromium ;;
+esac
+
+runGlob='vs/sessions/contrib/**/wisp/**/test/**/*.test.js'
+
+out=$(mktemp "${TMPDIR:-/tmp}/wisp-test-browser.XXXXXX")
+trap 'rm -f "$out"' EXIT
+
+status=0
+node test/unit/browser/index.js --browser chromium --runGlob "$runGlob" >"$out" 2>&1 || status=$?
+cat "$out"
+[ "$status" -eq 0 ] || fail "wisp's browser tests failed"
+
+count=$(sed -n 's/^ *\([0-9][0-9]*\) passing.*/\1/p' "$out" | tail -1)
+case "$count" in
+  '' | 0) fail "no tests matched $runGlob; the glob or the transpiled output may be wrong" ;;
+esac

@@ -125,6 +125,14 @@ jobs:
         timeout-minutes: 10
         run: scripts/ci/check-fork
 
+      # Browser-layer wisp tests (sessions/contrib/wisp) need a real DOM, so they run through
+      # upstream's Playwright-backed runner instead of test-wisp's Node one. No wispd or packaged
+      # app needed, so this runs here on the tree check-fork already prepared, not in the rust job.
+      - name: Run wisp's browser unit tests
+        if: steps.decide.outputs.run == 'true'
+        timeout-minutes: 10
+        run: scripts/editor/test-wisp-browser
+
       - name: Record the pass
         if: steps.decide.outputs.run == 'true' && steps.earlier.outputs.cache-hit != 'true'
         run: git rev-parse HEAD > .fork-check-passed
