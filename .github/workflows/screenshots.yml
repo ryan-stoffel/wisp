@@ -41,7 +41,11 @@ jobs:
       problem: ${{ steps.resolve.outputs.problem }}
       request: ${{ steps.resolve.outputs.request }}
       base-sha: ${{ steps.resolve.outputs.base-sha }}
+      block-digest: ${{ steps.resolve.outputs.block-digest }}
     steps:
+      # The gate that PR code cannot change: nothing from the pull request is checked out until the
+      # PR is from this repository, open, and labeled. On workflow_dispatch this step comes from the
+      # dispatched ref, and the token can write, so a fork's code must never get past it.
       - name: Read the pull request
         id: pull
         timeout-minutes: 2
@@ -53,8 +57,9 @@ jobs:
             echo "::error title=Screenshots::pr must be a pull request number, got '$PR'"
             exit 1
           fi
-          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" > "$RUNNER_TEMP/pull.json"
-          sha=$(jq -r .head.sha "$RUNNER_TEMP/pull.json")
+          pull=$RUNNER_TEMP/pull.json
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" > "$pull"
+          sha=$(jq -r .head.sha "$pull")
           if ! [[ $sha =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error title=Screenshots::pull request $PR has no head commit"
             exit 1
@@ -62,7 +67,27 @@ jobs:
           echo "number=$PR" >> "$GITHUB_OUTPUT"
           echo "head-sha=$sha" >> "$GITHUB_OUTPUT"
 
+          head_repo=$(jq -r '.head.repo.full_name // ""' "$pull")
+          if [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
+            echo "::notice title=Screenshots skipped::The head branch is in ${head_repo:-a deleted fork}, not $GITHUB_REPOSITORY. Pull requests from forks never get screenshots, because their code would run next to a token that can write."
+            exit 0
+          fi
+          if [ "$(jq -r '[.labels[].name] | index("screenshots") != null' "$pull")" != true ]; then
+            if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+              echo "::error title=Screenshots::pull request $PR does not have the screenshots label, and nothing is captured without it"
+              exit 1
+            fi
+            echo "::notice title=Screenshots skipped::The pull request no longer has the screenshots label."
+            exit 0
+          fi
+          if [ "$(jq -r .state "$pull")" != open ]; then
+            echo "::error title=Screenshots::pull request $PR is not open"
+            exit 1
+          fi
+          echo "gate=open" >> "$GITHUB_OUTPUT"
+
       - name: Check out the request parser and the scenes
+        if: steps.pull.outputs.gate == 'open'
         timeout-minutes: 5
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -70,16 +95,18 @@ jobs:
           persist-credentials: false
           sparse-checkout: ci/screenshots
 
+      # No cache: its post step would save after PR code ran, and a dispatched run saves into develop's scope.
       - name: Set up Node
+        if: steps.pull.outputs.gate == 'open'
         timeout-minutes: 5
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
-          cache: npm
-          cache-dependency-path: ci/screenshots/package-lock.json
+          package-manager-cache: false
 
       - name: Decide what to capture
         id: resolve
+        if: steps.pull.outputs.gate == 'open'
         timeout-minutes: 3
         env:
           GH_TOKEN: ${{ github.token }}
@@ -191,16 +218,19 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
-          cache: ${{ (steps.cached.outputs.cache-hit != 'true' || (env.BASE_SHA != '' && steps.base-cached.outputs.cache-hit != 'true')) && 'npm' || '' }}
+          # Only a pull_request run caches npm: its saves stay in the PR's own scope, while a dispatched
+          # run would save into develop's, after PR code ran.
+          cache: ${{ github.event_name == 'pull_request' && (steps.cached.outputs.cache-hit != 'true' || (env.BASE_SHA != '' && steps.base-cached.outputs.cache-hit != 'true')) && 'npm' || '' }}
+          package-manager-cache: false
           # Upstream's lockfiles exist only after scripts/editor/prepare runs, and the pin decides them.
           cache-dependency-path: editor/upstream.json
 
-      # build-app also builds wispd (#62), only needed on a miss. The key matches ci.yml's rust
-      # and app jobs, so all three can share one cached toolchain download.
-      - name: Cache Rust toolchain
+      # build-app also builds wispd (#62), only needed on a miss. The key matches ci.yml's rust and app
+      # jobs, which save it. Restore only: this job runs PR code before any post step could save.
+      - name: Restore the Rust toolchain
         if: steps.cached.outputs.cache-hit != 'true' || (env.BASE_SHA != '' && steps.base-cached.outputs.cache-hit != 'true')
         timeout-minutes: 5
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.rustup/toolchains/*
@@ -335,6 +365,7 @@ jobs:
           PR_NUMBER: ${{ needs.request.outputs.number }}
           HEAD_SHA: ${{ needs.request.outputs.head-sha }}
           BASE_SHA: ${{ needs.request.outputs.base-sha }}
+          BLOCK_DIGEST: ${{ needs.request.outputs.block-digest }}
           REQUEST_PROBLEM: ${{ needs.request.outputs.problem }}
           BUILD_OUTCOME: ${{ needs.capture.outputs.build }}
           BASE_BUILD_OUTCOME: ${{ needs.capture.outputs.base-build }}
