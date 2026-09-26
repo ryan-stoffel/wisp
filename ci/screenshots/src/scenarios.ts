@@ -1,6 +1,7 @@
 import { cp } from 'node:fs/promises';
 import { join } from 'node:path';
 import { agentReply, agentTab, agentTask, chatShows, fakeClaudeEnv, openAgentsPanel, sendMessage, startSubagent } from './agents.ts';
+import { addSharedContextFile } from './context.ts';
 import { screenshot, visible, type Scenario } from './harness.ts';
 import { connectedToThisMac, createProject, hostChip, hostChipIn, projectName, projectRow, projectTab } from './projects.ts';
 import { openNewChat, repoThreadRow, sendFirstMessage } from './threads.ts';
@@ -125,6 +126,15 @@ export const scenarios: readonly Scenario[] = [
       await row.click();
       await projectTab(reopened.window);
       return screenshot(reopened.window);
+    },
+  },
+  {
+    name: 'agents-window-context',
+    title: 'Shared context added, listed, and open with its host bar',
+    async run(context) {
+      await createProject(context, { withCommit: true });
+      await addSharedContextFile(context.window, 'notes.txt');
+      return screenshot(context.window);
     },
   },
   {
