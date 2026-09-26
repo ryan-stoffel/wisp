@@ -3,7 +3,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { Emitter, Event } from '../../../../../base/common/event.js';
-import { Disposable, DisposableMap, IDisposable } from '../../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, IDisposable, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { autorun, IObservable, observableValue, transaction } from '../../../../../base/common/observable.js';
 import { createDecorator } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
@@ -77,6 +77,15 @@ export interface IWispAgentsService {
 	 * text, so a message sent from elsewhere, or before a reload, has none.
 	 */
 	sentText(turnId: TurnId): string | undefined;
+
+	/**
+	 * Also follows the runs of every scope id `scopes` lists, as it follows each project's: a
+	 * normal thread's run belongs to a repo entry (decision record 0017). Stops when disposed.
+	 */
+	addScopes(scopes: IObservable<readonly string[]>): IDisposable;
+
+	/** Adds or updates a run another service started, such as a thread's, following its scope. */
+	noteRun(run: AgentRun): void;
 }
 
 interface IRunEntry {
@@ -120,6 +129,7 @@ export class WispAgentsService extends Disposable implements IWispAgentsService 
 	private readonly entries = new Map<RunId, IRunEntry>();
 	private readonly texts = new Map<TurnId, string>();
 	private readonly empty = observableValue<readonly AgentRun[]>(this, []);
+	private readonly extraScopes = observableValue<readonly IObservable<readonly string[]>[]>(this, []);
 	private connection: WispdState | undefined;
 	private receivedState = false;
 	/** Bumped when the host changes, so answers from the old one are dropped. */
@@ -142,7 +152,8 @@ export class WispAgentsService extends Disposable implements IWispAgentsService 
 		}, () => { /* The shared process is gone; the window is closing. */ });
 		this._register(autorun(reader => {
 			const projects = projectsService.projects.read(reader);
-			this.syncProjects(projects.map(project => project.id));
+			const extra = this.extraScopes.read(reader).flatMap(scopes => scopes.read(reader));
+			this.syncProjects([...new Set([...projects.map(project => project.id), ...extra])]);
 		}));
 	}
 
@@ -166,6 +177,15 @@ export class WispAgentsService extends Disposable implements IWispAgentsService 
 
 	sentText(turnId: TurnId): string | undefined {
 		return this.texts.get(turnId);
+	}
+
+	addScopes(scopes: IObservable<readonly string[]>): IDisposable {
+		this.extraScopes.set([...this.extraScopes.get(), scopes], undefined);
+		return toDisposable(() => this.extraScopes.set(this.extraScopes.get().filter(candidate => candidate !== scopes), undefined));
+	}
+
+	noteRun(run: AgentRun): void {
+		this.upsertIn(this.projects.get(run.project) ?? this.track(run.project), run);
 	}
 
 	async loadEvents(runId: RunId): Promise<readonly LoggedEvent[]> {
@@ -206,8 +226,9 @@ export class WispAgentsService extends Disposable implements IWispAgentsService 
 	}
 
 	private projectRuns(projectId: ProjectId): ProjectRuns | undefined {
-		// Only the host's own projects are followed; asking for another id gets an empty list.
-		return this.projectsService.getProject(projectId) ? this.track(projectId) : undefined;
+		// Only the host's own projects and added scopes are followed; another id gets an empty list.
+		const known = this.projectsService.getProject(projectId) || this.extraScopes.get().some(scopes => scopes.get().includes(projectId));
+		return known ? this.track(projectId) : undefined;
 	}
 
 	private entry(runId: RunId): IRunEntry {
@@ -234,10 +255,11 @@ export class WispAgentsService extends Disposable implements IWispAgentsService 
 			this._available.set(available, undefined);
 			if (available) {
 				// A reconnect keeps a listed project's subscription, which replays what it missed.
-				for (const project of this.projectsService.projects.get()) {
-					const tracked = this.track(project.id);
+				const scopes = [...this.projectsService.projects.get().map(project => project.id), ...this.extraScopes.get().flatMap(extra => extra.get())];
+				for (const scope of new Set(scopes)) {
+					const tracked = this.track(scope);
 					if (tracked.status === 'idle') {
-						this.list(tracked, project.id, state.logId);
+						this.list(tracked, scope, state.logId);
 					}
 				}
 			}

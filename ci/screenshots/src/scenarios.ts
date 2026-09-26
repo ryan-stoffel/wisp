@@ -4,6 +4,7 @@ import { agentReply, agentTab, agentTask, chatShows, fakeClaudeEnv, openAgentsPa
 import { addSharedContextFile } from './context.ts';
 import { screenshot, visible, type Scenario } from './harness.ts';
 import { connectedToThisMac, createProject, hostChip, hostChipIn, projectName, projectRow, projectTab } from './projects.ts';
+import { openNewChat, repoThreadRow, sendFirstMessage } from './threads.ts';
 
 const workspace = join(import.meta.dirname, '..', 'fixtures', 'workspace');
 const openFile = 'tasks.ts';
@@ -160,6 +161,28 @@ export const scenarios: readonly Scenario[] = [
       await agentTab(context.window, agentTask).click();
       await sendMessage(context.window, 'also handle credit notes');
       await chatShows(context.window, 'Fake agent heard: also handle credit notes');
+      return screenshot(context.window);
+    },
+  },
+  {
+    name: 'agents-window-new-chat',
+    title: "New Chat: upstream's new-session composer for a normal thread",
+    async run(context) {
+      await connectedToThisMac(context.window);
+      await openNewChat(context.window);
+      return screenshot(context.window);
+    },
+  },
+  {
+    name: 'agents-window-repo-thread',
+    title: 'A normal thread under its repository in Repositories',
+    env: () => fakeClaudeEnv(),
+    async run(context) {
+      await createProject(context, { withCommit: true });
+      await openNewChat(context.window);
+      await sendFirstMessage(context.window);
+      await repoThreadRow(context.window).waitFor({ state: 'visible', timeout: 30_000 });
+      await chatShows(context.window, agentReply);
       return screenshot(context.window);
     },
   },

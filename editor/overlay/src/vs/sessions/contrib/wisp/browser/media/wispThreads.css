@@ -335,3 +335,35 @@
 	color: var(--vscode-textLink-activeForeground);
 	text-decoration: underline;
 }
+
+/* Repositories and No Repo (#110): threads under their repository's name, and quick chats. */
+.wisp-threads-repo {
+	list-style: none;
+}
+
+.wisp-threads-repo-name {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	height: 24px;
+	padding: 0 var(--vscode-spacing-size80);
+	overflow: hidden;
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.wisp-threads-repo .wisp-threads-rows {
+	padding-left: var(--vscode-spacing-size80);
+}
+
+.wisp-threads-thread-mark {
+	flex: none;
+	color: var(--vscode-descriptionForeground);
+}
+
+.wisp-threads-thread-mark.running {
+	color: var(--vscode-chat-sessionStateIndicator-inProgressBorder, var(--vscode-progressBar-background));
+	font-size: 10px;
+}

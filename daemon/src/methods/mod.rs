@@ -2,7 +2,8 @@
 //! table so every params and result type is the protocol's own.
 //!
 //! Each capability gets a module here (M3 `agents`: `agent.rs` and `context.rs`; M4
-//! `coordinator`), and `host.rs` advertises the capability in `initialize`.
+//! `coordinator`; #110 `threads`: `thread.rs`), and `host.rs` advertises the capability in
+//! `initialize`.
 
 mod accounts;
 mod agent;
@@ -11,6 +12,7 @@ mod defaults;
 mod events;
 mod host;
 mod project;
+mod thread;
 mod usage;
 
 use std::future::{Future, ready};
@@ -112,6 +114,7 @@ pub(crate) async fn dispatch(context: Context, request: Request) -> Reply {
         name if name.starts_with("agent/") => agent_method(&context, &request)
             .await
             .unwrap_or_else(|| Err(ErrorObject::method_not_found(name))),
+        name if thread::handles(name) => thread::dispatch(&context, &request).await,
         EventsSubscribe::NAME => {
             let subscribed = match request.params() {
                 Ok(params) => events::subscribe(&context, params).await,

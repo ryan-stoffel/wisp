@@ -5,7 +5,7 @@ use ts_rs::TS;
 use crate::id::uuid_v7_id;
 use crate::{
     AgentFailureKind, AgentMerge, AgentOutcome, AgentOutputItem, AgentRun, AgentRunState,
-    ContextFile, DiffSummary, Project, ProjectId, RunId,
+    ContextFile, DiffSummary, Project, ProjectId, Repo, RepoId, RunId, Thread,
 };
 
 uuid_v7_id! {
@@ -162,6 +162,34 @@ pub enum WispEvent {
         run_id: RunId,
         /// What happened to the project's repository.
         merge: AgentMerge,
+    },
+    /// `repo/add` registered a repository for normal threads, or wispd made its scratch entry
+    /// (#110). Host-level.
+    #[serde(rename = "repo.added")]
+    RepoAdded {
+        /// The entry.
+        repo: Repo,
+    },
+    /// `thread/start` started a normal thread (#110). Host-level; its run's `agent.*` events go
+    /// to its repo entry's id.
+    #[serde(rename = "thread.started")]
+    ThreadStarted {
+        /// The thread.
+        thread: Thread,
+    },
+    /// A thread was archived or brought back (#110). Host-level.
+    #[serde(rename = "thread.updated")]
+    ThreadUpdated {
+        /// The thread as it stands.
+        thread: Thread,
+    },
+    /// `thread/delete` deleted a thread and its run (#110). Host-level.
+    #[serde(rename = "thread.deleted")]
+    ThreadDeleted {
+        /// The thread's run id.
+        run_id: RunId,
+        /// Its repo entry.
+        repo: RepoId,
     },
     /// A kind this version does not know yet.
     #[serde(other)]

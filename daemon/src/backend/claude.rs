@@ -280,9 +280,10 @@ pub fn arguments(request: &RunRequest) -> Result<Vec<OsString>, StartError> {
 /// [`WORKER_DENIED_HOSTS`]. `WebFetch(domain:*)` is what opens the network: the sandbox takes its
 /// allowlist from `WebFetch` allow rules, and a bare `*` matches every host. The denied hosts are
 /// `WebFetch` deny rules as well as `deniedDomains`, because the sandbox's list binds only
-/// commands, and a deny rule beats the `*` allow for the tool. `cwd` and the writable folders stay
-/// readable inside an unreadable path, such as wispd's data folder, which holds both. A second
-/// account's `config_home` is unreadable too.
+/// commands, and a deny rule beats the `*` allow for the tool. `cwd`, the writable folders, and
+/// the read-only git paths stay readable inside an unreadable path, such as wispd's data folder,
+/// which holds the worktree, the context folder, and a normal thread's scratch repository
+/// (#110). A second account's `config_home` is unreadable too.
 #[must_use]
 pub fn worker_settings(sandbox: &WorkerSandbox, cwd: &Path, config_home: Option<&Path>) -> Value {
     let unreadable = strings(
@@ -292,8 +293,11 @@ pub fn worker_settings(sandbox: &WorkerSandbox, cwd: &Path, config_home: Option<
             .map(PathBuf::as_path)
             .chain(config_home),
     );
-    let readable =
-        strings(std::iter::once(cwd).chain(sandbox.writable.iter().map(PathBuf::as_path)));
+    let readable = strings(
+        std::iter::once(cwd)
+            .chain(sandbox.writable.iter().map(PathBuf::as_path))
+            .chain(sandbox.read_only.iter().map(PathBuf::as_path)),
+    );
     let read_only = strings(sandbox.read_only.iter().map(PathBuf::as_path));
     let denied_fetches: Vec<String> = WORKER_DENIED_HOSTS
         .iter()

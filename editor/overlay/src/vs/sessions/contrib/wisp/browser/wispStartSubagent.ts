@@ -38,7 +38,7 @@ export async function openAgentTab(sessionsService: ISessionsService, sessionsMa
  * default, or, when no default is set, one the user picks from the host's signed-in CLIs. Nothing
  * is saved: the default stays unset. Returns `null` when the user cancels or none can run it.
  */
-async function pickWorkerAccount(wispdService: IWispdService, quickInputService: IQuickInputService, notificationService: INotificationService): Promise<AccountChoice | undefined | null> {
+export async function pickWorkerAccount(wispdService: IWispdService, quickInputService: IQuickInputService, notificationService: INotificationService, title = localize('wispStartSubagent.accountTitle', "Start Subagent")): Promise<AccountChoice | undefined | null> {
 	const defaults = await wispdService.request('accounts/defaults/get', {});
 	if (defaults.worker) {
 		return undefined;
@@ -52,7 +52,7 @@ async function pickWorkerAccount(wispdService: IWispdService, quickInputService:
 		return null;
 	}
 	const picked = await quickInputService.pick(picks, {
-		title: localize('wispStartSubagent.accountTitle', "Start Subagent"),
+		title,
 		placeHolder: localize('wispStartSubagent.accountPlaceholder', "Pick the account this agent runs on. No default is set for agents."),
 	});
 	return picked ? picked.account : null;

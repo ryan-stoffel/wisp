@@ -61,6 +61,10 @@ pub enum ErrorKind {
     /// has moved on since the run started. The message names the conflicting files. Nothing was
     /// changed.
     MergeConflict,
+    /// No repo entry has the given id (#110).
+    RepoNotFound,
+    /// No normal thread has the given run id (#110).
+    ThreadNotFound,
     /// A kind this version does not know yet.
     #[serde(other)]
     #[ts(skip)]
@@ -163,6 +167,8 @@ mod tests {
             (ErrorKind::RunAccepted, "runAccepted"),
             (ErrorKind::MergeRefused, "mergeRefused"),
             (ErrorKind::MergeConflict, "mergeConflict"),
+            (ErrorKind::RepoNotFound, "repoNotFound"),
+            (ErrorKind::ThreadNotFound, "threadNotFound"),
         ] {
             assert_eq!(serde_json::to_value(kind).unwrap(), json!(name));
             assert_eq!(

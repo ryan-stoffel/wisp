@@ -31,10 +31,16 @@ pub(crate) async fn subscribe(
             .daemon
             .store
             .run(&context.cancel, move |store| {
-                store
+                // A normal thread's events go to its repo entry's id (#110).
+                let is_project = store
                     .get_project(project.into())
-                    .map(|row| row.is_some())
-                    .map_err(|error| store_error(&error))
+                    .map_err(|error| store_error(&error))?
+                    .is_some();
+                Ok(is_project
+                    || store
+                        .get_repo(project.into())
+                        .map_err(|error| store_error(&error))?
+                        .is_some())
             })
             .await?;
         if !exists {

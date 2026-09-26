@@ -90,12 +90,12 @@ suite('wisp: Agents window', () => {
 				['Customize', null],
 			]);
 			assert.strictEqual(buttons[0].disabled, false, 'a disabled button would leave the tab order');
-			assert.strictEqual(buttons[0].getAttribute('aria-description'), 'Chats outside a project are not available yet.');
+			assert.strictEqual(buttons[0].getAttribute('aria-description'), 'Connect to a host to start a chat.');
 		});
 
 		test('shows Projects with its empty copy, and hides Repositories and No Repo', () => {
 			const { view } = renderSidebar();
-			const sections = [...view.element.querySelectorAll<HTMLElement>('section.wisp-threads-section')];
+			const sections = [...view.element.querySelectorAll<HTMLElement>('section.wisp-threads-section')].filter(section => !section.hidden);
 			assert.deepStrictEqual(sections.map(section => section.querySelector('h2')?.textContent), ['Projects']);
 			const projects = sections[0];
 			assert.strictEqual(projects.getAttribute('aria-labelledby'), projects.querySelector('h2')?.id);
@@ -188,10 +188,11 @@ suite('wisp: Agents window', () => {
 			assert.deepStrictEqual(provider.getModelsSnapshot('any').models, []);
 		});
 
-		test('refuses to create sessions, quick chats, or requests', async () => {
+		test('refuses to create sessions, quick chats, or requests until the host runs threads', async () => {
 			const { provider } = services(true);
-			assert.throws(() => provider.createNewSession(URI.file('/repo'), 'wisp.thread'), /doesn't support this yet/);
-			assert.throws(() => provider.createQuickChat('wisp.thread'), /doesn't support this yet/);
+			assert.throws(() => provider.createNewSession(URI.file('/repo'), 'wisp.project'), /doesn't support this yet/);
+			assert.throws(() => provider.createNewSession(URI.file('/repo'), 'wisp.thread'), /can't run chats yet/);
+			assert.throws(() => provider.createQuickChat('wisp.thread'), /can't run chats yet/);
 			await assert.rejects(provider.sendRequest('a', URI.file('/chat'), { query: 'hi' }), /can't take messages yet/);
 		});
 	});

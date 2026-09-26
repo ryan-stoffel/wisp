@@ -1,0 +1,290 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "thread/list",
+    "params": {}
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "repos": [],
+      "threads": [],
+      "seq": 40
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "events/subscribe",
+    "params": {
+      "after": 40
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "result": {
+      "subscription": "01a0d5c0-0a1b-7c2d-8e3f-4a5b6c7d8e01"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "repo/add",
+    "params": {
+      "id": "01a0d5c1-1a2b-7c3d-8e4f-5a6b7c8d9e02",
+      "path": "/Users/me/src/wisp"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "result": {
+      "repo": {
+        "id": "01a0d5c1-1a2b-7c3d-8e4f-5a6b7c8d9e02",
+        "name": "wisp",
+        "path": "/Users/me/src/wisp",
+        "createdAt": "2026-09-26T12:00:00Z"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0d5c0-0a1b-7c2d-8e3f-4a5b6c7d8e01",
+      "seq": 41,
+      "time": "2026-09-26T12:00:00Z",
+      "event": {
+        "kind": "repo.added",
+        "repo": {
+          "id": "01a0d5c1-1a2b-7c3d-8e4f-5a6b7c8d9e02",
+          "name": "wisp",
+          "path": "/Users/me/src/wisp",
+          "createdAt": "2026-09-26T12:00:00Z"
+        }
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "thread/start",
+    "params": {
+      "runId": "01a0d5c2-2a3b-7c4d-8e5f-6a7b8c9d0e03",
+      "repo": "01a0d5c1-1a2b-7c3d-8e4f-5a6b7c8d9e02",
+      "prompt": "Fix the flaky attach test."
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "result": {
+      "thread": {
+        "id": "01a0d5c2-2a3b-7c4d-8e5f-6a7b8c9d0e03",
+        "repo": "01a0d5c1-1a2b-7c3d-8e4f-5a6b7c8d9e02",
+        "createdAt": "2026-09-26T12:00:01Z"
+      },
+      "run": {
+        "id": "01a0d5c2-2a3b-7c4d-8e5f-6a7b8c9d0e03",
+        "project": "01a0d5c1-1a2b-7c3d-8e4f-5a6b7c8d9e02",
+        "prompt": "Fix the flaky attach test.",
+        "policy": "workspaceWrite",
+        "status": "running",
+        "backend": "claude",
+        "accountId": "claude",
+        "branch": "wisp/2a3b4c5d",
+        "worktreePath": "/Users/me/Library/Application Support/wisp/worktrees/wisp-5e6f7a8b/01a0d5c2-2a3b-7c4d-8e5f-6a7b8c9d0e03",
+        "createdAt": "2026-09-26T12:00:01Z",
+        "updatedAt": "2026-09-26T12:00:02Z"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0d5c0-0a1b-7c2d-8e3f-4a5b6c7d8e01",
+      "seq": 43,
+      "time": "2026-09-26T12:00:01Z",
+      "event": {
+        "kind": "thread.started",
+        "thread": {
+          "id": "01a0d5c2-2a3b-7c4d-8e5f-6a7b8c9d0e03",
+          "repo": "01a0d5c1-1a2b-7c3d-8e4f-5a6b7c8d9e02",
+          "createdAt": "2026-09-26T12:00:01Z"
+        }
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "method": "thread/start",
+    "params": {
+      "runId": "01a0d5c3-3a4b-7c5d-8e6f-7a8b9c0d1e04",
+      "prompt": "Explain what a git worktree is."
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "result": {
+      "thread": {
+        "id": "01a0d5c3-3a4b-7c5d-8e6f-7a8b9c0d1e04",
+        "repo": "01a0d5c4-4a5b-7c6d-8e7f-8a9b0c1d2e05",
+        "createdAt": "2026-09-26T12:01:00Z"
+      },
+      "run": {
+        "id": "01a0d5c3-3a4b-7c5d-8e6f-7a8b9c0d1e04",
+        "project": "01a0d5c4-4a5b-7c6d-8e7f-8a9b0c1d2e05",
+        "prompt": "Explain what a git worktree is.",
+        "policy": "workspaceWrite",
+        "status": "running",
+        "backend": "claude",
+        "accountId": "claude",
+        "branch": "wisp/3a4b5c6d",
+        "worktreePath": "/Users/me/Library/Application Support/wisp/worktrees/01a0d5c3-5e6f7a8b/01a0d5c3-3a4b-7c5d-8e6f-7a8b9c0d1e04",
+        "createdAt": "2026-09-26T12:01:00Z",
+        "updatedAt": "2026-09-26T12:01:01Z"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0d5c0-0a1b-7c2d-8e3f-4a5b6c7d8e01",
+      "seq": 50,
+      "time": "2026-09-26T12:01:00Z",
+      "event": {
+        "kind": "repo.added",
+        "repo": {
+          "id": "01a0d5c4-4a5b-7c6d-8e7f-8a9b0c1d2e05",
+          "name": "No Repo",
+          "path": "/Users/me/Library/Application Support/wisp/scratch",
+          "scratch": true,
+          "createdAt": "2026-09-26T12:01:00Z"
+        }
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 6,
+    "method": "thread/delete",
+    "params": {
+      "runId": "01a0d5c3-3a4b-7c5d-8e6f-7a8b9c0d1e04"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 6,
+    "result": {}
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 7,
+    "method": "thread/archive",
+    "params": {
+      "runId": "01a0d5c2-2a3b-7c4d-8e5f-6a7b8c9d0e03",
+      "archived": true
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 7,
+    "result": {
+      "thread": {
+        "id": "01a0d5c2-2a3b-7c4d-8e5f-6a7b8c9d0e03",
+        "repo": "01a0d5c1-1a2b-7c3d-8e4f-5a6b7c8d9e02",
+        "archived": true,
+        "createdAt": "2026-09-26T12:00:01Z"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0d5c0-0a1b-7c2d-8e3f-4a5b6c7d8e01",
+      "seq": 61,
+      "time": "2026-09-26T12:02:00Z",
+      "event": {
+        "kind": "thread.updated",
+        "thread": {
+          "id": "01a0d5c2-2a3b-7c4d-8e5f-6a7b8c9d0e03",
+          "repo": "01a0d5c1-1a2b-7c3d-8e4f-5a6b7c8d9e02",
+          "archived": true,
+          "createdAt": "2026-09-26T12:00:01Z"
+        }
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 8,
+    "method": "thread/delete",
+    "params": {
+      "runId": "01a0d5c2-2a3b-7c4d-8e5f-6a7b8c9d0e03"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 8,
+    "result": {}
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0d5c0-0a1b-7c2d-8e3f-4a5b6c7d8e01",
+      "seq": 62,
+      "time": "2026-09-26T12:03:00Z",
+      "event": {
+        "kind": "thread.deleted",
+        "runId": "01a0d5c2-2a3b-7c4d-8e5f-6a7b8c9d0e03",
+        "repo": "01a0d5c1-1a2b-7c3d-8e4f-5a6b7c8d9e02"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 9,
+    "method": "thread/archive",
+    "params": {
+      "runId": "01a0d5c2-2a3b-7c4d-8e5f-6a7b8c9d0e03",
+      "archived": false
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 9,
+    "error": {
+      "code": -32000,
+      "message": "no thread has run id 01a0d5c2-2a3b-7c4d-8e5f-6a7b8c9d0e03",
+      "data": { "kind": "threadNotFound" }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 10,
+    "method": "thread/start",
+    "params": {
+      "runId": "01a0d5c5-5a6b-7c7d-8e8f-9a0b1c2d3e06",
+      "repo": "01a0d5c6-6a7b-7c8d-8e9f-0a1b2c3d4e07",
+      "prompt": "Update the changelog."
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 10,
+    "error": {
+      "code": -32000,
+      "message": "no repo entry has id 01a0d5c6-6a7b-7c8d-8e9f-0a1b2c3d4e07",
+      "data": { "kind": "repoNotFound" }
+    }
+  }
+]

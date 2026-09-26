@@ -38,6 +38,16 @@ test('captures the Agents panel and a subagent tab, with the fake claude first o
   }
 });
 
+test('captures New Chat, and a normal thread under Repositories with the fake claude first on PATH', () => {
+  const names = scenarios.map((scenario) => scenario.name);
+
+  assert.ok(names.includes('agents-window-new-chat'));
+  const thread = scenarios.find((candidate) => candidate.name === 'agents-window-repo-thread');
+  assert.ok(thread);
+  const path = thread.env?.('/unused').PATH ?? '';
+  assert.match(path.split(delimiter)[0] ?? '', /ci\/smoke\/fixtures\/fake-cli$/);
+});
+
 test('names are unique and titles are text the comment accepts', () => {
   const names = scenarios.map((scenario) => scenario.name);
 
