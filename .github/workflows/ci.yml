@@ -341,6 +341,10 @@ jobs:
     timeout-minutes: 25
     env:
       ZIP: dist/editor/wisp-darwin-arm64.zip
+      # A GitHub-hosted macOS runner must support scripts/ci/ssh-localhost; here (unlike a
+      # developer's Mac) "ssh not ready" is a failure, not a skip, so a broken ssh setup fails the
+      # build instead of quietly dropping this coverage.
+      WISP_E2E_REQUIRE_SSH: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

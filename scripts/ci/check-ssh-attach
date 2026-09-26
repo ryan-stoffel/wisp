@@ -1,53 +1,120 @@
-#!/bin/sh
-# #95's own check: `wispd attach` through a real `ssh localhost`, once scripts/ci/ssh-localhost has
-# set it up. Mirrors daemon/README.md's own "Testing attach over ssh on your Mac" recipe, but
-# checked instead of eyeballed, and skipped wherever ssh-localhost was skipped (never fails CI, so
-# #95 stays open instead).
-set -eu
+#!/usr/bin/env node
+'use strict';
+// #95's own check: `wispd attach` through a real `ssh localhost`, once scripts/ci/ssh-localhost has
+// set it up. Mirrors daemon/README.md's own "Testing attach over ssh on your Mac" recipe, but
+// checked instead of eyeballed: exactly one line on stdout, a JSON-RPC response with id 1, no
+// error, and result.protocol === 1; that ssh exits 0 once wispd has answered; and that `serve`
+// keeps running after the ssh session ends, then stops it.
+//
+// Skips (exit 0) wherever scripts/ci/ssh-localhost was skipped, unless WISP_E2E_REQUIRE_SSH=1
+// (ci.yml's e2e job sets it), in which case "not ready" is a failure instead, so a broken ssh
+// setup fails the build rather than silently dropping this coverage.
 
-status_file=${1:?"usage: $0 <status-file> <wispd-binary>"}
-wispd=${2:?"usage: $0 <status-file> <wispd-binary>"}
+const { execFileSync } = require('node:child_process');
+const { existsSync, mkdtempSync, readFileSync, rmSync } = require('node:fs');
+const { tmpdir } = require('node:os');
+const { join } = require('node:path');
 
-ready=$(grep '^WISP_E2E_SSH_READY=' "$status_file" 2>/dev/null | cut -d= -f2- || true)
-if [ "$ready" != "true" ]; then
-  reason=$(grep '^WISP_E2E_SSH_REASON=' "$status_file" 2>/dev/null | cut -d= -f2- || true)
-  echo "check-ssh-attach: skipping: ${reason:-ssh to localhost is not ready (see #95)}"
-  exit 0
-fi
+function fail(message) {
+  process.stderr.write(`check-ssh-attach: ${message}\n`);
+  process.exit(1);
+}
 
-[ -x "$wispd" ] || { echo "check-ssh-attach: $wispd is not an executable file" >&2; exit 1; }
+function skip(message) {
+  process.stdout.write(`check-ssh-attach: skipping: ${message}\n`);
+  process.exit(0);
+}
 
-data_dir=$(mktemp -d "${TMPDIR:-/tmp}/wisp-e2e-ssh-attach.XXXXXX")
-trap 'rm -rf "$data_dir"' EXIT
+function readStatus(path) {
+  const entries = {};
+  let text;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch {
+    return entries;
+  }
+  for (const line of text.split('\n')) {
+    const equals = line.indexOf('=');
+    if (equals === -1) {
+      continue;
+    }
+    entries[line.slice(0, equals).trim()] = line.slice(equals + 1).trim();
+  }
+  return entries;
+}
 
-request='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol":{"min":1,"max":1},"client":{"name":"ci-ssh-attach","version":"0"},"capabilities":{}}}'
-set +e
-response=$(printf '%s\n' "$request" | ssh -T -o BatchMode=yes -o ControlPath=none -- localhost "WISPD_DATA_DIR=$data_dir $wispd attach")
-status=$?
-set -e
+const [, , statusFile, wispd] = process.argv;
+if (!statusFile || !wispd) {
+  fail('usage: check-ssh-attach <status-file> <wispd-binary>');
+}
 
-echo "check-ssh-attach: response: $response"
-if [ "$status" -ne 0 ]; then
-  echo "check-ssh-attach: ssh exited $status, expected 0 once wispd answered" >&2
-  exit 1
-fi
-case "$response" in
-  *'"protocol":1'*) ;;
-  *)
-    echo "check-ssh-attach: expected a successful initialize with protocol 1, got: $response" >&2
-    exit 1
-    ;;
-esac
+const status = readStatus(statusFile);
+const requireSsh = process.env.WISP_E2E_REQUIRE_SSH === '1';
+if (status.WISP_E2E_SSH_READY !== 'true') {
+  const reason = status.WISP_E2E_SSH_REASON || 'ssh to localhost is not ready (see #95)';
+  if (requireSsh) {
+    fail(`WISP_E2E_REQUIRE_SSH=1 but ${reason}`);
+  }
+  skip(reason);
+}
 
-if [ ! -f "$data_dir/wispd.lock" ]; then
-  echo "check-ssh-attach: no $data_dir/wispd.lock; wispd never started serve" >&2
-  exit 1
-fi
-serve_pid=$(cat "$data_dir/wispd.lock")
-if ! kill -0 "$serve_pid" 2>/dev/null; then
-  echo "check-ssh-attach: serve (pid $serve_pid) was not still running after the ssh session ended" >&2
-  exit 1
-fi
-kill "$serve_pid"
+if (!existsSync(wispd)) {
+  fail(`${wispd} is not an executable file`);
+}
 
-echo "check-ssh-attach: ok (serve pid $serve_pid was running after ssh closed, then stopped)"
+const dataDir = mkdtempSync(join(tmpdir(), 'wisp-e2e-ssh-attach-'));
+try {
+  const request = `${JSON.stringify({
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'initialize',
+    params: { protocol: { min: 1, max: 1 }, client: { name: 'ci-ssh-attach', version: '0' }, capabilities: {} },
+  })}\n`;
+
+  let stdout;
+  try {
+    stdout = execFileSync(
+      'ssh',
+      ['-T', '-o', 'BatchMode=yes', '-o', 'ControlPath=none', '--', 'localhost', `WISPD_DATA_DIR='${dataDir}' '${wispd}' attach`],
+      { input: request, timeout: 60_000, encoding: 'utf8' },
+    );
+  } catch (error) {
+    fail(`ssh failed or timed out (60s): ${error.message}`);
+    return;
+  }
+
+  // "stdout holds nothing else" (#95): exactly one line, once the single trailing newline (attach
+  // writes one line per NDJSON message, decision record 0007) is accounted for.
+  if (!stdout.endsWith('\n') || stdout.slice(0, -1).includes('\n')) {
+    fail(`expected exactly one line on stdout, got: ${JSON.stringify(stdout)}`);
+  }
+  const line = stdout.slice(0, -1);
+  console.log(`check-ssh-attach: response: ${line}`);
+
+  let response;
+  try {
+    response = JSON.parse(line);
+  } catch {
+    fail(`stdout is not valid JSON: ${line}`);
+    return;
+  }
+  if (response.jsonrpc !== '2.0' || response.id !== 1 || response.error !== undefined || response.result?.protocol !== 1) {
+    fail(`expected a successful initialize response with protocol 1, got: ${line}`);
+  }
+
+  const lockFile = join(dataDir, 'wispd.lock');
+  if (!existsSync(lockFile)) {
+    fail(`no ${lockFile}; wispd never started serve`);
+  }
+  const pid = Number.parseInt(readFileSync(lockFile, 'utf8').trim(), 10);
+  try {
+    process.kill(pid, 0);
+  } catch {
+    fail(`serve (pid ${pid}) was not still running after the ssh session ended`);
+  }
+  process.kill(pid, 'SIGTERM');
+
+  console.log(`check-ssh-attach: ok (serve pid ${pid} was running after ssh closed, then stopped)`);
+} finally {
+  rmSync(dataDir, { recursive: true, force: true });
+}

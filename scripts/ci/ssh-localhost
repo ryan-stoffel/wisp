@@ -1,15 +1,18 @@
 #!/bin/sh
-# Sets up key-based `ssh localhost` on a disposable macOS CI runner, for #95 and ci/e2e's own ssh
-# check (ci/e2e/src/checks/ssh.ts). It generates a throwaway client key, tries Remote Login first
-# and falls back to a user-level sshd on a high port, and points a `Host localhost` block in
+# Sets up key-based `ssh localhost` on a disposable GitHub-hosted macOS runner, for #95 and
+# ci/e2e's own ssh check (ci/e2e/src/checks/ssh.ts). It generates a throwaway client key and host
+# key, runs a user-level sshd of its own on a high port, and points a `Host localhost` block in
 # ~/.ssh/config at its own throwaway identity and known_hosts, so the editor's fixed ssh argv
 # (`ssh -T -o BatchMode=yes -o ConnectTimeout=10 -o ControlPath=none -- <host> wispd attach`,
 # decision record 0007) never needs its own -i or -o UserKnownHostsFile to use them.
 #
-# Never runs outside CI (a developer's Mac keeps its own ~/.ssh untouched), and never fails the
-# build: whatever happens, it writes WISP_E2E_SSH_READY=true or =false plus a reason to
-# <status-file>, and the caller (scripts/ci/e2e, ci/e2e's ssh check) decides what to skip. Readiness
-# is proven by actually running `ssh localhost`, not assumed from which setup path was taken.
+# Never runs outside a GitHub-hosted runner (a developer's Mac, or a self-hosted runner, keeps its
+# own ~/.ssh untouched: gating on CI=true alone is not enough, since developers and tools often
+# export that too), and never fails the build on its own: whatever happens, it writes
+# WISP_E2E_SSH_READY=true or =false plus a reason to <status-file>, and the caller
+# (scripts/ci/e2e, ci/e2e's ssh check) decides whether that is a skip or, with
+# WISP_E2E_REQUIRE_SSH=1, a failure. Readiness is proven by actually running `ssh localhost`, not
+# assumed from having started sshd.
 set -eu
 
 status_file=${1:?"usage: $0 <status-file>"}
@@ -31,9 +34,14 @@ skip() {
 }
 
 [ "$(uname -s)" = "Darwin" ] || skip "not macOS"
-[ "${CI:-}" = "true" ] || skip "not running in CI (this never touches a developer's Mac's ~/.ssh)"
+# GITHUB_ACTIONS and RUNNER_ENVIRONMENT are both set by Actions itself and not something a
+# developer's local CI=true export would set; RUNNER_ENVIRONMENT also keeps this off a self-hosted
+# runner, which is not disposable the way a GitHub-hosted one is.
+[ "${GITHUB_ACTIONS:-}" = "true" ] || skip "not running in GitHub Actions"
+[ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ] || skip "not a GitHub-hosted runner"
 command -v ssh >/dev/null 2>&1 || skip "no ssh on PATH"
 command -v ssh-keygen >/dev/null 2>&1 || skip "no ssh-keygen on PATH"
+command -v /usr/sbin/sshd >/dev/null 2>&1 || skip "/usr/sbin/sshd is not present"
 
 state_dir=$(mktemp -d "${TMPDIR:-/tmp}/wisp-e2e-ssh.XXXXXX")
 identity="$state_dir/id_ed25519"
@@ -41,31 +49,12 @@ known_hosts="$state_dir/known_hosts"
 : > "$known_hosts"
 ssh-keygen -t ed25519 -N '' -f "$identity" -C wisp-e2e-ci -q
 
-port=22
-mode=""
-# shellcheck disable=SC2024 # the log file is ours, not root's; sudo only needs to run the command
-if sudo -n systemsetup -setremotelogin on >"$state_dir/remotelogin.log" 2>&1 \
-  && systemsetup -getremotelogin 2>/dev/null | grep -qi "on"; then
-  mode=remotelogin
-  mkdir -p "$HOME/.ssh"
-  chmod 700 "$HOME/.ssh"
-  # The only write outside $state_dir: Remote Login's sshd reads the runner user's own
-  # authorized_keys, and #95's own acceptance criteria names this file for this path.
-  cat "$identity.pub" >> "$HOME/.ssh/authorized_keys"
-  chmod 600 "$HOME/.ssh/authorized_keys"
-fi
-
-if [ -z "$mode" ]; then
-  if ! command -v /usr/sbin/sshd >/dev/null 2>&1; then
-    skip "Remote Login could not be enabled, and /usr/sbin/sshd is not present"
-  fi
-  mode=sshd
-  # An unprivileged, high port of our own; nothing else on a fresh runner should be using it.
-  port=2222
-  host_key="$state_dir/host_key"
-  ssh-keygen -t ed25519 -N '' -f "$host_key" -q
-  sshd_config="$state_dir/sshd_config"
-  cat > "$sshd_config" <<CONFIG
+# An unprivileged, high port of our own; nothing else on a fresh runner should be using it.
+port=2222
+host_key="$state_dir/host_key"
+ssh-keygen -t ed25519 -N '' -f "$host_key" -q
+sshd_config="$state_dir/sshd_config"
+cat > "$sshd_config" <<CONFIG
 Port $port
 ListenAddress 127.0.0.1
 HostKey $host_key
@@ -79,16 +68,15 @@ PubkeyAuthentication yes
 StrictModes no
 Subsystem sftp internal-sftp
 CONFIG
-  if ! /usr/sbin/sshd -f "$sshd_config" -E "$state_dir/sshd.log"; then
-    skip "user-level sshd (port $port) would not start; see $state_dir/sshd.log"
-  fi
-  for _ in $(seq 1 20); do
-    if /usr/bin/nc -z 127.0.0.1 "$port" 2>/dev/null; then
-      break
-    fi
-    sleep 0.25
-  done
+if ! /usr/sbin/sshd -f "$sshd_config" -E "$state_dir/sshd.log"; then
+  skip "user-level sshd (port $port) would not start; see $state_dir/sshd.log"
 fi
+for _ in $(seq 1 20); do
+  if /usr/bin/nc -z 127.0.0.1 "$port" 2>/dev/null; then
+    break
+  fi
+  sleep 0.25
+done
 
 for _ in $(seq 1 20); do
   ssh-keyscan -t ed25519 -p "$port" localhost >> "$known_hosts" 2>/dev/null || true
@@ -96,13 +84,13 @@ for _ in $(seq 1 20); do
   sleep 0.25
 done
 if [ ! -s "$known_hosts" ]; then
-  skip "ssh-keyscan got no host key from localhost:$port ($mode)"
+  skip "ssh-keyscan got no host key from localhost:$port"
 fi
 
 mkdir -p "$HOME/.ssh"
 chmod 700 "$HOME/.ssh"
 {
-  echo "# wisp-e2e-ci ($mode): throwaway localhost ssh for ci/e2e and #95, added by scripts/ci/ssh-localhost"
+  echo "# wisp-e2e-ci: throwaway localhost ssh for ci/e2e and #95, added by scripts/ci/ssh-localhost"
   echo "Host localhost"
   echo "    Port $port"
   echo "    IdentityFile $identity"
@@ -114,8 +102,8 @@ chmod 700 "$HOME/.ssh"
 chmod 600 "$HOME/.ssh/config"
 
 if ssh -T -o ConnectTimeout=5 -o ControlPath=none -- localhost true 2>"$state_dir/probe.log"; then
-  echo "ssh-localhost: ready ($mode, port $port)" >&2
+  echo "ssh-localhost: ready (port $port)" >&2
   write_status true
 else
-  skip "ssh localhost (probe, $mode, port $port) failed: $(tail -n 5 "$state_dir/probe.log" | tr '\n' ' ')"
+  skip "ssh localhost (probe, port $port) failed: $(tail -n 5 "$state_dir/probe.log" | tr '\n' ' ')"
 fi

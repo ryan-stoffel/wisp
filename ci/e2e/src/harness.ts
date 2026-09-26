@@ -4,8 +4,11 @@
 // who calls it). Unlike ci/smoke, e2e wants the bundled wispd wired up exactly as a plain launch
 // leaves it (0010): `launch` here is screenshots' own, unwrapped, so every check gets a real
 // connection unless it asks for something else (a fake wispd, mid-session).
-import { readFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { createInterface } from 'node:readline';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   appLaunchOptions,
@@ -62,23 +65,76 @@ export function bundledWispdPath(options: { executablePath?: string }): string {
   return join(bundle, 'Contents', 'Resources', 'app', 'bin', 'wispd');
 }
 
+export interface SshLaunch {
+  readonly session: Session;
+  /** The data dir the ssh-side wispd (started by `ssh localhost ... attach`) uses; see below. */
+  readonly sshWispdDataDir: string;
+  /** The bundled wispd's own path, for querying `sshWispdDataDir` directly (queryProjectsDirect). */
+  readonly wispdPath: string;
+  /** Stops the ssh-side wispd (it runs on this same machine, so no ssh is needed to reach it) and removes its data dir. */
+  close(): Promise<void>;
+}
+
 /**
- * Launches connected, with `wisp.remoteWispdPath` pre-set to the bundled wispd's own path. A bare
- * GitHub Actions runner has no Homebrew `wispd` on `PATH` for the ssh check's `ssh localhost` to
- * find (daemon/README.md's PATH gotcha applies to `ssh localhost` on itself too), and this setting
- * is exactly what a real host with a nonstandard wispd location would set (0007).
+ * Launches connected, with `wisp.remoteWispdPath` pointed at a small wrapper script that sets
+ * `WISPD_DATA_DIR` to a fresh temp dir and execs the bundled wispd. Two problems this solves at
+ * once: a bare GitHub Actions runner has no Homebrew `wispd` on `PATH` for `ssh localhost` to find
+ * on itself (daemon/README.md's PATH gotcha), and `ssh` never forwards `WISPD_DATA_DIR` (sshd's
+ * `AcceptEnv` only allows `LANG`/`LC_*`), so without the wrapper the ssh-side wispd would use the
+ * runner user's real default data dir. Pointing `wisp.remoteWispdPath` at a nonstandard binary is
+ * exactly what a real host would do (0007); wrapping it to fix the data dir is this test's own
+ * addition, invisible to the editor.
  */
-export async function launchConnectedForSsh(): Promise<Session> {
+export async function launchConnectedForSsh(): Promise<SshLaunch> {
   const options = await appLaunchOptions();
-  return launch(options, {
+  const wispdPath = bundledWispdPath(options);
+  const sshWispdDataDir = await mkdtemp(join(tmpdir(), 'wisp-e2e-ssh-wispd-'));
+  const wrapper = join(sshWispdDataDir, 'wispd-wrapper.sh');
+  await writeFile(
+    wrapper,
+    `#!/bin/sh\nexport WISPD_DATA_DIR='${sshWispdDataDir}'\nexec '${wispdPath}' "$@"\n`,
+  );
+  await chmod(wrapper, 0o755);
+  const session = await launch(options, {
     args: () => Promise.resolve([]),
-    settings: { 'wisp.remoteWispdPath': bundledWispdPath(options) },
+    settings: { 'wisp.remoteWispdPath': wrapper },
   });
+  return {
+    session,
+    sshWispdDataDir,
+    wispdPath,
+    close: async () => {
+      await stopWispdAt(sshWispdDataDir);
+      await rm(sshWispdDataDir, { recursive: true, force: true, maxRetries: 3 });
+    },
+  };
 }
 
 /** A workspace of a project's own repository, git-initialized (ci/smoke's own fixture). */
 export function projectWorkspace(): Promise<Workspace> {
   return gitWorkspace();
+}
+
+/** `SIGKILL`s the `wispd serve` holding `dataDir`'s lock, if any, and waits for it to exit. */
+async function stopWispdAt(dataDir: string): Promise<void> {
+  const pid = await readWispdPid(dataDir);
+  if (pid === undefined) {
+    return;
+  }
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch {
+    return;
+  }
+  for (let i = 0; i < 100; i++) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return;
+    }
+    await delay(100);
+  }
+  throw new Error(`wispd (pid ${String(pid)}) did not exit after SIGKILL`);
 }
 
 /**
@@ -90,16 +146,48 @@ export async function killWispd(session: Session): Promise<void> {
   if (pid === undefined) {
     throw new Error(`no wispd.lock in ${session.wispdDataDir}; was wispd ever connected?`);
   }
-  process.kill(pid, 'SIGKILL');
-  for (let i = 0; i < 100; i++) {
-    try {
-      process.kill(pid, 0);
-    } catch {
-      return;
+  await stopWispdAt(session.wispdDataDir);
+}
+
+/**
+ * Asks a wispd directly for its projects, bypassing the editor entirely: spawns `<wispdExecutable>
+ * attach` against `dataDir`, sends `initialize` then `project/list`, and returns the projects the
+ * second answers with. Ground truth for "no duplicate project after a reconnect" (reconnect.ts):
+ * `WispProjectsService` keeps its old list across a reconnect until the resubscribe's `resync`
+ * lands and it re-lists, so reading the UI right after the chip reconnects can see the stale array.
+ * wispd's own store has no such lag.
+ */
+export async function queryProjectsDirect(wispdExecutable: string, dataDir: string): Promise<readonly { id: string }[]> {
+  const child = spawn(wispdExecutable, ['attach'], {
+    env: { ...process.env, WISPD_DATA_DIR: dataDir },
+    stdio: ['pipe', 'pipe', 'ignore'],
+  });
+  try {
+    const request = (id: number, method: string, params: unknown) =>
+      `${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`;
+    child.stdin.write(request(1, 'initialize', { protocol: { min: 1, max: 1 }, client: { name: 'ci-e2e-query', version: '0' }, capabilities: {} }));
+    child.stdin.write(request(2, 'project/list', {}));
+    child.stdin.end();
+
+    const lines: string[] = [];
+    const rl = createInterface({ input: child.stdout });
+    for await (const line of rl) {
+      lines.push(line);
+      if (lines.length >= 2) {
+        break;
+      }
     }
-    await delay(100);
+    rl.close();
+
+    const responses = lines.map((line) => JSON.parse(line) as { id: number; result?: { projects?: { id: string }[] }; error?: unknown });
+    const listResponse = responses.find((response) => response.id === 2);
+    if (!listResponse || listResponse.error || !listResponse.result?.projects) {
+      throw new Error(`no project/list result from wispd at ${dataDir}: ${lines.join(' | ')}`);
+    }
+    return listResponse.result.projects;
+  } finally {
+    child.kill();
   }
-  throw new Error(`wispd (pid ${String(pid)}) did not exit after SIGKILL`);
 }
 
 /** Reads a small `KEY=value` file, such as one `scripts/ci/ssh-localhost` wrote. */

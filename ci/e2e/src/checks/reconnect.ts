@@ -2,8 +2,18 @@
 // backoff, wispdClient.ts), and the sidebar never doubles the project it already had (0007's
 // idempotent create plus a plain `project/list` on the new connection).
 import { check } from '../check.ts';
-import { TIMEOUT_MS, killWispd, launchConnected, projectWorkspace, ready, readWispdPid } from '../harness.ts';
-import { projectRowLabels, waitForHostKind } from '../wispUi.ts';
+import {
+  TIMEOUT_MS,
+  appLaunchOptions,
+  bundledWispdPath,
+  killWispd,
+  launchConnected,
+  projectWorkspace,
+  queryProjectsDirect,
+  ready,
+  readWispdPid,
+} from '../harness.ts';
+import { projectIdFromSession, projectRowSessions, waitForHostKind } from '../wispUi.ts';
 import { createLocalProject, stubFolderPicker } from '../wispProject.ts';
 
 export const reconnectChecks = [
@@ -22,10 +32,12 @@ export const reconnectChecks = [
         undefined,
         { timeout: TIMEOUT_MS },
       );
-      const beforeKill = await projectRowLabels(window);
-      if (beforeKill.length !== 1) {
+      const beforeKill = await projectRowSessions(window);
+      const beforeSession = beforeKill[0];
+      if (beforeKill.length !== 1 || beforeSession === undefined) {
         throw new Error(`expected one project row before killing wispd, found ${String(beforeKill.length)}`);
       }
+      const projectId = projectIdFromSession(beforeSession);
       const pidBefore = await readWispdPid(session.wispdDataDir);
 
       await killWispd(session);
@@ -47,8 +59,28 @@ export const reconnectChecks = [
         throw new Error(`expected a new wispd process; before ${String(pidBefore)}, after ${String(pidAfter)}`);
       }
 
-      const afterReconnect = await projectRowLabels(window);
-      if (afterReconnect.length !== 1 || afterReconnect[0] !== beforeKill[0]) {
+      // Ground truth first: WispProjectsService (wispProjectsService.ts) keeps its old array across
+      // a reconnect until the resubscribe's resync lands and it re-lists, so the chip alone saying
+      // 'connected' does not prove the editor's own list has caught up yet. wispd's own store has
+      // no such lag once it has answered project/list at all.
+      const wispdPath = bundledWispdPath(await appLaunchOptions());
+      const direct = await queryProjectsDirect(wispdPath, session.wispdDataDir);
+      const directProject = direct[0];
+      if (direct.length !== 1 || directProject?.id !== projectId) {
+        throw new Error(`wispd itself lists ${JSON.stringify(direct)}, expected exactly the one project ${projectId}`);
+      }
+
+      // Then the UI: wait for it to catch up to that same single project rather than reading it once.
+      await window.waitForFunction(
+        ({ selector, expected }) => {
+          const rows = [...document.querySelectorAll(selector)] as HTMLElement[];
+          return rows.length === 1 && rows[0]?.dataset.session === expected;
+        },
+        { selector: '.wisp-threads-rows button.wisp-threads-row', expected: beforeSession },
+        { timeout: TIMEOUT_MS },
+      );
+      const afterReconnect = await projectRowSessions(window);
+      if (afterReconnect.length !== 1 || afterReconnect[0] !== beforeSession) {
         throw new Error(`project list after reconnect is ${JSON.stringify(afterReconnect)}, expected ${JSON.stringify(beforeKill)}`);
       }
     } finally {

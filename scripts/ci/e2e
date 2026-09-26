@@ -1,7 +1,7 @@
 #!/bin/sh
 # Runs ci/e2e's Playwright checks against the packaged app in WISP_APP_BUNDLE (ci.yml's e2e job
 # restores it the same way smoke's own job does), plus, on a macOS runner, scripts/ci/ssh-localhost
-# and #95's own check-ssh-attach. See ci/e2e/README-less src/run.ts for what each check does.
+# and #95's own check-ssh-attach. See ci/e2e/src/run.ts for what each check does.
 set -eu
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
