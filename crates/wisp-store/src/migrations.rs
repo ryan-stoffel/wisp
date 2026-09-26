@@ -202,8 +202,9 @@ const MIGRATIONS: &[Migration] = &[
 
 /// Bootstraps the `schema_version` table and applies every migration whose
 /// version isn't recorded, in order. A missing version below the newest
-/// recorded one still applies: two branches can each add a migration, and
-/// whichever lands second leaves a gap in a database migrated in between.
+/// recorded one still applies, for a developer database that ran a branch's
+/// migration before an earlier-numbered one landed. Versions must be exactly
+/// `1..=N` (a test checks it), so two branches can't both ship the same one.
 pub(crate) fn run(conn: &mut Connection) -> Result<(), StoreError> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_version (
@@ -253,4 +254,19 @@ pub(crate) fn run(conn: &mut Connection) -> Result<(), StoreError> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MIGRATIONS;
+
+    /// Versions are exactly `1..=N`: a duplicate would be skipped silently as already applied,
+    /// and a gap would let a later release apply a migration beneath a newer schema. Two branches
+    /// that each add one must take distinct numbers, and this fails whichever merges second.
+    #[test]
+    fn versions_are_exactly_one_to_n() {
+        let versions: Vec<i64> = MIGRATIONS.iter().map(|m| m.version).collect();
+        let expected: Vec<i64> = (1..=i64::try_from(MIGRATIONS.len()).unwrap()).collect();
+        assert_eq!(versions, expected);
+    }
 }
