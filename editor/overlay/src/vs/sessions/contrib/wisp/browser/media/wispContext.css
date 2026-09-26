@@ -1,0 +1,21 @@
+/*---------------------------------------------------------------------------------------------
+ *  wisp: not part of Code - OSS. Edit editor/overlay in the wisp repo, not this copy.
+ *--------------------------------------------------------------------------------------------*/
+
+/* The bar above a shared context file's content (note 10): theme tokens only. */
+
+.wisp-context-banner {
+	display: flex;
+	align-items: center;
+	box-sizing: border-box;
+	width: 100%;
+	height: 100%;
+	padding: 0 var(--vscode-spacing-size160);
+	overflow: hidden;
+	background-color: var(--vscode-editorWidget-background);
+	border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}

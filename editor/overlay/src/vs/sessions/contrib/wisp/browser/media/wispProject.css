@@ -86,6 +86,89 @@
 	overflow-wrap: anywhere;
 }
 
+.wisp-project-context {
+	margin-top: var(--vscode-spacing-size200);
+	padding-top: var(--vscode-spacing-size160);
+	border-top: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+}
+
+.wisp-project-context-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+}
+
+.wisp-project-context-title {
+	margin: 0;
+	font-size: var(--vscode-fontSize-label1);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	text-transform: uppercase;
+	color: var(--vscode-descriptionForeground);
+}
+
+.wisp-project-context-add {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 20px;
+	height: 20px;
+	padding: 0;
+	border: none;
+	border-radius: var(--vscode-cornerRadius-small);
+	background: none;
+	color: var(--vscode-icon-foreground);
+	cursor: pointer;
+}
+
+.wisp-project-context-add:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.wisp-project-context-add:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.wisp-project-context-empty {
+	margin: var(--vscode-spacing-size80) 0 0;
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.wisp-project-context-retry,
+.wisp-project-context-link {
+	padding: 0;
+	border: none;
+	background: none;
+	color: var(--vscode-textLink-foreground);
+	font-size: var(--vscode-fontSize-label1);
+	cursor: pointer;
+}
+
+.wisp-project-context-retry:hover,
+.wisp-project-context-link:hover {
+	color: var(--vscode-textLink-activeForeground);
+	text-decoration: underline;
+}
+
+.wisp-project-context-files {
+	margin: var(--vscode-spacing-size80) 0 0;
+	padding: 0;
+	list-style: none;
+}
+
+.wisp-project-context-file {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	margin-bottom: var(--vscode-spacing-size80);
+}
+
+.wisp-project-context-detail {
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+}
+
 .monaco-action-bar .action-item.wisp-composer-footer-item {
 	display: inline-flex;
 	align-items: center;
