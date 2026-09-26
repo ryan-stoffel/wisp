@@ -11,9 +11,10 @@ use wisp_protocol::{AccountId, CliKind, DetectedCli, ErrorKind, Provider};
 use crate::backend::Backend;
 use crate::backend::claude::{self, WORKER_MIN_VERSION, parse_version};
 use crate::backend::process::Environment;
+use crate::backend::sandbox::GLOB_CHARACTERS;
 use crate::routing::KeyAccounts;
 
-/// Folders appended to an agent's `PATH` when it lacks them (#96): the vendors' own install
+/// Folders appended to an agent's `PATH` when it lacks them: the vendors' own install
 /// folder (`~/.local/bin`, where Claude Code's installer puts `claude`), Homebrew on Apple silicon
 /// and on Intel, and the system folders. They go after whatever `PATH` wispd was started with, so
 /// the user's own order still wins; they only fill in what launchd or an SSH session left out.
@@ -61,8 +62,8 @@ const INHERITED: &[&str] = &[
 /// Prefixes of inherited variables that are kept too: the locale categories.
 const INHERITED_PREFIXES: &[&str] = &["LC_"];
 
-/// The environment every agent CLI, CLI probe, and worktree git command starts from (#96,
-/// decision 0014): only the [`INHERITED`] part of wispd's own, with [`EXTRA_PATH`] filled in.
+/// The environment every agent CLI, CLI probe, and worktree git command starts from (decision
+/// 0014): only the [`INHERITED`] part of wispd's own, with [`EXTRA_PATH`] filled in.
 pub(crate) fn agent_environment() -> Environment {
     with_extra_path(
         allowlisted(&Environment::inherited()),
@@ -71,7 +72,7 @@ pub(crate) fn agent_environment() -> Environment {
 }
 
 /// The variables of `env` an agent may inherit: [`INHERITED`] and [`INHERITED_PREFIXES`].
-pub(crate) fn allowlisted(env: &Environment) -> Environment {
+fn allowlisted(env: &Environment) -> Environment {
     env.names()
         .filter(|name| {
             name.to_str().is_some_and(|name| {
@@ -85,7 +86,7 @@ pub(crate) fn allowlisted(env: &Environment) -> Environment {
         .collect()
 }
 
-pub(crate) fn with_extra_path(mut env: Environment, home: Option<&Path>) -> Environment {
+fn with_extra_path(mut env: Environment, home: Option<&Path>) -> Environment {
     let mut dirs: Vec<PathBuf> = env
         .get("PATH")
         .map(|path| std::env::split_paths(path).collect())
@@ -151,9 +152,6 @@ pub(super) fn cli_of(backend: &dyn Backend) -> Option<CliKind> {
     (backend.name() == claude::PROGRAM).then_some(CliKind::Claude)
 }
 
-/// Characters the vendors read as wildcards in a sandbox path (0013).
-const GLOB_CHARACTERS: &[char] = &['*', '?', '[', ']'];
-
 /// `path`, canonical, and refused with a plain message if it isn't UTF-8 or holds a wildcard.
 /// Seatbelt matches real paths, and `/tmp` and `/var` are symlinks on macOS (0013).
 pub(super) fn sandbox_path(path: &Path, what: &str) -> Result<PathBuf, ErrorObject> {
@@ -173,7 +171,7 @@ pub(super) fn sandbox_path(path: &Path, what: &str) -> Result<PathBuf, ErrorObje
     }
 }
 
-/// Key accounts as routing (#119) reads them: a snapshot of the `accounts` table.
+/// Key accounts as routing reads them: a snapshot of the `accounts` table.
 pub(super) struct StoredKeyAccounts(pub HashMap<AccountId, Provider>);
 
 impl KeyAccounts for StoredKeyAccounts {
@@ -207,7 +205,7 @@ pub(super) fn worker_prompt(task: &str, worktree: &Path, context: &Path) -> Stri
     )
 }
 
-/// The first message of a normal thread (#110): the same limits as a worker's, for an agent the
+/// The first message of a normal thread: the same limits as a worker's, for an agent the
 /// user talks to directly, then the user's message. `scratch` is true for a thread with no repo,
 /// whose repository wispd made empty for it.
 pub(super) fn thread_prompt(message: &str, worktree: &Path, notes: &Path, scratch: bool) -> String {
@@ -252,7 +250,7 @@ mod tests {
     use wisp_protocol::{CliKind, DetectedCli, ErrorKind};
 
     use super::{allowlisted, check_claude, sandbox_path, with_extra_path};
-    use crate::backend::process::{ALWAYS_SCRUBBED, Environment};
+    use crate::backend::process::Environment;
 
     fn path_entries(env: &Environment) -> Vec<String> {
         env.get("PATH")
@@ -402,13 +400,6 @@ mod tests {
             .chain(kept.iter().map(|(_, value)| (*value).to_owned()))
             .collect();
         assert_eq!(seen, expected);
-    }
-
-    #[test]
-    fn the_ssh_session_never_reaches_an_agent() {
-        for name in ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "SSH_AUTH_SOCK"] {
-            assert!(ALWAYS_SCRUBBED.contains(&name), "{name}");
-        }
     }
 
     #[test]

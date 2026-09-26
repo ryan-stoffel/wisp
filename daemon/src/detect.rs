@@ -1,21 +1,15 @@
-//! Detecting installed vendor CLIs and their sign-in state (#114, decision record 0004).
+//! Detecting installed vendor CLIs and their sign-in state (decision record 0004).
 //!
-//! wispd never reads a CLI's credential files and never starts a sign-in. It only:
+//! wispd never reads a CLI's credential files and never starts a sign-in. It only resolves the
+//! binary on its own `PATH` ([`find_program`]), and runs the read-only status commands 0004
+//! lists through the same [`Launcher`] the agent backends use, with a timeout.
 //!
-//! - Resolves the binary on the `PATH` it itself uses ([`find_program`], #96), which runs
-//!   nothing.
-//! - Runs the read-only status commands 0004 lists, through the same [`Launcher`] and
-//!   environment scrubbing the agent backends use, with a timeout.
+//! The shape of `claude auth status` and `agent status --format json` is undocumented, so
+//! [`apply_json_status`] reads the fields it knows and tolerates everything else. A field wispd
+//! could not read is left `None`, and [`DetectedCli::note`] says why.
 //!
-//! The exact shape of `claude auth status` and `agent status --format json` is undocumented, so
-//! [`apply_json_status`] reads the fields these sources show and tolerates everything else,
-//! mirroring 0007's forward-compatible parsing rule. A field wispd could not read is left `None`
-//! rather than guessed, and [`DetectedCli::note`] says why when that happens.
-//!
-//! Plan/tier is available for Codex only through its `app-server`'s `account/read`, a JSON-RPC
-//! server on stdio rather than a one-shot command. [`probe_codex_plan`] does the smallest useful
-//! thing: one request, one response, then the process is killed. A real Codex backend (#122)
-//! will want a proper client with its own handshake; this is not it.
+//! Codex reports its plan only through its `app-server`'s `account/read`, so
+//! [`probe_codex_plan`] sends one request, reads one response, then kills the process.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -101,7 +95,7 @@ struct Ran {
     exit_code: Option<i32>,
 }
 
-/// Resolves `program` on `launcher`'s effective `PATH` (#96), without running it.
+/// Resolves `program` on `launcher`'s effective `PATH`, without running it.
 fn resolve(launcher: &Launcher, program: &str) -> Option<PathBuf> {
     let spec = ProcessSpec::new(program, "/");
     let env = launcher.environment(&spec);
@@ -123,14 +117,9 @@ fn not_installed(cli: CliKind) -> DetectedCli {
 
 fn installed(cli: CliKind, path: &Path) -> DetectedCli {
     DetectedCli {
-        cli,
         installed: true,
         path: Some(path.display().to_string()),
-        version: None,
-        signed_in: None,
-        auth_kind: None,
-        plan: None,
-        note: None,
+        ..not_installed(cli)
     }
 }
 
@@ -205,13 +194,11 @@ fn apply_json_status(detected: &mut DetectedCli, ran: &Ran) {
         .and_then(Value::as_str)
         .map(str::to_owned);
     if detected.signed_in == Some(true) {
-        detected.auth_kind = ["authType", "authKind", "loginType"]
+        let auth_kind = ["authType", "authKind", "loginType"]
             .iter()
             .find_map(|key| map.get(*key))
-            .and_then(Value::as_str)
-            .map_or(Some(AuthKind::Unknown), |value| {
-                Some(parse_auth_kind(value))
-            });
+            .and_then(Value::as_str);
+        detected.auth_kind = Some(auth_kind.map_or(AuthKind::Unknown, parse_auth_kind));
         detected.plan = ["subscriptionType", "plan", "tier"]
             .iter()
             .find_map(|key| map.get(*key))
@@ -260,9 +247,7 @@ async fn probe_claude(launcher: &Launcher, timeout: Duration) -> DetectedCli {
         Ok(ran) => apply_json_status(&mut detected, &ran),
         Err(note) => detected.note = Some(note),
     }
-    // #156 refuses a worker on a Claude Code older than the sandbox needs, so the version must be
-    // known; `auth status` doesn't always report it, and `--version` does ("2.1.281 (Claude
-    // Code)").
+    // A worker needs a known version; `auth status` doesn't always report it, `--version` does.
     if detected.version.is_none()
         && let Ok(ran) = run(launcher, "claude", &["--version"], timeout).await
         && ran.exit_code == Some(0)

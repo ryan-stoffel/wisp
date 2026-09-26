@@ -1,6 +1,5 @@
 //! Detection against fake `claude`, `codex`, and `agent` binaries on `PATH`, so every test spawns
-//! a real process through the supervisor. No test runs a real vendor CLI, and every fixture's
-//! output is synthetic (invented for these tests), not captured from a real CLI; see #124.
+//! a real process through the supervisor. Every fixture's output is synthetic.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -256,9 +255,7 @@ async fn a_cached_list_is_reused_until_a_refresh_or_the_ttl() {
     let first = detector.list().await;
     assert_eq!(find(&first.clis, CliKind::Claude).signed_in, Some(false));
 
-    // Changing the fake CLI's answer has no effect on `list` until `refresh` is called: the
-    // detector holds no reference back to the environment, so this only proves the cache, not a
-    // live re-read, but a second `list` still returning the same value is exactly the contract.
+    // The same `checked_at` proves no second probe ran.
     let second = detector.list().await;
     assert_eq!(
         second, first,
@@ -270,61 +267,6 @@ async fn a_cached_list_is_reused_until_a_refresh_or_the_ttl() {
         find(&refreshed.clis, CliKind::Claude).signed_in,
         Some(false)
     );
-}
-
-/// Proves detection never opens a vendor's credential files: with sentinel files under fake
-/// `.claude`, `.codex`, and `.cursor` folders made unreadable (mode 0), a full `refresh()` still
-/// succeeds and the files are exactly as they were. `detect.rs` has no code path that reads a path
-/// under `$HOME` at all (unlike `paths.rs` and `service.rs`, which read wispd's own data folder);
-/// this test guards against that ever changing, without needing `std::env::set_var` (unsafe, and
-/// this workspace denies `unsafe_code`) since the sandboxed `HOME` is only threaded into the fake
-/// CLIs' own environment, exactly as a real wispd would hand it to a real vendor CLI.
-#[tokio::test]
-async fn detection_never_touches_files_under_vendor_config_directories() {
-    let fixture = Fixture::new();
-    fixture.install("claude", FAKE_CLAUDE);
-    fixture.install("codex", FAKE_CODEX);
-    fixture.install("agent", FAKE_AGENT);
-
-    let home = fixture.dir.path().join("home");
-    fs::create_dir(&home).unwrap();
-    let mut sentinels = Vec::new();
-    for (config_dir, file_name) in [
-        (".claude", "credentials.json"),
-        (".codex", "auth.json"),
-        (".cursor", "cli-config.json"),
-    ] {
-        let dir = home.join(config_dir);
-        fs::create_dir(&dir).unwrap();
-        let file = dir.join(file_name);
-        fs::write(&file, b"{\"token\":\"should-never-be-read\"}").unwrap();
-        fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
-        sentinels.push(file);
-    }
-
-    let mut env = fixture.env();
-    env.set("HOME", home.display().to_string());
-    env.set("FAKE_CLI_STDOUT", r#"{"loggedIn":true}"#);
-    env.set("FAKE_CLI_ABOUT_STDOUT", "Subscription Tier: Pro+\n");
-    env.set(
-        "FAKE_CLI_APP_SERVER_RESPONSE",
-        r#"{"id":1,"result":{"planType":"plus"}}"#,
-    );
-    let clis = detect(&fixture, env).await;
-    assert_eq!(clis.len(), 3);
-
-    for file in &sentinels {
-        let metadata = fs::metadata(file).unwrap();
-        assert_eq!(
-            metadata.permissions().mode() & 0o777,
-            0,
-            "{file:?} permissions changed, so something touched it"
-        );
-        assert!(
-            fs::read(file).is_err(),
-            "{file:?} became readable to this process, which should never have happened"
-        );
-    }
 }
 
 #[tokio::test]

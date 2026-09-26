@@ -1,7 +1,5 @@
 //! The normalized events every backend turns its CLI's output into (0004's per-provider table).
-//!
-//! They serialize with a `kind` tag and camelCase fields, like 0007's `WispEvent`, so M3 can
-//! store them and map them to `agent.*` notifications without another translation.
+//! They serialize with a `kind` tag and camelCase fields, like 0007's `WispEvent`.
 
 use std::collections::BTreeMap;
 use std::ops::{Add, AddAssign};
@@ -121,11 +119,9 @@ pub enum Event {
         /// The follow-up's id.
         turn_id: TurnId,
     },
-    /// Routing (#119) started this run on a different account after the previous attempt failed
-    /// as [`FailureKind::NotSignedIn`] or [`FailureKind::RateLimited`]. Always the first event of
-    /// a run that has one, before [`Event::SessionStarted`]. Every event after this one, including
-    /// this run's own `Usage` and `RateLimit` events, belongs to `to_account`, not `from_account`:
-    /// a caller recording usage per account switches which account it charges here.
+    /// Routing started this run on a different account after the previous attempt failed as
+    /// [`FailureKind::NotSignedIn`] or [`FailureKind::RateLimited`]. Every event after this one
+    /// belongs to `to_account`, so a caller recording usage per account switches here.
     AccountFallback {
         /// The account the previous attempt used.
         from_account: String,
@@ -260,7 +256,7 @@ pub struct Failure {
     pub stderr_tail: Option<String>,
 }
 
-/// What kind of failure ended a run. Routing (#119) falls back to another account on
+/// What kind of failure ended a run. Routing falls back to another account on
 /// [`FailureKind::NotSignedIn`] and [`FailureKind::RateLimited`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -399,29 +395,19 @@ pub struct ModelUsage {
     pub usage: Usage,
 }
 
-/// A session's running usage totals per model, as the vendor counts them.
-///
-/// [`EventSink`](super::EventSink) keeps one per run, starting from the resumed session's
-/// totals. Vendors that report running totals (Codex's `turn.completed.usage`, which is
-/// cumulative for the thread, and Claude's `result.modelUsage`, which carries over into resumed
-/// sessions, 0004) go through [`CumulativeUsage::observe`], which turns them into deltas. Deltas
-/// that a vendor reports directly go through [`CumulativeUsage::record`].
+/// A session's running usage totals per model, as the vendor counts them. Running totals a vendor
+/// reports go through [`CumulativeUsage::observe`], which turns them into deltas; deltas go
+/// through [`CumulativeUsage::record`].
 #[derive(Clone, Debug, Default)]
 pub struct CumulativeUsage {
     totals: BTreeMap<Option<String>, Usage>,
 }
 
 impl CumulativeUsage {
-    /// A meter that has seen nothing.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// A meter that starts from `totals`, such as a resumed session's.
     #[must_use]
     pub fn with_baseline(totals: impl IntoIterator<Item = ModelUsage>) -> Self {
-        let mut meter = Self::new();
+        let mut meter = Self::default();
         for total in totals {
             *meter.totals.entry(total.model).or_default() += total.usage;
         }
@@ -655,7 +641,7 @@ mod tests {
 
     #[test]
     fn running_totals_become_deltas_per_model() {
-        let mut meter = CumulativeUsage::new();
+        let mut meter = CumulativeUsage::default();
         assert_eq!(
             meter.observe(Some("opus"), tokens(100, 10)).unwrap().usage,
             tokens(100, 10)
@@ -672,23 +658,11 @@ mod tests {
 
     #[test]
     fn a_total_that_went_down_counts_as_new() {
-        let mut meter = CumulativeUsage::new();
+        let mut meter = CumulativeUsage::default();
         meter.observe(None, tokens(100, 10));
         assert_eq!(
             meter.observe(None, tokens(7, 3)).unwrap().usage,
             tokens(7, 3)
-        );
-    }
-
-    #[test]
-    fn a_resumed_session_starts_from_its_baseline() {
-        let mut meter = CumulativeUsage::with_baseline([ModelUsage {
-            model: Some("opus".into()),
-            usage: tokens(100, 10),
-        }]);
-        assert_eq!(
-            meter.observe(Some("opus"), tokens(120, 15)).unwrap().usage,
-            tokens(20, 5)
         );
     }
 

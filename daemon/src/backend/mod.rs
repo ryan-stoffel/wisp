@@ -1,21 +1,12 @@
 //! Agent backends: one interface over the vendor CLIs that run agents (0004).
 //!
-//! A [`Backend`] starts a [`Run`] from a [`RunRequest`]. The run's CLI output arrives on an
-//! [`EventStream`] as normalized [`Event`]s, so M3's runner and M4's coordinator never see vendor
-//! differences. The adapters for Claude Code (#116), Codex (#122), and Cursor (#123) implement
-//! these traits on top of [`process`], and [`fake`] implements them for tests.
+//! A [`Backend`] starts a [`Run`] from a [`RunRequest`]; the CLI's output arrives on an
+//! [`EventStream`] as normalized [`Event`]s. The handle and the stream are separate values, so
+//! one task drains events while any connection can send or cancel.
 //!
-//! # Why trait objects, and no async methods
-//!
-//! Routing (#119) picks a backend per task at runtime and falls back to another, so backends live
-//! in one registry as `Arc<dyn Backend>`. M3's runner keeps each run's control handle by `runId`
-//! and calls [`Run::send`] and [`Run::cancel`] from whichever connection asks, while one task
-//! drains the run's events; so the handle (`Arc<dyn Run>`) and the stream are separate values.
-//!
-//! Neither trait has an async method, which keeps both `dyn`-compatible without boxed futures.
-//! [`Backend::start`] spawns the CLI and returns at once; everything after that, including a
-//! failure, arrives on the stream; and `send` and `cancel` only enqueue. The price is a virtual
-//! call per start, send, or cancel, never per event.
+//! Neither trait has an async method, which keeps both `dyn`-compatible without boxed futures:
+//! [`Backend::start`] spawns the CLI and returns at once, everything after that arrives on the
+//! stream, and `send` and `cancel` only enqueue.
 
 pub mod claude;
 pub mod event;
@@ -27,11 +18,8 @@ pub mod sandbox;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::task::{Context, Poll};
 
-use futures_util::Stream;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 pub use wisp_protocol::{RunId, TurnId};
@@ -63,7 +51,7 @@ pub trait Backend: Send + Sync {
     /// # Errors
     ///
     /// If the request is invalid or asks for something the backend can't do, or the CLI can't be
-    /// started. Routing (#119) can fall back to another backend on any of these.
+    /// started.
     fn start(&self, request: RunRequest) -> Result<Started, StartError>;
 }
 
@@ -114,9 +102,7 @@ pub struct RunRequest {
     /// The caller's id for the run (0007's `agent/start {runId}`).
     pub run_id: RunId,
     /// The caller's id for the prompt's turn, which the run's first [`Event::TurnStarted`] and
-    /// [`Event::TurnFinished`] carry. A message to an agent that has no live run, such as a Codex
-    /// subagent (0011's `agent/send`), becomes a resumed run whose prompt is the message and whose
-    /// `turn_id` is the message's.
+    /// [`Event::TurnFinished`] carry.
     pub turn_id: Option<TurnId>,
     /// Where the CLI runs: an absolute path to a directory, usually a worktree.
     pub cwd: PathBuf,
@@ -141,20 +127,9 @@ pub struct Resume {
     /// The session's id: an earlier run's [`Event::SessionStarted`] id.
     pub session_id: String,
     /// The session's running usage totals per model: the `usage_totals` of the last run of it
-    /// that finished. The caller stores them per session and passes them back here, so the new
-    /// run reports only what it adds, even for vendors whose totals carry over into a resumed
-    /// session (Claude, Codex) and across a wispd restart. Empty for a session with no usage.
+    /// that finished, so the new run reports only what it adds even though vendors carry totals
+    /// over into a resumed session.
     pub usage_totals: Vec<ModelUsage>,
-}
-
-impl Resume {
-    /// Resumes `session_id`, with no usage so far.
-    pub fn new(session_id: impl Into<String>) -> Self {
-        Self {
-            session_id: session_id.into(),
-            usage_totals: Vec::new(),
-        }
-    }
 }
 
 /// A follow-up message for a running agent.
@@ -173,18 +148,15 @@ pub enum ToolPolicy {
     /// Read-only tools, no hooks, no project settings: the coordinator's policy.
     NoWrite,
     /// Edits inside the working directory, and commands in the vendor's OS sandbox: a worker's
-    /// policy, bounded by the run's [`WorkerSandbox`] (0013).
-    ///
-    /// Backends never commit. Codex's `workspace-write` sandbox keeps `.git` read-only, even in a
-    /// linked worktree (0004), so M3's runner commits a worker's changes after its run's
-    /// [`Event::Finished`], for every backend alike.
+    /// policy, bounded by the run's [`WorkerSandbox`] (0013). Backends never commit; the runner
+    /// does, after [`Event::Finished`].
     WorkspaceWrite,
 }
 
 /// The account a run is charged to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountRef {
-    /// wispd's id for the account (#114, #117).
+    /// wispd's id for the account.
     pub id: String,
     /// How the CLI authenticates.
     pub credential: Credential,
@@ -200,13 +172,11 @@ pub enum Credential {
         /// `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, or the CLI's default.
         config_home: Option<PathBuf>,
     },
-    /// An API key from the Keychain (#117), injected into the CLI's environment at spawn only.
+    /// An API key from the Keychain, injected into the CLI's environment at spawn only.
     ApiKey(ApiKey),
 }
 
-/// An API key. Its `Debug` hides it, it doesn't serialize, and it zeroizes its buffer once the
-/// run that needed it (#118's [`key_account::resolve`]) is done with it, like
-/// [`wisp_protocol::RawKey`] does for the same key on its way in from the editor.
+/// An API key. Its `Debug` hides it, it doesn't serialize, and it zeroizes its buffer on drop.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ApiKey(String);
 
@@ -238,25 +208,9 @@ impl Drop for ApiKey {
 
 /// What a backend can do.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "independent features, not states of one thing"
-)]
 pub struct Capabilities {
-    /// [`Run::send`] works.
-    pub follow_ups: bool,
-    /// [`RunRequest::resume`] works.
-    pub resume: bool,
-    /// It can run the coordinator: no-write mode with wispd's MCP tools (0004: Claude Code and
-    /// Codex, not Cursor).
-    pub coordinator: bool,
-    /// Its usage includes a cost.
-    pub reports_cost: bool,
-    /// Its runs report limit windows.
-    pub rate_limits: bool,
-    /// It enforces the worker sandbox (0013) for a [`ToolPolicy::WorkspaceWrite`] run, so M3's
-    /// runner may start workers on it. Codex and Cursor join once #122 and #123 implement their
-    /// parts of 0013.
+    /// It enforces the worker sandbox (0013) for a [`ToolPolicy::WorkspaceWrite`] run, so the
+    /// runner may start workers on it.
     pub worker_sandbox: bool,
 }
 
@@ -441,9 +395,7 @@ impl EventSink {
         };
         let stream = EventStream {
             events: receiver,
-            usage: Usage::default(),
-            outcome: None,
-            usage_totals: Vec::new(),
+            done: false,
         };
         (sink, stream)
     }
@@ -496,19 +448,9 @@ impl EventSink {
         .await
     }
 
-    /// Whether the stream has ended.
-    #[must_use]
-    pub fn is_finished(&self) -> bool {
-        self.finished
-    }
-
     /// Discards the running usage total this sink has summed so far and starts over from
-    /// `baseline`, as if nothing had been recorded before it.
-    ///
-    /// For a sink that outlives one account, such as routing's (#119) fallback: once forwarding
-    /// switches to a different run's events, those events belong to a different session, and the
-    /// `Finished` this sink eventually sends must report only that session's own totals, from its
-    /// own baseline, not the account it fell back from added in.
+    /// `baseline`: for routing's fallback, whose `Finished` must report only the fallback
+    /// session's own totals.
     pub fn reset_usage(&mut self, baseline: Vec<ModelUsage>) {
         self.usage = CumulativeUsage::with_baseline(baseline);
     }
@@ -528,7 +470,7 @@ impl EventSink {
     }
 }
 
-/// A run's events. It ends after exactly one [`Event::Finished`], and it sums the run's usage.
+/// A run's events. It ends after exactly one [`Event::Finished`].
 ///
 /// If the backend stops without finishing, for example because its task panicked, the stream
 /// ends with a [`FailureKind::Internal`] failure, so a consumer always sees an outcome. That
@@ -536,239 +478,96 @@ impl EventSink {
 #[derive(Debug)]
 pub struct EventStream {
     events: mpsc::Receiver<Event>,
-    usage: Usage,
-    outcome: Option<Outcome>,
-    usage_totals: Vec<ModelUsage>,
+    done: bool,
 }
 
 impl EventStream {
-    /// The next event, or `None` after [`Event::Finished`].
+    /// The next event, or `None` after [`Event::Finished`]. Cancel-safe.
     pub async fn next(&mut self) -> Option<Event> {
-        std::future::poll_fn(|cx| Pin::new(&mut *self).poll_next(cx)).await
-    }
-
-    /// The sum of the run's [`Event::Usage`] deltas so far.
-    #[must_use]
-    pub fn usage(&self) -> Usage {
-        self.usage
-    }
-
-    /// How the run ended, once [`Event::Finished`] has been read.
-    #[must_use]
-    pub fn outcome(&self) -> Option<&Outcome> {
-        self.outcome.as_ref()
-    }
-
-    /// The session's usage totals from [`Event::Finished`], once it has been read.
-    #[must_use]
-    pub fn usage_totals(&self) -> &[ModelUsage] {
-        &self.usage_totals
-    }
-}
-
-impl Stream for EventStream {
-    type Item = Event;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Event>> {
-        if self.outcome.is_some() {
-            return Poll::Ready(None);
+        if self.done {
+            return None;
         }
-        let event = match self.events.poll_recv(cx) {
-            Poll::Pending => return Poll::Pending,
-            Poll::Ready(Some(event)) => event,
-            Poll::Ready(None) => Event::Finished {
-                outcome: Outcome::Failed(Failure {
-                    failure: FailureKind::Internal,
-                    message: "the backend stopped without finishing the run".to_owned(),
-                    exit: None,
-                    stderr_tail: None,
-                }),
-                usage_totals: Vec::new(),
-            },
-        };
-        match &event {
-            Event::Usage(delta) => self.usage += delta.usage,
-            Event::Finished {
-                outcome,
-                usage_totals,
-            } => {
-                self.outcome = Some(outcome.clone());
-                self.usage_totals.clone_from(usage_totals);
-                self.events.close();
-            }
-            _ => {}
+        let event = self.events.recv().await.unwrap_or_else(|| Event::Finished {
+            outcome: Outcome::Failed(Failure {
+                failure: FailureKind::Internal,
+                message: "the backend stopped without finishing the run".to_owned(),
+                exit: None,
+                stderr_tail: None,
+            }),
+            usage_totals: Vec::new(),
+        });
+        if event.is_terminal() {
+            self.done = true;
+            self.events.close();
         }
-        Poll::Ready(Some(event))
+        Some(event)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use super::{Event, EventSink, EventStream, FailureKind, ModelUsage, Outcome, Usage};
 
-    use super::{
-        Backend, CancelSwitch, Event, EventSink, FailureKind, FollowUp, ModelUsage, Outcome, Run,
-        RunHandle, RunId, SendError, TurnId, Usage,
-    };
-
-    fn input(n: u64) -> Usage {
-        Usage {
-            input_tokens: n,
-            ..Usage::default()
-        }
+    fn input(n: u64) -> Event {
+        Event::Usage(ModelUsage {
+            model: None,
+            usage: Usage {
+                input_tokens: n,
+                ..Usage::default()
+            },
+        })
     }
 
-    #[test]
-    fn the_traits_are_object_safe() {
-        fn takes(_: Option<Arc<dyn Backend>>, _: Option<Arc<dyn Run>>) {}
-        takes(None, None);
-    }
-
-    #[test]
-    fn follow_ups_are_idempotent_on_their_turn_id() {
-        let (handle, mut control) = RunHandle::new(RunId::generate(), true, CancelSwitch::new());
-        let turn = FollowUp {
-            turn_id: TurnId::generate(),
-            text: "and the tests".into(),
-        };
-        handle.send(turn.clone()).unwrap();
-        handle.send(turn.clone()).unwrap();
-        assert_eq!(control.try_recv().unwrap(), turn);
-        assert!(control.try_recv().is_err(), "sent once");
-        assert_eq!(
-            handle.send(FollowUp {
-                text: "something else".into(),
-                ..turn.clone()
-            }),
-            Err(SendError::IdConflict)
-        );
-        drop(control);
-        assert_eq!(
-            handle.send(FollowUp {
-                turn_id: TurnId::generate(),
-                text: "late".into(),
-            }),
-            Err(SendError::Finished)
-        );
-        assert_eq!(
-            handle.send(turn),
-            Err(SendError::Finished),
-            "a retry after the run ended must not claim the message arrived"
-        );
-    }
-
-    #[test]
-    fn a_backend_without_follow_ups_refuses_them() {
-        let (handle, _control) = RunHandle::new(RunId::generate(), false, CancelSwitch::new());
-        assert_eq!(
-            handle.send(FollowUp {
-                turn_id: TurnId::generate(),
-                text: "hi".into()
-            }),
-            Err(SendError::Unsupported)
-        );
-    }
-
-    #[test]
-    fn cancel_flips_the_switch_once() {
-        let switch = CancelSwitch::new();
-        let (handle, _control) = RunHandle::new(RunId::generate(), true, switch.clone());
-        assert!(!switch.is_cancelled());
-        handle.cancel();
-        handle.cancel();
-        assert!(switch.is_cancelled());
-    }
-
-    #[tokio::test]
-    async fn the_stream_ends_after_one_finished_and_sums_usage() {
-        let (mut sink, mut stream) = EventSink::channel(8, Vec::new());
-        let delta = |n| {
-            Event::Usage(ModelUsage {
-                model: None,
-                usage: input(n),
-            })
-        };
-        sink.emit(delta(3)).await.unwrap();
-        sink.emit(delta(4)).await.unwrap();
-        sink.finish(Outcome::Cancelled).await.unwrap();
-        sink.emit(delta(100)).await.unwrap();
-        sink.finish(Outcome::Completed { result: None })
-            .await
-            .unwrap();
-        assert!(sink.is_finished());
+    async fn all(mut stream: EventStream) -> Vec<Event> {
         let mut events = Vec::new();
         while let Some(event) = stream.next().await {
             events.push(event);
         }
+        events
+    }
+
+    #[tokio::test]
+    async fn the_stream_ends_after_one_finished_and_sums_usage() {
+        let (mut sink, stream) = EventSink::channel(8, Vec::new());
+        sink.emit(input(3)).await.unwrap();
+        sink.emit(input(4)).await.unwrap();
+        sink.finish(Outcome::Cancelled).await.unwrap();
+        sink.emit(input(100)).await.unwrap();
+        sink.finish(Outcome::Completed { result: None })
+            .await
+            .unwrap();
+        let events = all(stream).await;
         assert_eq!(events.len(), 3);
-        assert_eq!(stream.outcome(), Some(&Outcome::Cancelled));
-        assert_eq!(stream.usage().input_tokens, 7);
         assert_eq!(
-            stream.usage_totals(),
-            [ModelUsage {
-                model: None,
-                usage: input(7)
-            }]
+            events[2],
+            Event::Finished {
+                outcome: Outcome::Cancelled,
+                usage_totals: vec![ModelUsage {
+                    model: None,
+                    usage: Usage {
+                        input_tokens: 7,
+                        ..Usage::default()
+                    },
+                }],
+            }
         );
     }
 
     #[tokio::test]
     async fn resetting_usage_drops_what_was_summed_before_it() {
-        let (mut sink, mut stream) = EventSink::channel(8, Vec::new());
-        sink.emit(Event::Usage(ModelUsage {
-            model: None,
-            usage: input(100),
-        }))
-        .await
-        .unwrap();
+        let (mut sink, stream) = EventSink::channel(8, Vec::new());
+        sink.emit(input(100)).await.unwrap();
         sink.reset_usage(Vec::new());
-        sink.emit(Event::Usage(ModelUsage {
-            model: None,
-            usage: input(4),
-        }))
-        .await
-        .unwrap();
+        sink.emit(input(4)).await.unwrap();
         sink.finish(Outcome::Completed { result: None })
             .await
             .unwrap();
-        while stream.next().await.is_some() {}
+        let Some(Event::Finished { usage_totals, .. }) = all(stream).await.pop() else {
+            panic!("no Finished");
+        };
         assert_eq!(
-            stream.usage_totals(),
-            [ModelUsage {
-                model: None,
-                usage: input(4)
-            }],
+            usage_totals[0].usage.input_tokens, 4,
             "the reset total, not 104"
-        );
-    }
-
-    #[tokio::test]
-    async fn running_totals_from_a_resumed_session_count_only_what_is_new() {
-        let baseline = vec![ModelUsage {
-            model: Some("opus".into()),
-            usage: input(1000),
-        }];
-        let (mut sink, mut stream) = EventSink::channel(8, baseline);
-        sink.observe_total(Some("opus"), input(1200)).await.unwrap();
-        sink.observe_total(Some("opus"), input(1200)).await.unwrap();
-        sink.observe_total(Some("opus"), input(1250)).await.unwrap();
-        sink.finish(Outcome::Completed { result: None })
-            .await
-            .unwrap();
-        let mut deltas = Vec::new();
-        while let Some(event) = stream.next().await {
-            if let Event::Usage(delta) = event {
-                deltas.push(delta.usage.input_tokens);
-            }
-        }
-        assert_eq!(deltas, [200, 50]);
-        assert_eq!(stream.usage().input_tokens, 250);
-        assert_eq!(
-            stream.usage_totals(),
-            [ModelUsage {
-                model: Some("opus".into()),
-                usage: input(1250)
-            }]
         );
     }
 

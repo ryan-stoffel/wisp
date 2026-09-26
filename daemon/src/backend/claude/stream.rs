@@ -494,9 +494,8 @@ fn api_error_kind(error: &str) -> FailureKind {
     }
 }
 
-/// Whether a failed turn's text says the CLI isn't signed in, which the headless docs say is
-/// reported as the result (0004 [11]).
-fn signed_out(result: &str) -> bool {
+/// Whether a failed turn's text or stderr says the CLI isn't signed in (0004 [11]).
+pub(super) fn signed_out(result: &str) -> bool {
     let result = result.to_ascii_lowercase();
     result.contains("not logged in") || result.contains("/login")
 }
@@ -572,7 +571,7 @@ fn micros(usd: f64) -> Option<u64> {
 
 /// `utilization` as a percentage. The SDK types don't say its scale; `get_usage` reports 0 to
 /// 100, while the rate limit event is taken to be a fraction from 0 to 1. Until a recorded
-/// transcript settles it (#124), a value above 1 is read as a percentage already.
+/// transcript settles it, a value above 1 is read as a percentage already.
 fn percent(utilization: f64) -> f64 {
     if utilization <= 1.0 {
         utilization * 100.0

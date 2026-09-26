@@ -1,5 +1,5 @@
-//! `agent/diff` and `agent/file` (#157): what a reviewer sees of a run, read from git's objects
-//! through the worktree's pinned git folder (#166). Both compare the run's latest commit, the one
+//! `agent/diff` and `agent/file`: what a reviewer sees of a run, read from git's objects
+//! through the worktree's pinned git folder. Both compare the run's latest commit, the one
 //! `agent/accept` merges, with its worktree's base, so they never need the run's actor and never
 //! touch the worktree's index or files while its agent runs.
 
@@ -11,14 +11,15 @@ use wisp_protocol::{
     AgentDiffFile, AgentDiffResult, AgentDiffStats, AgentFileParams, AgentFileResult,
     AgentFileSide, AgentFileStatus, ErrorKind, RunId,
 };
-use wisp_store::{Run as RunRow, Worktree};
+use wisp_store::Worktree;
 
-use super::{convert, run_accepted, run_not_found, store, store_error};
+use super::{convert, run_accepted, run_not_found, store, store_error, worktree_failed};
 use crate::server::Daemon;
-use crate::worktree::{ChangeStatus, MAX_BLOB_BYTES, WorktreeError, validate_repo_path};
+use crate::worktree::{ChangeStatus, MAX_BLOB_BYTES, validate_repo_path};
 
-/// A run's row and worktree, if it can still be reviewed.
-async fn reviewable(daemon: &Arc<Daemon>, id: RunId) -> Result<(RunRow, Worktree), ErrorObject> {
+/// A run's head (its latest commit, or its base before it has one) and worktree, if it can still
+/// be reviewed.
+async fn reviewable(daemon: &Arc<Daemon>, id: RunId) -> Result<(String, Worktree), ErrorObject> {
     let (row, worktree) = store(daemon, move |db| {
         let row = db
             .get_run(id.into())
@@ -46,11 +47,11 @@ async fn reviewable(daemon: &Arc<Daemon>, id: RunId) -> Result<(RunRow, Worktree
             ),
         ));
     }
-    Ok((row, worktree))
-}
-
-fn worktree_failed(error: &WorktreeError) -> ErrorObject {
-    ErrorObject::wisp(ErrorKind::WorktreeFailed, error.to_string())
+    let head = row
+        .state
+        .commit_sha
+        .unwrap_or_else(|| worktree.base.clone());
+    Ok((head, worktree))
 }
 
 fn file_status(status: &ChangeStatus) -> AgentFileStatus {
@@ -67,12 +68,7 @@ fn file_status(status: &ChangeStatus) -> AgentFileStatus {
 
 /// `agent/diff`.
 pub(crate) async fn diff(daemon: &Arc<Daemon>, id: RunId) -> Result<AgentDiffResult, ErrorObject> {
-    let (row, worktree) = reviewable(daemon, id).await?;
-    let head = row
-        .state
-        .commit_sha
-        .clone()
-        .unwrap_or_else(|| worktree.base.clone());
+    let (head, worktree) = reviewable(daemon, id).await?;
     let diff = daemon
         .agents
         .worktrees
@@ -127,13 +123,9 @@ pub(crate) async fn file(
     if side == AgentFileSide::Unknown {
         return Err(ErrorObject::invalid_params("side must be base or head"));
     }
-    let (row, worktree) = reviewable(daemon, run_id).await?;
+    let (head, worktree) = reviewable(daemon, run_id).await?;
     let commit = match side {
-        AgentFileSide::Head => row
-            .state
-            .commit_sha
-            .clone()
-            .unwrap_or_else(|| worktree.base.clone()),
+        AgentFileSide::Head => head,
         _ => worktree.base.clone(),
     };
     let blob = daemon

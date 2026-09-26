@@ -1,17 +1,9 @@
-//! Turning a stored key account into a run's [`Credential`] (#118).
+//! Turning a stored key account into a run's [`Credential`].
 //!
-//! A key account (#117) names a [`Provider`] and an [`AccountId`]; the key itself lives in the
-//! [`KeyStore`]. [`resolve`] reads it at the moment a run is about to start and wraps it as the
-//! [`Credential`] its backend takes. The caller drops the result once
-//! [`Backend::start`](super::Backend::start) has spawned the CLI: [`ApiKey`]'s `Drop` zeroizes
-//! the key itself, and the copies the spawn path makes of it along the way
-//! (`backend::process::Environment`'s entries, and `spawn_session`'s own buffers) zeroize
-//! themselves the same way once each is done with its copy.
-//!
-//! Only Anthropic has a backend today (Claude Code, #116), so [`resolve`] only has that one arm.
-//! `OpenAI` (#122) and Cursor (#123) are wired the same way once their backends exist; until then
-//! this is the seam: add a `Provider::Openai` or `Provider::Cursor` arm here, the same shape as
-//! Anthropic's.
+//! A key account names a [`Provider`] and an [`AccountId`]; the key itself lives in the
+//! [`KeyStore`]. [`resolve`] reads it just before a run starts. The caller drops the result once
+//! [`Backend::start`](super::Backend::start) has spawned the CLI, and [`ApiKey`]'s `Drop`
+//! zeroizes the key. Only Anthropic has a backend today.
 
 use wisp_protocol::{AccountId, Provider};
 
@@ -92,8 +84,7 @@ mod tests {
 
     #[test]
     fn a_locked_keychain_is_keychain_unavailable() {
-        // security_framework_sys::base::errSecInteractionNotAllowed: nothing can unlock the
-        // Keychain to answer, such as a headless session (0004, 0007, #91).
+        // errSecInteractionNotAllowed: nothing can unlock the Keychain, as in a headless session.
         const ERR_SEC_INTERACTION_NOT_ALLOWED: i32 = -25308;
 
         struct LockedStore;

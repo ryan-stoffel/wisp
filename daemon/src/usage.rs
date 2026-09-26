@@ -39,7 +39,7 @@ pub fn record_event(
         // `usage_totals` is empty only when the vendor's own totals are genuinely empty (a
         // fresh session that used nothing, in which case there is no baseline to lose), or when
         // `EventStream` synthesizes this event because the backend task died without ever
-        // calling `EventSink::finish` (`backend/mod.rs`'s `poll_next`). In the second case the
+        // calling `EventSink::finish` (`EventStream::next` in `backend/mod.rs`). In the second case the
         // session may already have a real baseline recorded from before the crash, and replacing
         // it with nothing would make the next resume start from zero and double-count every
         // delta the vendor's cumulative total already carries. Skipping the write leaves the

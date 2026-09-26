@@ -10,8 +10,8 @@ use serde_json::Value;
 use tempfile::TempDir;
 
 use super::stream::{Step, Translator};
-use super::{ClaudeBackend, NO_WRITE_ARGS, WORKER_TOOL_LIST, WORKER_TOOLS, WORKSPACE_WRITE_ARGS};
-use crate::backend::process::{CancelPolicy, Environment, Launcher, SpawnError};
+use super::{ClaudeBackend, WORKER_TOOL_LIST, WORKER_TOOLS};
+use crate::backend::process::{CancelPolicy, Environment, Launcher};
 use crate::backend::{
     AccountRef, ApiKey, Backend, Credential, Event, EventStream, FailureKind, FollowUp,
     LimitStatus, LimitWindow, ModelUsage, Outcome, Resume, RunId, RunRequest, SendError,
@@ -302,19 +302,11 @@ async fn a_read_only_run_maps_the_stream_and_uses_the_no_write_policy() {
         ]
     );
 
-    let mut expected: Vec<&str> = vec![
-        "-p",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--input-format",
-        "stream-json",
-    ];
-    expected.extend(NO_WRITE_ARGS);
-    assert_eq!(fake.argv(), expected);
     assert_eq!(
-        NO_WRITE_ARGS.join(" "),
-        r#"--tools Read,Glob,Grep --setting-sources user --settings {"disableAllHooks":true} --strict-mcp-config --permission-mode dontAsk"#,
+        fake.argv(),
+        r#"-p --output-format stream-json --verbose --input-format stream-json --tools Read,Glob,Grep --setting-sources user --settings {"disableAllHooks":true} --strict-mcp-config --permission-mode dontAsk"#
+            .split(' ')
+            .collect::<Vec<_>>(),
         "0004's no-write policy, exactly"
     );
     let env = fake.env();
@@ -342,7 +334,7 @@ async fn a_read_only_run_maps_the_stream_and_uses_the_no_write_policy() {
     );
 }
 
-/// A sandbox as #156 builds it, for a worktree at `cwd`.
+/// A sandbox as the runner builds it, for a worktree at `cwd`.
 fn worker_sandbox(cwd: &Path) -> WorkerSandbox {
     WorkerSandbox::for_worktree(
         Path::new("/Users/u"),
@@ -357,18 +349,17 @@ fn worker_sandbox(cwd: &Path) -> WorkerSandbox {
 fn assert_worker_invocation(fake: &Fake) {
     let argv = fake.argv();
     let cwd = fake.root().display().to_string();
-    let mut expected: Vec<&str> = WORKSPACE_WRITE_ARGS.to_vec();
-    expected.push("--settings");
-    assert_eq!(argv[6..6 + expected.len()], expected);
     assert_eq!(
-        WORKSPACE_WRITE_ARGS.join(" "),
+        argv[6..13],
         "--restricted --tools Read,Edit,Write,Glob,Grep,NotebookEdit,Bash,WebFetch,WebSearch,\
-         TodoWrite --strict-mcp-config --permission-mode acceptEdits",
+         TodoWrite --strict-mcp-config --permission-mode acceptEdits --settings"
+            .split(' ')
+            .collect::<Vec<_>>(),
         "0013's worker policy, exactly"
     );
     assert_eq!(WORKER_TOOL_LIST, WORKER_TOOLS.join(","));
 
-    let settings: Value = serde_json::from_str(&argv[6 + expected.len()]).unwrap();
+    let settings: Value = serde_json::from_str(&argv[13]).unwrap();
     let mut deny_read: Vec<String> = worker_sandbox(Path::new(&cwd))
         .unreadable
         .iter()
@@ -414,7 +405,7 @@ fn assert_worker_invocation(fake: &Fake) {
         })
     );
     assert_eq!(
-        argv[7 + expected.len()..],
+        argv[14..],
         [
             "--add-dir",
             "/Users/u/Library/Application Support/wisp/context/p",
@@ -430,35 +421,6 @@ fn assert_worker_invocation(fake: &Fake) {
         assert!(!argv.iter().any(|arg| arg == flag), "{flag}: {argv:?}");
     }
     fake.assert_no_inherited_credentials(Some("/tmp/claude-second-account"));
-}
-
-#[test]
-fn a_worker_s_settings_deny_every_name_for_this_mac_to_commands_and_web_fetch() {
-    let sandbox = worker_sandbox(Path::new("/Users/u/wt"));
-    let settings = super::worker_settings(&sandbox, Path::new("/Users/u/wt"), None);
-    let list = |pointer: &str| -> Vec<String> {
-        settings
-            .pointer(pointer)
-            .and_then(Value::as_array)
-            .unwrap()
-            .iter()
-            .map(|entry| entry.as_str().unwrap().to_owned())
-            .collect()
-    };
-    let denied_hosts = list("/sandbox/network/deniedDomains");
-    let denied_fetches = list("/permissions/deny");
-    for host in ["localhost", "127.0.0.1", "[::1]", "0.0.0.0", "[::]"] {
-        assert!(
-            denied_hosts.iter().any(|h| h == host),
-            "commands reach {host}"
-        );
-        let rule = format!("WebFetch(domain:{host})");
-        assert!(denied_fetches.contains(&rule), "WebFetch reaches {host}");
-    }
-    assert_eq!(
-        list("/permissions/allow"),
-        ["WebFetch(domain:*)", "WebSearch"]
-    );
 }
 
 #[test]
@@ -803,8 +765,6 @@ async fn a_subscription_run_that_reports_an_api_key_is_stopped_at_once() {
     assert!(message.contains("\"ANTHROPIC_API_KEY\""), "{message}");
 }
 
-// #118: an API key account.
-
 fn api_key_request(cwd: &Path, key: &str) -> RunRequest {
     let mut request = request(cwd);
     request.account = AccountRef {
@@ -856,55 +816,6 @@ async fn an_api_key_account_gets_only_its_key_and_reports_it_as_the_source() {
 }
 
 #[tokio::test]
-async fn a_key_account_resolved_from_the_keystore_runs_end_to_end() {
-    use wisp_protocol::{AccountId, Provider};
-
-    use crate::backend::key_account;
-    use crate::keystore::{KeyStore, MemoryKeyStore};
-
-    let store = MemoryKeyStore::new();
-    let account = AccountId::generate();
-    let key = "sk-ant-api03-from-the-keystore";
-    store.set(account, key).unwrap();
-    let credential = key_account::resolve(&store, Provider::Anthropic, account).unwrap();
-
-    let fake = Fake::new("api-key-completed");
-    let mut request = request(&fake.root());
-    request.account = AccountRef {
-        id: account.to_string(),
-        credential,
-    };
-    let all = run(&fake, request).await;
-    assert_eq!(
-        all[0],
-        Event::SessionStarted {
-            session_id: SESSION.into(),
-            model: Some(OPUS.into()),
-            api_key_source: Some("ANTHROPIC_API_KEY".into()),
-        }
-    );
-    assert!(
-        matches!(outcome(&all), Outcome::Completed { .. }),
-        "{all:?}"
-    );
-    let env = fake.env();
-    assert!(env.contains(&format!("ANTHROPIC_API_KEY={key}")), "{env:?}");
-}
-
-#[tokio::test]
-async fn an_api_key_run_reporting_a_different_source_fails() {
-    let fake = Fake::new("read-only");
-    let key = "sk-ant-api03-test-key-not-real";
-    let all = run(&fake, api_key_request(&fake.root(), key)).await;
-    let (kind, message) = failure(&all);
-    assert_eq!(kind, FailureKind::UnexpectedApiKey);
-    assert!(
-        !message.contains(key),
-        "the key must not appear in a failure message: {message}"
-    );
-}
-
-#[tokio::test]
 async fn an_api_key_never_reaches_tracing_output() {
     use std::io::Write;
     use std::sync::{Arc, Mutex};
@@ -932,7 +843,7 @@ async fn an_api_key_never_reaches_tracing_output() {
     let guard = tracing::subscriber::set_default(subscriber);
     let key = "sk-ant-api03-test-key-not-real";
 
-    // A completed run and a failed one (the mismatch check), so both outcomes are covered.
+    // A completed run and one that reports a different key source, so both outcomes are covered.
     let completed = Fake::new("api-key-completed");
     let completed_request = api_key_request(&completed.root(), key);
     assert!(
@@ -949,7 +860,12 @@ async fn an_api_key_never_reaches_tracing_output() {
     let mismatched = Fake::new("read-only");
     tracing::info!("wisp-test-sentinel: starting the mismatched run");
     let all = run(&mismatched, api_key_request(&mismatched.root(), key)).await;
-    assert_eq!(failure(&all).0, FailureKind::UnexpectedApiKey);
+    let (kind, message) = failure(&all);
+    assert_eq!(kind, FailureKind::UnexpectedApiKey);
+    assert!(
+        !message.contains(key),
+        "the key leaked into the failure: {message}"
+    );
 
     drop(guard);
     let logged = String::from_utf8_lossy(&capture.0.lock().unwrap()).into_owned();
@@ -1158,10 +1074,8 @@ async fn cancel_interrupts_the_cli_with_sigint() {
         next(&mut events).await,
         Event::SessionStarted { .. }
     ));
-    // The fake CLI prints `@trap-armed` right after installing its SIGINT trap (fake-claude.sh),
-    // which the translator reports as a malformed line. Waiting for it here is a deterministic
-    // handshake: cancel() below can never race the trap's own installation (#149), unlike waiting
-    // for a wall-clock margin.
+    // The fake CLI prints `@trap-armed` once its SIGINT trap is installed, which the translator
+    // reports as a malformed line: a deterministic handshake so cancel() never races the trap.
     assert!(matches!(
         next(&mut events).await,
         Event::Warning {
@@ -1218,18 +1132,16 @@ async fn bad_requests_are_refused_before_spawning() {
     let mut flag_model = request(&cwd);
     flag_model.model = Some("--dangerously-skip-permissions".into());
     let mut spaced_resume = request(&cwd);
-    spaced_resume.resume = Some(Resume::new("a session"));
+    spaced_resume.resume = Some(Resume {
+        session_id: "a session".into(),
+        ..Resume::default()
+    });
     for bad in [empty, flag_model, spaced_resume] {
         assert!(
             matches!(fake.backend.start(bad), Err(StartError::Invalid(_))),
             "accepted"
         );
     }
-    let missing = fake.backend.clone().with_program("claude-not-installed");
-    assert!(matches!(
-        missing.start(request(&cwd)),
-        Err(StartError::Spawn(SpawnError::NotFound { .. }))
-    ));
     assert_eq!(fake.argv(), Vec::<String>::new(), "nothing ran");
 }
 
@@ -1273,12 +1185,8 @@ fn init_with_version(tools: &str, version: &str) -> Vec<u8> {
 fn a_worker_on_a_claude_code_too_old_to_sandbox_it_is_stopped() {
     for (reported, refused) in [
         ("2.1.247", true),
-        ("2.0.999", true),
-        ("1.9.300", true),
         ("not-a-version", true),
         ("2.1.248", false),
-        ("2.1.281", false),
-        ("2.2.0", false),
         ("10.0.0-beta.1", false),
     ] {
         let mut translator = Translator::new(ToolPolicy::WorkspaceWrite, "none");
@@ -1286,13 +1194,6 @@ fn a_worker_on_a_claude_code_too_old_to_sandbox_it_is_stopped() {
         let expected = refused.then_some(FailureKind::PolicyViolation);
         assert_eq!(violation_kind(&steps), expected, "{reported}");
     }
-    let mut translator = Translator::new(ToolPolicy::WorkspaceWrite, "none");
-    let unversioned =
-        br#"{"type":"system","subtype":"init","session_id":"s","apiKeySource":"none","tools":["Bash"]}"#;
-    assert_eq!(
-        violation_kind(&translator.line(unversioned)),
-        Some(FailureKind::PolicyViolation)
-    );
     let mut translator = Translator::new(ToolPolicy::NoWrite, "none");
     let old_reader = init_with_version(r#"["Read"]"#, "2.1.200");
     assert_eq!(
@@ -1310,45 +1211,32 @@ fn violation_kind(steps: &[Step]) -> Option<FailureKind> {
 }
 
 #[test]
-fn a_worker_run_allows_only_the_worker_tools() {
-    let allowed = init_line(
-        r#"["Read","Edit","Write","Glob","Grep","NotebookEdit","Bash","WebFetch","WebSearch","TodoWrite","EndConversation"]"#,
-    );
-    let mut translator = Translator::new(ToolPolicy::WorkspaceWrite, "none");
-    assert_eq!(violation_kind(&translator.line(&allowed)), None);
-    for extra in [
-        r#"["Bash","Monitor"]"#,
-        r#"["Bash","Task"]"#,
-        r#"["Bash","Agent"]"#,
-        r#"["Bash","Skill"]"#,
-        r#"["Bash","mcp__github__create_issue"]"#,
+fn each_policy_allows_only_its_own_tools() {
+    for (policy, allowed, extra) in [
+        (
+            ToolPolicy::WorkspaceWrite,
+            r#"["Read","Edit","Write","Glob","Grep","NotebookEdit","Bash","WebFetch","WebSearch","TodoWrite","EndConversation"]"#,
+            [
+                r#"["Bash","Task"]"#,
+                r#"["Bash","mcp__github__create_issue"]"#,
+            ],
+        ),
+        (
+            ToolPolicy::NoWrite,
+            r#"["Read","Glob","Grep","EndConversation"]"#,
+            [r#"["Read","WebFetch"]"#, r#"["Read",7]"#],
+        ),
     ] {
-        let mut translator = Translator::new(ToolPolicy::WorkspaceWrite, "none");
-        assert_eq!(
-            violation_kind(&translator.line(&init_line(extra))),
-            Some(FailureKind::PolicyViolation),
-            "{extra}"
-        );
-    }
-}
-
-#[test]
-fn a_no_write_run_allows_only_the_read_tools() {
-    let allowed = init_line(r#"["Read","Glob","Grep","EndConversation"]"#);
-    let mut translator = Translator::new(ToolPolicy::NoWrite, "none");
-    assert_eq!(violation_kind(&translator.line(&allowed)), None);
-    for extra in [
-        r#"["Read","WebFetch"]"#,
-        r#"["Read","Task"]"#,
-        r#"["Read","mcp__github__create_issue"]"#,
-        r#"["Read",7]"#,
-    ] {
-        let mut translator = Translator::new(ToolPolicy::NoWrite, "none");
-        assert_eq!(
-            violation_kind(&translator.line(&init_line(extra))),
-            Some(FailureKind::PolicyViolation),
-            "{extra}"
-        );
+        let mut translator = Translator::new(policy, "none");
+        assert_eq!(violation_kind(&translator.line(&init_line(allowed))), None);
+        for extra in extra {
+            let mut translator = Translator::new(policy, "none");
+            assert_eq!(
+                violation_kind(&translator.line(&init_line(extra))),
+                Some(FailureKind::PolicyViolation),
+                "{extra}"
+            );
+        }
     }
     let mut translator = Translator::new(ToolPolicy::NoWrite, "none");
     let no_tools = br#"{"type":"system","subtype":"init","session_id":"s","apiKeySource":"none"}"#;

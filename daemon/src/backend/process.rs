@@ -1,11 +1,10 @@
 //! Supervising a vendor CLI's process, which every backend shares.
 //!
 //! - **Spawning** goes through `posix_spawn` with `POSIX_SPAWN_CLOEXEC_DEFAULT`, so the child
-//!   holds its three pipes and nothing else of wispd's, such as client sockets or the listener
-//!   (#86). It leads a new session and process group, so a terminal that started wispd can't
+//!   holds its three pipes and nothing else of wispd's, such as client sockets or the listener.
+//!   It leads a new session and process group, so a terminal that started wispd can't
 //!   signal it, and cancelling can reach everything it started.
-//! - **The environment is explicit**: a base (wispd's own with the usual install folders on
-//!   `PATH`, decision 0014; #96 may capture the login shell's instead), minus [`ALWAYS_SCRUBBED`] and the
+//! - **The environment is explicit**: a base (decision 0014), minus [`ALWAYS_SCRUBBED`] and the
 //!   backend's scrub list, plus [`DATA_DIR_ENV`](crate::paths::DATA_DIR_ENV) from
 //!   [`DataDir::command`], plus the backend's injected variables, such as an API key.
 //! - **Output**: stdout as lines with a size cap, stderr into a ring buffer whose tail goes into
@@ -48,21 +47,10 @@ use super::event::ExitInfo;
 use crate::paths::DataDir;
 use crate::spawn::{self, Stdio};
 
-/// Variables no process wispd starts inherits: the SSH session that may have started it (#96).
+/// Variables no process wispd starts inherits: the SSH session that may have started it.
 /// That includes its `SSH_AUTH_SOCK`, which stops working when the session ends and which no
 /// agent needs: workers can't push, and wispd makes every commit locally (decision 0014).
 pub const ALWAYS_SCRUBBED: &[&str] = &["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "SSH_AUTH_SOCK"];
-
-/// The longest stdout line a backend reads by default. Longer ones are skipped and reported. It
-/// matches 0007's frame limit, which a notification built from the line has to fit anyway.
-pub const DEFAULT_MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
-
-/// How much of the end of stderr a process keeps by default.
-pub const DEFAULT_STDERR_TAIL_BYTES: usize = 64 * 1024;
-
-/// How long stdout may stay open after the process exited, by default. Something the CLI started
-/// can hold the pipe open; this keeps it from delaying the end of the run.
-pub const DEFAULT_DRAIN_AFTER_EXIT: Duration = Duration::from_millis(500);
 
 // Sets the working directory, which the safe posix_spawn wrappers can't, then runs the program.
 const TRAMPOLINE: &str = "cd -- \"$1\" && shift && exec \"$@\"";
@@ -70,7 +58,7 @@ const SHELL: &str = "/bin/sh";
 
 /// A set of environment variables. Its `Debug` shows names only, since values can be secrets, and
 /// a value it drops or replaces (`set`, `remove`, going out of scope) is zeroized first, so an
-/// API key (#118) doesn't sit in a freed allocation.
+/// API key doesn't sit in a freed allocation.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Environment {
     vars: BTreeMap<OsString, OsString>,
@@ -163,20 +151,22 @@ pub enum StdinMode {
 /// Limits on a process's output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OutputLimits {
-    /// The longest stdout line, not counting the newline.
+    /// The longest stdout line, not counting the newline. Longer ones are skipped and reported.
+    /// The default matches 0007's frame limit, which a notification built from a line must fit.
     pub max_line_bytes: usize,
     /// How much of the end of stderr to keep.
     pub stderr_tail_bytes: usize,
-    /// How long stdout may stay open after the process exited.
+    /// How long stdout may stay open after the process exited, since something the CLI started
+    /// can hold the pipe open.
     pub drain_after_exit: Duration,
 }
 
 impl Default for OutputLimits {
     fn default() -> Self {
         Self {
-            max_line_bytes: DEFAULT_MAX_LINE_BYTES,
-            stderr_tail_bytes: DEFAULT_STDERR_TAIL_BYTES,
-            drain_after_exit: DEFAULT_DRAIN_AFTER_EXIT,
+            max_line_bytes: 8 * 1024 * 1024,
+            stderr_tail_bytes: 64 * 1024,
+            drain_after_exit: Duration::from_millis(500),
         }
     }
 }
@@ -472,12 +462,6 @@ impl Drop for Process {
 }
 
 impl Process {
-    /// The process's id, which is also its process group's.
-    #[must_use]
-    pub fn pid(&self) -> Pid {
-        self.signals.shared.pid
-    }
-
     /// A handle that signals the process, which a backend can keep apart from the output.
     #[must_use]
     pub fn signals(&self) -> &Signals {
@@ -551,12 +535,6 @@ impl Signals {
     pub fn signal_group(&self, signal: Signal) -> bool {
         let reaped = self.shared.lock();
         !*reaped && kill_process_group(self.shared.pid, signal).is_ok()
-    }
-
-    /// Whether the process has exited and been reaped.
-    #[must_use]
-    pub fn reaped(&self) -> bool {
-        *self.shared.lock()
     }
 
     /// Asks the process to stop with `policy`'s signal, then kills its group if it is still
@@ -733,12 +711,10 @@ impl Tail {
         self.bytes.extend(data);
     }
 
-    fn text(&self) -> String {
-        let (front, back) = self.bytes.as_slices();
-        let mut all = Vec::with_capacity(self.bytes.len());
-        all.extend_from_slice(front);
-        all.extend_from_slice(back);
-        String::from_utf8_lossy(&all).trim().to_owned()
+    fn text(&mut self) -> String {
+        String::from_utf8_lossy(self.bytes.make_contiguous())
+            .trim()
+            .to_owned()
     }
 }
 
@@ -840,7 +816,6 @@ impl<R: AsyncRead + Unpin> LineReader<R> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
-    use std::ffi::OsString;
     use std::os::fd::AsRawFd;
     use std::time::{Duration, Instant};
 
@@ -1071,16 +1046,12 @@ mod tests {
             .unwrap();
         assert_eq!(process.next().await, Some(Output::Line(b"ready".to_vec())));
         let started = Instant::now();
-        // Signals the process directly instead of `cancel()`, which would also arm the
-        // grace-then-`SIGKILL` escalation. This test is about the trap's own reaction to
-        // `SIGINT`, not the escalation (`cancel_kills_the_group_after_the_grace_period` owns
-        // that), so it never arms a second timer that could race the trap's clean exit (#139).
+        // Not `cancel()`, whose grace-then-SIGKILL timer could race the trap's clean exit.
         assert!(process.signals().signal(Signal::INT));
         let (lines, exit) = collect(&mut process).await;
         assert_eq!(lines, [Output::Line(b"interrupted".to_vec())]);
         assert_eq!(exit.info.code, Some(7), "{exit:?}");
         assert!(started.elapsed() < Duration::from_secs(5));
-        assert!(process.signals().reaped());
         assert!(
             !process.signals().signal(Signal::TERM),
             "no signal after the reap"
@@ -1142,10 +1113,8 @@ mod tests {
         let Some(Output::Line(pid)) = process.next().await else {
             panic!("no pid");
         };
-        let pid: i32 = String::from_utf8(pid).unwrap().parse().unwrap();
-        assert_eq!(pid, process.pid().as_raw_nonzero().get());
         drop(process);
-        wait_until_gone(pid).await;
+        wait_until_gone(String::from_utf8(pid).unwrap().parse().unwrap()).await;
     }
 
     #[tokio::test]
@@ -1224,14 +1193,5 @@ mod tests {
         assert_eq!(tail.text(), "cdefg");
         tail.push(b"0123456789");
         assert_eq!(tail.text(), "56789");
-    }
-
-    #[test]
-    fn environments_collect_and_hide_values() {
-        let env: Environment = [(OsString::from("A"), OsString::from("1"))]
-            .into_iter()
-            .collect();
-        assert_eq!(env.get("A"), Some("1".as_ref()));
-        assert_eq!(format!("{env:?}"), "{\"A\"}");
     }
 }

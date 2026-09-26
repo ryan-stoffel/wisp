@@ -1,21 +1,13 @@
 //! A fake backend for tests: a real child process that plays a scripted fixture.
 //!
-//! A [`Script`] is a list of [`Step`]s, usually read from a JSON fixture. The backend compiles it
-//! into a `/bin/sh` program and runs that through [`Launcher`], so the fake goes through the same
-//! supervision as the vendor adapters: spawning, the environment, line limits, stderr, cancel,
-//! and reaping. The fake CLI's output format is [`Event`]'s JSON, one per line, plus
-//! `{"kind": "usageTotal", ...}` lines for running totals.
+//! A [`Script`] of [`Step`]s compiles into a `/bin/sh` program that runs through [`Launcher`], so
+//! the fake goes through the same supervision as the vendor adapters. The fake CLI prints
+//! [`Event`]'s JSON, one per line, plus `{"kind": "usageTotal", ...}` lines for running totals.
 //!
-//! It is also the reference driver for the adapters: it reports the prompt's turn as soon as the
-//! CLI starts, labels each `TurnFinished` with the oldest turn not yet finished, lets
-//! [`CancelSwitch`] stop the process directly, and leaves usage totals to [`EventSink`].
-//!
-//! The child gets its arguments as the vendor CLIs would: the resume id, the prompt as a JSON
-//! string, the policy, and the model. Follow-ups reach it on stdin, one JSON string per line.
-//! With an API key account, the key is in `FAKE_API_KEY`; with a subscription it is scrubbed, as
-//! 0004 has the Claude backend do with Anthropic's variables. Like every backend, it refuses a
-//! workspace-write run without a [`WorkerSandbox`](super::WorkerSandbox) (0013), though it
-//! enforces none of it.
+//! The child gets the resume id, the prompt as a JSON string, the policy, and the model as
+//! arguments, and follow-ups on stdin, one JSON string per line. Like every backend, it refuses
+//! a workspace-write run without a [`WorkerSandbox`](super::WorkerSandbox), though it enforces
+//! none of it.
 
 use std::collections::VecDeque;
 use std::fmt::Write as _;
@@ -33,15 +25,9 @@ use super::process::{
 };
 use super::sandbox::worker_sandbox;
 use super::{
-    Backend, CancelSwitch, Capabilities, Credential, EVENT_BUFFER, EventSink, FollowUp, RunHandle,
-    RunRequest, StartError, Started, ToolPolicy, TurnId,
+    Backend, CancelSwitch, Capabilities, EVENT_BUFFER, EventSink, FollowUp, RunHandle, RunRequest,
+    StartError, Started, ToolPolicy, TurnId,
 };
-
-/// The variable the fake CLI takes an API key from.
-pub const API_KEY_ENV: &str = "FAKE_API_KEY";
-
-/// The variable the fake CLI takes a second account's configuration folder from.
-pub const CONFIG_HOME_ENV: &str = "FAKE_CONFIG_HOME";
 
 /// A fake CLI's script.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
@@ -49,17 +35,6 @@ pub const CONFIG_HOME_ENV: &str = "FAKE_CONFIG_HOME";
 pub struct Script {
     /// The steps, in order. After the last one, the CLI exits with code 0.
     pub steps: Vec<Step>,
-}
-
-impl Script {
-    /// Parses a JSON fixture: an array of steps.
-    ///
-    /// # Errors
-    ///
-    /// If the fixture is not a valid script.
-    pub fn from_json(json: &str) -> serde_json::Result<Self> {
-        serde_json::from_str(json)
-    }
 }
 
 /// One step of a [`Script`]. In JSON, `"hang"` or `{"sleepMs": 10}`.
@@ -123,8 +98,6 @@ pub enum Step {
     Exit(i32),
     /// Kills itself with `SIGKILL`.
     Crash,
-    /// Ignores `SIGINT` from here on.
-    IgnoreInterrupt,
     /// Waits forever.
     Hang,
 }
@@ -181,11 +154,6 @@ impl Backend for FakeBackend {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
-            follow_ups: self.follow_ups,
-            resume: true,
-            coordinator: true,
-            reports_cost: true,
-            rate_limits: true,
             worker_sandbox: true,
         }
     }
@@ -223,17 +191,6 @@ impl Backend for FakeBackend {
             policy.into(),
             request.model.clone().unwrap_or_default().into(),
         ];
-        match &request.account.credential {
-            Credential::Subscription { config_home } => {
-                spec.scrub.push(API_KEY_ENV.into());
-                if let Some(home) = config_home {
-                    spec.inject.set(CONFIG_HOME_ENV, home);
-                }
-            }
-            Credential::ApiKey(key) => {
-                spec.inject.set(API_KEY_ENV, key.expose());
-            }
-        }
         spec.stdin = if self.follow_ups {
             StdinMode::Piped
         } else {
@@ -288,27 +245,27 @@ async fn write_follow_ups(
 /// The follow-ups' way to the CLI: a queue into [`write_follow_ups`], and its results.
 struct Stdin {
     queue: Option<mpsc::UnboundedSender<FollowUp>>,
-    results: Option<mpsc::UnboundedReceiver<Delivery>>,
+    results: mpsc::UnboundedReceiver<Delivery>,
     writer: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Stdin {
     /// Starts the writer, or closes `control` when the CLI's stdin isn't a pipe.
     fn start(process: &mut Process, control: &mut mpsc::UnboundedReceiver<FollowUp>) -> Self {
+        let (results_tx, results) = mpsc::unbounded_channel();
         let Some(stdin) = process.take_stdin() else {
             control.close();
             return Self {
                 queue: None,
-                results: None,
+                results,
                 writer: None,
             };
         };
         let (queue, queue_rx) = mpsc::unbounded_channel();
-        let (results, results_rx) = mpsc::unbounded_channel();
         Self {
             queue: Some(queue),
-            results: Some(results_rx),
-            writer: Some(tokio::spawn(write_follow_ups(stdin, queue_rx, results))),
+            results,
+            writer: Some(tokio::spawn(write_follow_ups(stdin, queue_rx, results_tx))),
         }
     }
 
@@ -331,13 +288,10 @@ impl Stdin {
             // started outside its process group could, so don't wait on it for long.
             let _ = tokio::time::timeout(Duration::from_secs(1), writer).await;
         }
-        if let Some(results) = &mut self.results {
-            while let Ok(delivery) = results.try_recv() {
-                let turn_id = match delivery {
-                    Delivery::Written(turn_id) | Delivery::Failed(turn_id) => turn_id,
-                };
-                let _ = sink.emit(Event::FollowUpDropped { turn_id }).await;
-            }
+        while let Ok(Delivery::Written(turn_id) | Delivery::Failed(turn_id)) =
+            self.results.try_recv()
+        {
+            let _ = sink.emit(Event::FollowUpDropped { turn_id }).await;
         }
     }
 }
@@ -371,7 +325,7 @@ async fn drive(
         tokio::select! {
             // Deliveries first, so a follow-up's TurnStarted comes before what the CLI answers.
             biased;
-            Some(delivery) = recv(&mut stdin.results) => {
+            Some(delivery) = stdin.results.recv() => {
                 let event = match delivery {
                     Delivery::Written(turn_id) => {
                         state.turns.push_back(Some(turn_id));
@@ -427,13 +381,6 @@ async fn drive(
     stdin.drop_undelivered(&mut control, &mut sink).await;
     let outcome = state.outcome(exit);
     let _ = sink.finish(outcome).await;
-}
-
-async fn recv<T>(receiver: &mut Option<mpsc::UnboundedReceiver<T>>) -> Option<T> {
-    match receiver {
-        Some(receiver) => receiver.recv().await,
-        None => std::future::pending().await,
-    }
 }
 
 /// A line of the fake CLI's output.
@@ -665,7 +612,6 @@ fn compile(script: &Script) -> Result<String, String> {
             }
             Step::Exit(code) => writeln!(out, "exit {code}").expect("infallible"),
             Step::Crash => out.push_str("kill -KILL $$\n"),
-            Step::IgnoreInterrupt => out.push_str("trap '' INT\n"),
             Step::Hang => out.push_str("while :; do sleep 60 & wait $!; done\n"),
         }
     }

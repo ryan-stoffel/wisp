@@ -1,63 +1,48 @@
-//! The Claude Code backend: runs the user's own signed-in `claude` CLI headless (0004, #116).
+//! The Claude Code backend: runs the user's own signed-in `claude` CLI headless (0004).
 //!
 //! # The command
 //!
 //! Every run is `claude -p --output-format stream-json --verbose --input-format stream-json` in
-//! the run's cwd, plus the policy's flags, `--model`, and `--resume <session id>` (0004 [10]):
+//! the run's cwd, plus the policy's flags, `--model`, and `--resume <session id>`:
 //!
-//! - **No-write** is exactly 0004's: [`NO_WRITE_ARGS`]. As a second check, a no-write run whose
-//!   `system/init` lists any tool outside [`NO_WRITE_TOOLS`] fails with
-//!   [`FailureKind::PolicyViolation`].
+//! - **No-write** is exactly 0004's [`NO_WRITE_ARGS`].
 //! - **Workspace-write** is 0013's worker sandbox: [`WORKSPACE_WRITE_ARGS`], then
-//!   [`worker_settings`] as `--settings`, then `--add-dir` for each writable folder:
-//!   - `--restricted` loads no user, project, or local settings files, so a repository's
-//!     `.claude/settings.json` can't add allow rules, hooks, or an `env` block (#134), and it
-//!     confines the file tools to the working directories.
-//!   - `--tools` names exactly [`WORKER_TOOLS`]. `Bash` is among them because Claude Code's own
-//!     Seatbelt sandbox holds every command: writes only to the working directories and the
-//!     session temp folder, no reads of the sandbox's `unreadable` paths, and no writes to git
-//!     metadata. `failIfUnavailable` and `allowUnsandboxedCommands: false` keep a command from
-//!     ever running outside it. Commands, `WebFetch`, and `WebSearch` reach any host but
-//!     [`WORKER_DENIED_HOSTS`] (Ryan, #137), so the unreadable paths are what keep secrets in.
-//!   - `--strict-mcp-config` connects no MCP servers, including the repository's `.mcp.json`.
+//!   [`worker_settings`] as `--settings`, then `--add-dir` for each writable folder.
+//!   `--restricted` loads no settings files, so a repository's `.claude/settings.json` can't add
+//!   allow rules, hooks, or an `env` block, and confines the file tools to the working
+//!   directories. `Bash` is allowed because Claude Code's own Seatbelt sandbox holds every
+//!   command, and `failIfUnavailable` with `allowUnsandboxedCommands: false` keeps a command from
+//!   running outside it. Commands and the web tools reach any host but [`WORKER_DENIED_HOSTS`],
+//!   so the unreadable paths are what keep secrets in. `--strict-mcp-config` connects no MCP
+//!   servers, including the repository's `.mcp.json`.
 //!
-//!   As a second check, a worker whose `system/init` lists a tool outside [`WORKER_TOOLS`], or
-//!   a Claude Code older than [`WORKER_MIN_VERSION`], fails with
-//!   [`FailureKind::PolicyViolation`].
+//! As a second check, a run whose `system/init` lists a tool its policy doesn't allow, or a
+//! worker on a Claude Code older than [`WORKER_MIN_VERSION`], fails with
+//! [`FailureKind::PolicyViolation`].
 //!
 //! # Messages go on stdin
 //!
-//! With `--input-format stream-json`, the prompt and every follow-up are user messages on stdin,
-//! one JSON object per line, as the Agent SDK sends them. The prompt never goes in argv, where
-//! `ps` would show it and `ARG_MAX` would limit it. Each message carries a `uuid`, the turn id,
-//! which the CLI echoes in `result.user_message_uuids`: several messages sent close together can
-//! run as one turn, and those ids say which turns a result ended. Once no turn is outstanding,
-//! stdin closes and the CLI exits after its last result, which ends the run; a follow-up sent
-//! after that fails with [`SendError::Finished`](super::SendError::Finished).
+//! The prompt and every follow-up are stream-json user messages on stdin, never argv, where `ps`
+//! would show them and `ARG_MAX` would limit them. Each carries its turn id as `uuid`, which the
+//! CLI echoes in `result.user_message_uuids`: several messages sent close together can run as
+//! one turn, and those ids say which turns a result ended. Once no turn is outstanding, stdin
+//! closes and the CLI exits after its last result, which ends the run.
 //!
 //! # Credentials
 //!
-//! Every run, whatever its account, drops each inherited variable that could choose Claude's
-//! credentials, provider, or endpoint: names starting with one of [`SCRUBBED_PREFIXES`], plus
-//! [`SCRUBBED_VARS`]. Those include the three that outrank the login (0004), the cloud provider
-//! switches, `ANTHROPIC_BASE_URL`, which would send the login's token elsewhere, and the profile
-//! and federation variables. `CLAUDE_CONFIG_DIR` is dropped too, and set only to the account's
-//! own configuration folder. [`apply_credential`] then injects only what the account needs: the
-//! account's configuration folder for a subscription, or, for an API key account (#118), only
-//! [`API_KEY_ENV`] with the key [`key_account::resolve`](super::key_account::resolve) read from
-//! the Keychain. The key is never in `args`, so `ps` can't show it, and every copy of it wispd
-//! makes along the way ([`super::ApiKey`]'s own buffer, [`super::process::Environment`]'s
-//! entries, and the buffers `spawn_session` builds from them) is zeroized once it is done with
-//! it.
+//! Every run drops each inherited variable that could choose Claude's credentials, provider, or
+//! endpoint ([`SCRUBBED_PREFIXES`], [`SCRUBBED_VARS`]), then injects only what the account needs:
+//! its configuration folder for a subscription, or [`API_KEY_ENV`] for an API key account. The
+//! key is never in `args`, and every copy wispd makes of it is zeroized once done with.
 //!
-//! A project's `env` block can still set variables for a worker (0004, #134), so the output is
-//! checked as well. A `system/init` whose `apiKeySource` isn't the account's, or is missing, and
-//! a `result` whose `modelUsage` names a provider other than `firstParty`, kill the CLI's process
-//! group at once and fail the run with [`FailureKind::UnexpectedApiKey`].
+//! A project's `env` block can still set variables for a worker, so the output is checked too:
+//! a `system/init` whose `apiKeySource` isn't the account's, or is missing, and a `result` whose
+//! `modelUsage` names a provider other than `firstParty`, kill the CLI's process group at once
+//! and fail the run with [`FailureKind::UnexpectedApiKey`].
 //!
 //! # Cancel
 //!
-//! `SIGINT` ends Claude's turn, while `SIGTERM` leaves it unfinished (0004 [11]), so cancel sends
+//! `SIGINT` ends Claude's turn, while `SIGTERM` leaves it unfinished (0004), so cancel sends
 //! `SIGINT`, closes stdin so the CLI exits after the interrupted turn, and kills the process
 //! group if it is still running after the grace period.
 
@@ -78,11 +63,10 @@ use tokio::net::unix::pipe;
 use tokio::sync::{Notify, mpsc};
 
 pub(crate) use self::stream::version as parse_version;
-use self::stream::{Step, Translator, TurnDone};
+use self::stream::{Step, Translator, TurnDone, signed_out};
 use super::event::{Event, Failure, FailureKind, Outcome, WarningKind};
 use super::process::{
-    CancelPolicy, Environment, Exit, Launcher, Output, OutputLimits, Process, ProcessSpec,
-    StdinMode,
+    CancelPolicy, Environment, Exit, Launcher, Output, Process, ProcessSpec, StdinMode,
 };
 use super::sandbox::worker_sandbox;
 use super::{
@@ -120,12 +104,11 @@ pub const NO_WRITE_ARGS: &[&str] = &[
 ];
 
 /// The only tools a no-write run's `system/init` may list. `EndConversation` stays whatever
-/// `--tools` says (the CLI reference), and only ends the session. wispd's own MCP tools join
-/// this list in M4.
+/// `--tools` says (the CLI reference), and only ends the session.
 pub const NO_WRITE_TOOLS: &[&str] = &["Read", "Glob", "Grep", "EndConversation"];
 
 /// The built-in tools a worker gets (0013): the file tools, `Bash`, which Claude Code's sandbox
-/// confines, the web tools (Ryan, #137), and `TodoWrite`. No subagents, skills, or MCP tools.
+/// confines, the web tools, and `TodoWrite`. No subagents, skills, or MCP tools.
 /// `EndConversation` may appear in `system/init` as well, as for a no-write run.
 pub const WORKER_TOOLS: &[&str] = &[
     "Read",
@@ -145,10 +128,10 @@ pub const WORKER_TOOL_LIST: &str =
     "Read,Edit,Write,Glob,Grep,NotebookEdit,Bash,WebFetch,WebSearch,TodoWrite";
 
 /// The names for this Mac that no worker command or `WebFetch` may reach, even with network
-/// access: this Mac's own services wait on #168. The sandbox's proxy canonicalizes other
-/// spellings of loopback (`127.1`, `[::ffff:127.0.0.1]`) and refuses names that resolve to this
-/// Mac, but it doesn't check IP literals, so the unspecified addresses are listed too. This Mac's
-/// interface addresses aren't: 0013 records that gap.
+/// access. The sandbox's proxy canonicalizes other spellings of loopback (`127.1`,
+/// `[::ffff:127.0.0.1]`) and refuses names that resolve to this Mac, but it doesn't check IP
+/// literals, so the unspecified addresses are listed too. This Mac's interface addresses aren't:
+/// 0013 records that gap.
 pub const WORKER_DENIED_HOSTS: &[&str] = &["localhost", "127.0.0.1", "[::1]", "0.0.0.0", "[::]"];
 
 /// [`ToolPolicy::WorkspaceWrite`]'s fixed arguments (0013). [`arguments`] adds the run's
@@ -163,9 +146,7 @@ pub const WORKSPACE_WRITE_ARGS: &[&str] = &[
 ];
 
 /// The oldest Claude Code that has every flag and setting a worker relies on: `--restricted`
-/// arrived in 2.1.248, the last of them (0013). An older CLI rejects the unknown flag, and a
-/// worker whose `system/init` reports an older version fails, but #156 also checks the detected
-/// version before it starts one, for a clearer error.
+/// arrived in 2.1.248, the last of them (0013).
 pub const WORKER_MIN_VERSION: &str = "2.1.248";
 
 /// Prefixes of inherited variables no run gets: Anthropic credentials, endpoints, profiles, and
@@ -175,7 +156,7 @@ pub const WORKER_MIN_VERSION: &str = "2.1.248";
 pub const SCRUBBED_PREFIXES: &[&str] = &["ANTHROPIC_", "CLAUDE_CODE_USE_", "CLAUDE_CODE_OAUTH_"];
 
 /// Inherited variables no run gets, besides [`SCRUBBED_PREFIXES`]: Bedrock's API key, and the
-/// configuration folder, which [`apply_credential`] sets only to the account's own.
+/// configuration folder, which a run sets only to the account's own.
 pub const SCRUBBED_VARS: &[&str] = &["AWS_BEARER_TOKEN_BEDROCK", CONFIG_DIR_ENV];
 
 /// The variable that picks a second account's configuration folder.
@@ -184,7 +165,7 @@ pub const CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
 /// What `system/init` reports as `apiKeySource` for a subscription login.
 pub const SUBSCRIPTION_KEY_SOURCE: &str = "none";
 
-/// The variable an API key account's key is injected as (0004's table, #118).
+/// The variable an API key account's key is injected as (0004's table).
 pub const API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
 
 /// What `system/init` reports as `apiKeySource` for an API key account. Happens to be the same
@@ -202,9 +183,7 @@ const ALWAYS_SET: &[(&str, &str)] = &[
 #[derive(Clone, Debug)]
 pub struct ClaudeBackend {
     launcher: Launcher,
-    program: OsString,
     cancel: CancelPolicy,
-    limits: OutputLimits,
 }
 
 impl ClaudeBackend {
@@ -213,30 +192,14 @@ impl ClaudeBackend {
     pub fn new(launcher: Launcher) -> Self {
         Self {
             launcher,
-            program: PROGRAM.into(),
             cancel: CancelPolicy::default(),
-            limits: OutputLimits::default(),
         }
-    }
-
-    /// Runs `program`, a name on `PATH` or an absolute path, instead of `claude`.
-    #[must_use]
-    pub fn with_program(mut self, program: impl Into<OsString>) -> Self {
-        self.program = program.into();
-        self
     }
 
     /// Cancels with `policy` instead of `SIGINT` and a 10 s grace period.
     #[must_use]
     pub fn with_cancel_policy(mut self, policy: CancelPolicy) -> Self {
         self.cancel = policy;
-        self
-    }
-
-    /// Reads output with `limits` instead of the defaults.
-    #[must_use]
-    pub fn with_limits(mut self, limits: OutputLimits) -> Self {
-        self.limits = limits;
         self
     }
 }
@@ -282,8 +245,8 @@ pub fn arguments(request: &RunRequest) -> Result<Vec<OsString>, StartError> {
 /// `WebFetch` deny rules as well as `deniedDomains`, because the sandbox's list binds only
 /// commands, and a deny rule beats the `*` allow for the tool. `cwd`, the writable folders, and
 /// the read-only git paths stay readable inside an unreadable path, such as wispd's data folder,
-/// which holds the worktree, the context folder, and a normal thread's scratch repository
-/// (#110). A second account's `config_home` is unreadable too.
+/// which holds the worktree and the context folder. A second account's `config_home` is
+/// unreadable too.
 #[must_use]
 pub fn worker_settings(sandbox: &WorkerSandbox, cwd: &Path, config_home: Option<&Path>) -> Value {
     let unreadable = strings(
@@ -365,25 +328,17 @@ pub fn scrubbed(base: &Environment) -> Vec<OsString> {
 
 /// Injects what `credential` needs into `spec`, after [`scrubbed`] removed every inherited
 /// credential, and returns the `apiKeySource` that `system/init` must then report.
-///
-/// # Errors
-///
-/// Never today; kept fallible so a future credential kind this backend can't serve has somewhere
-/// to report it, the way [`StartError::Unsupported`] already does elsewhere in this module.
-pub fn apply_credential(
-    credential: &Credential,
-    spec: &mut ProcessSpec,
-) -> Result<&'static str, StartError> {
+fn apply_credential(credential: &Credential, spec: &mut ProcessSpec) -> &'static str {
     match credential {
         Credential::Subscription { config_home } => {
             if let Some(home) = config_home {
                 spec.inject.set(CONFIG_DIR_ENV, home);
             }
-            Ok(SUBSCRIPTION_KEY_SOURCE)
+            SUBSCRIPTION_KEY_SOURCE
         }
         Credential::ApiKey(key) => {
             spec.inject.set(API_KEY_ENV, key.expose());
-            Ok(API_KEY_SOURCE)
+            API_KEY_SOURCE
         }
     }
 }
@@ -395,11 +350,6 @@ impl Backend for ClaudeBackend {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
-            follow_ups: true,
-            resume: true,
-            coordinator: true,
-            reports_cost: true,
-            rate_limits: true,
             worker_sandbox: true,
         }
     }
@@ -408,15 +358,14 @@ impl Backend for ClaudeBackend {
         if request.prompt.is_empty() {
             return Err(StartError::Invalid("the prompt is empty".into()));
         }
-        let mut spec = ProcessSpec::new(self.program.clone(), &request.cwd);
+        let mut spec = ProcessSpec::new(PROGRAM, &request.cwd);
         spec.args = arguments(&request)?;
         spec.scrub = scrubbed(self.launcher.base());
-        let expected_key_source = apply_credential(&request.account.credential, &mut spec)?;
+        let expected_key_source = apply_credential(&request.account.credential, &mut spec);
         for (name, value) in ALWAYS_SET {
             spec.inject.set(name, value);
         }
         spec.stdin = StdinMode::Piped;
-        spec.limits = self.limits;
 
         let process = self.launcher.spawn(&spec)?;
         let switch = CancelSwitch::new();
@@ -787,8 +736,7 @@ impl Driver {
                 result: self.translator.last_result.take(),
             };
         }
-        let lower = exit.stderr_tail.to_ascii_lowercase();
-        let failure = if lower.contains("not logged in") || lower.contains("/login") {
+        let failure = if signed_out(&exit.stderr_tail) {
             failure(
                 FailureKind::NotSignedIn,
                 "Claude Code is not signed in".into(),

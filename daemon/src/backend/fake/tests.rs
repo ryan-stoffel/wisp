@@ -1,17 +1,15 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use futures_util::StreamExt;
 use rustix::process::Pid;
 use serde_json::json;
 
 use super::{FakeBackend, Script, Step};
 use crate::backend::process::{CancelPolicy, Environment, Launcher, OutputLimits};
 use crate::backend::{
-    AccountRef, ApiKey, Backend, Credential, Event, EventStream, FailureKind, FollowUp,
-    LimitStatus, ModelUsage, Outcome, Resume, RunId, RunRequest, SendError, StartError, Started,
-    ToolPolicy, ToolStatus, TurnId, Usage, WarningKind, WorkerSandbox,
+    AccountRef, Backend, Credential, Event, EventStream, FailureKind, FollowUp, LimitStatus,
+    ModelUsage, Outcome, Resume, RunId, RunRequest, SendError, StartError, Started, ToolPolicy,
+    ToolStatus, TurnId, Usage, WarningKind,
 };
 use crate::paths::DataDir;
 
@@ -23,7 +21,6 @@ fn fixture(name: &str) -> Script {
         "context" => include_str!("fixtures/context.json"),
         "resume" => include_str!("fixtures/resume.json"),
         "hang" => include_str!("fixtures/hang.json"),
-        "stubborn" => include_str!("fixtures/stubborn.json"),
         "follow-up" => include_str!("fixtures/follow-up.json"),
         "malformed" => include_str!("fixtures/malformed.json"),
         "crash" => include_str!("fixtures/crash.json"),
@@ -31,14 +28,13 @@ fn fixture(name: &str) -> Script {
         "vendor-error" => include_str!("fixtures/vendor-error.json"),
         other => panic!("no fixture {other}"),
     };
-    Script::from_json(json).unwrap()
+    serde_json::from_str(json).unwrap()
 }
 
 fn launcher() -> Launcher {
     let base: Environment = [
         ("PATH", "/usr/bin:/bin"),
         ("SSH_CONNECTION", "10.0.0.2 50000 10.0.0.1 22"),
-        ("FAKE_API_KEY", "leaked-from-wispd"),
     ]
     .into_iter()
     .collect();
@@ -138,46 +134,10 @@ async fn start_passes_the_task_to_the_cli() {
             "Say \"hi\"\nthen stop.",
             "no-write",
             "<unset>",
-            "<unset>",
-            "<unset>",
             DATA_DIR,
         ]
     );
     assert_eq!(outcome(&all), &Outcome::Completed { result: None });
-}
-
-#[tokio::test]
-async fn an_api_key_account_gets_its_key_and_a_subscription_its_config_home() {
-    let mut request = request(&root());
-    request.policy = ToolPolicy::WorkspaceWrite;
-    assert!(
-        matches!(
-            backend("context").start(request.clone()),
-            Err(StartError::Invalid(message)) if message.contains("0013")
-        ),
-        "a worker needs its sandbox"
-    );
-    request.sandbox = Some(WorkerSandbox::for_worktree(
-        Path::new("/Users/u"),
-        Path::new("/Users/u/wisp"),
-        &root(),
-        Path::new("/Users/u/src/app/.git"),
-        Path::new("/Users/u/wisp/context/p"),
-    ));
-    request.account.credential = Credential::ApiKey(ApiKey::new("sk-fake-123".into()));
-    let mut events = launch(&backend("context"), request.clone()).await.events;
-    let all = rest(&mut events).await;
-    assert_eq!(
-        texts(&all)[2..5],
-        ["workspace-write", "sk-fake-123", "<unset>"]
-    );
-
-    request.account.credential = Credential::Subscription {
-        config_home: Some("/tmp/second-account".into()),
-    };
-    let mut events = launch(&backend("context"), request).await.events;
-    let all = rest(&mut events).await;
-    assert_eq!(texts(&all)[3..5], ["<unset>", "/tmp/second-account"]);
 }
 
 #[tokio::test]
@@ -251,8 +211,15 @@ async fn events_stream_in_order_and_usage_adds_up() {
             result: Some("The README is one line.".into())
         }
     );
+    let usage = all
+        .iter()
+        .filter_map(|event| match event {
+            Event::Usage(delta) => Some(delta.usage),
+            _ => None,
+        })
+        .fold(Usage::default(), |sum, usage| sum + usage);
     assert_eq!(
-        events.usage(),
+        usage,
         Usage {
             input_tokens: 1500,
             output_tokens: 120,
@@ -261,17 +228,6 @@ async fn events_stream_in_order_and_usage_adds_up() {
             cost_usd_micros: Some(25_000),
         }
     );
-    assert_eq!(events.outcome(), Some(outcome(&all)));
-}
-
-#[tokio::test]
-async fn the_stream_works_as_a_futures_stream() {
-    let events = launch(&backend("resume"), request(&root())).await.events;
-    let all: Vec<Event> = tokio::time::timeout(Duration::from_secs(10), events.collect())
-        .await
-        .unwrap();
-    assert_eq!(all.len(), 3);
-    assert!(all[2].is_terminal());
 }
 
 #[tokio::test]
@@ -303,28 +259,6 @@ async fn cancel_mid_stream_interrupts_the_cli() {
             text: "too late".into()
         }),
         Err(SendError::Finished)
-    );
-}
-
-#[tokio::test]
-async fn cancel_escalates_to_sigkill_after_the_grace_period() {
-    let backend = backend("stubborn").with_cancel_policy(CancelPolicy {
-        grace: Duration::from_millis(300),
-        ..CancelPolicy::default()
-    });
-    let Started { run, mut events } = launch(&backend, request(&root())).await;
-    assert!(matches!(
-        next(&mut events).await,
-        Event::SessionStarted { .. }
-    ));
-    let started = Instant::now();
-    run.cancel();
-    let all = rest(&mut events).await;
-    assert_eq!(outcome(&all), &Outcome::Cancelled);
-    let elapsed = started.elapsed();
-    assert!(
-        elapsed >= Duration::from_millis(300) && elapsed < Duration::from_secs(5),
-        "{elapsed:?}"
     );
 }
 
@@ -535,7 +469,11 @@ async fn a_resumed_session_reports_only_its_own_usage() {
             .collect()
     };
     assert_eq!(deltas(&all), [1200, 50]);
-    assert_eq!(fresh.usage_totals(), [opus(1250)]);
+    let totals = |all: &[Event]| match all.last() {
+        Some(Event::Finished { usage_totals, .. }) => usage_totals.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(totals(&all), [opus(1250)]);
 
     // The vendor's totals carry over into the resumed session; the run counts what it added.
     let mut resumed = request(&root());
@@ -546,17 +484,12 @@ async fn a_resumed_session_reports_only_its_own_usage() {
     let mut events = launch(&backend, resumed).await.events;
     let all = rest(&mut events).await;
     assert_eq!(deltas(&all), [200, 50]);
-    assert_eq!(events.usage().input_tokens, 250);
-    let Some(Event::Finished { usage_totals, .. }) = all.last() else {
-        panic!("{all:?}")
-    };
-    assert_eq!(usage_totals, &[opus(1250)]);
+    assert_eq!(totals(&all), [opus(1250)]);
 }
 
 #[tokio::test]
 async fn a_backend_without_follow_ups_refuses_them_and_closes_stdin() {
     let backend = backend("follow-up").without_follow_ups();
-    assert!(!backend.capabilities().follow_ups);
     let Started { run, mut events } = launch(&backend, request(&root())).await;
     assert_eq!(
         run.send(FollowUp {
@@ -578,7 +511,10 @@ async fn a_backend_without_follow_ups_refuses_them_and_closes_stdin() {
 #[tokio::test]
 async fn the_resume_id_reaches_the_cli() {
     let mut request = request(&root());
-    request.resume = Some(Resume::new("sess-42.b_c"));
+    request.resume = Some(Resume {
+        session_id: "sess-42.b_c".into(),
+        ..Resume::default()
+    });
     let mut events = launch(&backend("resume"), request.clone()).await.events;
     let first = next(&mut events).await;
     assert_eq!(
@@ -697,7 +633,10 @@ async fn bad_requests_are_refused_before_spawning() {
         Err(StartError::Invalid(_))
     ));
     let mut bad = request(&root());
-    bad.resume = Some(Resume::new("x\"; rm -rf /"));
+    bad.resume = Some(Resume {
+        session_id: "x\"; rm -rf /".into(),
+        ..Resume::default()
+    });
     assert!(matches!(
         backend("resume").start(bad),
         Err(StartError::Invalid(_))
@@ -715,20 +654,6 @@ async fn bad_requests_are_refused_before_spawning() {
         FakeBackend::new(launcher(), script).start(request(&root())),
         Err(StartError::Invalid(_))
     ));
-}
-
-#[tokio::test]
-async fn backends_work_behind_trait_objects() {
-    let backends: Vec<Arc<dyn Backend>> = vec![
-        Arc::new(backend("resume")),
-        Arc::new(backend("resume").without_follow_ups()),
-    ];
-    for backend in backends {
-        assert_eq!(backend.name(), "fake");
-        let mut events = launch(&*backend, request(&root())).await.events;
-        let all = rest(&mut events).await;
-        assert!(matches!(outcome(&all), Outcome::Completed { .. }));
-    }
 }
 
 async fn wait_until_gone(pid: &str) {

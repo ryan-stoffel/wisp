@@ -57,7 +57,7 @@ pub(super) enum Command {
         reviewed: Option<String>,
         reply: oneshot::Sender<Result<(AgentRun, AgentMerge), ErrorObject>>,
     },
-    /// `thread/delete` (#110): stops the run's CLI, waits for it to exit, and deletes the thread.
+    /// `thread/delete`: stops the run's CLI, waits for it to exit, and deletes the thread.
     Delete {
         reply: oneshot::Sender<Result<(), ErrorObject>>,
     },
@@ -112,9 +112,8 @@ pub(super) struct Actor {
 }
 
 impl Actor {
-    /// `turns` is what a run already sent, from the store (#190): empty for a run just created by
-    /// `agents::start`, and loaded by `actor_for` for a run whose actor is spawned fresh, so a
-    /// restarted wispd still recognizes a retried `agent/send`.
+    /// `turns` is what the run already sent, from the store, so a restarted wispd still
+    /// recognizes a retried `agent/send`.
     pub fn new(
         daemon: Arc<Daemon>,
         row: RunRow,
@@ -158,15 +157,10 @@ impl Actor {
         loop {
             let deadline = self.batch.since.map(|since| since + COALESCE);
             tokio::select! {
-                // Shutdown, then a command, then the due flush, and only then another backend
-                // event (#190 N6): while a CLI keeps its stream busy, that event branch is
-                // otherwise always ready, and `biased` would starve `agent/cancel` and the
-                // coalescing flush for as long as the flood lasts, rather than just until the
-                // next iteration. Side effect (#190 review, non-blocking): a command can now run
-                // before a backend event still buffered ahead of it, so `agent/accept` can see a
-                // transient `mergeRefused` for a run whose CLI has already exited but whose
-                // `Finished` hasn't been drained yet. `send` already copes with the equivalent
-                // case (`SendError::Finished`); a caller of `accept` just retries.
+                // Backend events last: a CLI flooding its stream would otherwise starve
+                // `agent/cancel` and the flush. So a command can run before an event buffered
+                // ahead of it, and `agent/accept` can see a transient `mergeRefused` for a run
+                // whose `Finished` hasn't been drained yet; the caller retries.
                 biased;
                 () = shutdown.cancelled(), if !self.stopping => {
                     self.stopping = true;
@@ -246,8 +240,7 @@ impl Actor {
             }
         }
         self.flush().await;
-        // Holds off a concurrent create/actor_for retry for this exact run id while its rows are
-        // deleted and this actor is dropped (#110); an unrelated run's own lock is untouched.
+        // Holds off a concurrent create/actor_for retry for this run id while its rows go.
         let _creating = self.daemon.agents.start_guard(self.id).await;
         crate::threads::purge(&self.daemon, self.id, self.worktree.clone()).await?;
         self.worktree = None;
@@ -256,7 +249,7 @@ impl Actor {
     }
 
     /// `agent/accept`: merges the run's latest commit into the project's current branch, removes
-    /// its worktree and branch, and records it `accepted` (#157, #68).
+    /// its worktree and branch, and records it `accepted`.
     async fn accept(
         &mut self,
         id: AcceptId,
@@ -355,14 +348,17 @@ impl Actor {
         if self.accepted() {
             return Err(super::run_accepted(self.id));
         }
+        let conflict = || {
+            ErrorObject::wisp(
+                ErrorKind::IdConflict,
+                format!("turn {turn_id} was already sent with a different text"),
+            )
+        };
         if let Some(sent) = self.turns.get(&turn_id) {
             return if *sent == text {
                 self.snapshot()
             } else {
-                Err(ErrorObject::wisp(
-                    ErrorKind::IdConflict,
-                    format!("turn {turn_id} was already sent with a different text"),
-                ))
+                Err(conflict())
             };
         }
         if let Some(live) = &self.live {
@@ -376,12 +372,7 @@ impl Actor {
                     self.last_message = text;
                     return self.snapshot();
                 }
-                Err(SendError::IdConflict) => {
-                    return Err(ErrorObject::wisp(
-                        ErrorKind::IdConflict,
-                        format!("turn {turn_id} was already sent with a different text"),
-                    ));
-                }
+                Err(SendError::IdConflict) => return Err(conflict()),
                 Err(SendError::Unsupported) => {
                     return Err(ErrorObject::wisp(
                         ErrorKind::RunNotResumable,
@@ -468,14 +459,9 @@ impl Actor {
     }
 
     /// Records that `turn_id` was sent with `text`, in memory and in the store, so a retry of
-    /// `agent/send` stays idempotent across a wispd restart, not only across a resumed CLI
-    /// process within the same wispd (#190).
-    /// Runs after the CLI has already accepted the turn (`live.run.send`'s `Ok`, or a successful
-    /// `launch` in `resume`), so a crash between the two makes a retried `agent/send` after a
-    /// restart send the message again: at-least-once, not exactly-once (#190 review non-blocking
-    /// note). That's the same failure mode #190 was fixing in the other direction (a restart
-    /// forgetting a turn was ever sent), and strictly better: a duplicate is visible in the
-    /// transcript, a lost retry silently drops the user's message.
+    /// `agent/send` stays idempotent across a wispd restart. It runs after the CLI accepted the
+    /// turn, so a crash in between sends a retried message again: at-least-once, which beats
+    /// silently dropping the user's message.
     async fn record_turn(&mut self, turn_id: TurnId, text: String) {
         self.turns.insert(turn_id, text.clone());
         let (run_id, id) = (self.row.id, self.id);
@@ -566,7 +552,7 @@ impl Actor {
             .worktrees
             .git_common_dir(Path::new(&worktree.repo_path))
             .await
-            .map_err(|error| ErrorObject::wisp(ErrorKind::WorktreeFailed, error.to_string()))?;
+            .map_err(|error| super::worktree_failed(&error))?;
         let git_dir = sandbox_path(&git_dir, "the repository's git folder")?;
         Ok((cwd, git_dir))
     }
@@ -593,13 +579,6 @@ impl Actor {
             return;
         };
         match &event {
-            Event::SessionStarted { session_id, .. } => {
-                if let Some(item) = output_item(&event) {
-                    self.push(item).await;
-                }
-                self.row.state.session_id = Some(session_id.clone());
-                self.save().await;
-            }
             Event::AccountFallback {
                 from_account,
                 to_account,
@@ -616,23 +595,22 @@ impl Actor {
                 self.row.state.account_id.clone_from(to_account);
                 self.save().await;
             }
-            Event::Usage(_) | Event::RateLimit(_) => {
-                self.record_usage(event.clone()).await;
-                if let Some(item) = output_item(&event) {
-                    self.push(item).await;
-                }
-            }
+            Event::Usage(_) | Event::RateLimit(_) => self.record_usage(event.clone()).await,
             Event::Finished { outcome, .. } => {
                 let outcome = outcome.clone();
                 self.record_usage(event).await;
                 self.clear_live();
                 self.finish(&outcome).await;
+                return;
             }
-            _ => {
-                if let Some(item) = output_item(&event) {
-                    self.push(item).await;
-                }
-            }
+            _ => {}
+        }
+        if let Some(item) = output_item(&event) {
+            self.push(item).await;
+        }
+        if let Event::SessionStarted { session_id, .. } = event {
+            self.row.state.session_id = Some(session_id);
+            self.save().await;
         }
     }
 
@@ -659,7 +637,7 @@ impl Actor {
     }
 
     /// Records how a CLI process ended. Unless wispd stopped it, commits the worktree's changes
-    /// first, through #166's hardened commit, and reports the commit.
+    /// first, and reports the commit.
     async fn finish(&mut self, outcome: &Outcome) {
         self.flush().await;
         if self.stopping && matches!(outcome, Outcome::Cancelled) {
@@ -767,8 +745,6 @@ impl Actor {
         }
     }
 
-    /// From a tokio task: the event log's own writer thread does the SQLite work, so awaiting it
-    /// here yields this actor's worker thread to other work instead of blocking it (#190).
     async fn append(&self, event: WispEvent) -> u64 {
         self.daemon
             .log
@@ -831,17 +807,23 @@ fn model_usage(total: SessionModelUsage) -> ModelUsage {
     }
 }
 
-/// The merge commit's message, when accepting a run needs one: `Merge wisp run: <the task's first
-/// line>`, cut to 72 characters, then the run and its branch.
-fn merge_message(prompt: &str, run: RunId, branch: &str) -> String {
-    let first = prompt
+/// `<prefix><text's first non-blank line>`, cut to 72 characters.
+fn subject(prefix: &str, text: &str) -> String {
+    let first = text
         .lines()
         .find(|line| !line.trim().is_empty())
         .unwrap_or("agent run");
-    let mut subject: String = format!("Merge wisp run: {}", first.trim());
+    let subject = format!("{prefix}{}", first.trim());
     if subject.chars().count() > 72 {
-        subject = subject.chars().take(69).collect::<String>() + "...";
+        subject.chars().take(69).collect::<String>() + "..."
+    } else {
+        subject
     }
+}
+
+/// The merge commit's message, when accepting a run needs one.
+fn merge_message(prompt: &str, run: RunId, branch: &str) -> String {
+    let subject = subject("Merge wisp run: ", prompt);
     format!("{subject}\n\nAccepted in wisp: agent run {run}, branch {branch}.\n")
 }
 
@@ -856,16 +838,8 @@ fn accept_error(error: &crate::worktree::AcceptError) -> ErrorObject {
     }
 }
 
-/// `wisp: <the message's first line>`, cut to 72 characters, then the run it belongs to.
 fn commit_message(message: &str, run: RunId) -> String {
-    let first = message
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("agent run");
-    let mut subject: String = format!("wisp: {}", first.trim());
-    if subject.chars().count() > 72 {
-        subject = subject.chars().take(69).collect::<String>() + "...";
-    }
+    let subject = subject("wisp: ", message);
     format!("{subject}\n\nCommitted by wisp for agent run {run}.\n")
 }
 
@@ -959,17 +933,9 @@ mod tests {
         (row, worktree)
     }
 
-    /// #190 N6 / review item 5: `Actor::run`'s select order lets a queued `agent/cancel` through
-    /// promptly even while the backend keeps producing output, instead of only once its stream
-    /// goes quiet. Deterministic, on a `current_thread` runtime: the whole flood is buffered in
-    /// the channel *before* the actor's loop ever runs, so the event branch of its `select!` is
-    /// synchronously ready on every iteration without needing a producer task to keep pace with
-    /// the consumer — nothing here depends on real concurrency or timing. `Command::Cancel` is
-    /// likewise queued before the loop starts, so on its very first iteration both branches are
-    /// ready and only the `select!`'s order decides which one runs. Under the old, event-first
-    /// order this drains the whole flood — appending it as `agent.output` — before ever reaching
-    /// the command; confirmed by temporarily restoring that order and observing this test fail on
-    /// the `head()` assertion below, well past the timeout.
+    /// `Actor::run`'s select order answers a queued `agent/cancel` before draining a flood of
+    /// output. Deterministic: the flood and the command are both queued before the loop runs,
+    /// so only the `select!`'s order decides which goes first.
     #[tokio::test]
     async fn a_cancel_is_answered_promptly_while_output_floods_in() {
         const FLOOD: usize = 10_000;
@@ -1007,9 +973,7 @@ mod tests {
             .expect("the actor answered")
             .expect("cancelling a live run always succeeds");
 
-        // Nothing but the one `Cancel` command has been processed: no event, and so nothing
-        // appended to the log. The old order would have drained (and appended) some or all of
-        // the 10,000-item flood by now.
+        // Nothing but the `Cancel` has been processed, so nothing was appended to the log.
         assert_eq!(
             daemon.log.head(),
             0,

@@ -6,7 +6,6 @@
 # Fixture lines starting with # are comments and blank lines are skipped. These directives act:
 #   @read          read one line of stdin, or exit 0 if stdin has ended
 #   @eof           read stdin until it ends
-#   @sleep <s>     sleep
 #   @stderr <text> write a line to stderr
 #   @exit <code>   exit
 #   @trap-int      on SIGINT, record it and exit 130; prints @trap-armed once installed, a
@@ -15,7 +14,7 @@
 #   @hang          wait forever
 #   @spawn-child   spawn a child that dumps its own environment to $dir/child-env, stripping the
 #                  credential variables first when CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1, the way
-#                  the real CLI is documented to (0004 [16], #118)
+#                  the real CLI is documented to (0004 [16])
 # Every other line goes to stdout as it is.
 
 dir=$FAKE_CLAUDE_DIR
@@ -28,7 +27,6 @@ while IFS= read -r line <&3; do
     '#'* | '') ;;
     '@read') IFS= read -r input || exit 0; printf '%s\n' "$input" >> "$dir/stdin" ;;
     '@eof') while IFS= read -r input; do printf '%s\n' "$input" >> "$dir/stdin"; done ;;
-    '@sleep '*) sleep "${line#@sleep }" ;;
     '@stderr '*) printf '%s\n' "${line#@stderr }" >&2 ;;
     '@exit '*) exit "${line#@exit }" ;;
     '@trap-int') trap 'echo SIGINT >> "$dir/signals"; exit 130' INT; printf '%s\n' @trap-armed ;;
