@@ -13,12 +13,14 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Instant, sleep_until};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
+use uuid::Uuid;
 use wisp_protocol::jsonrpc::ErrorObject;
+use wisp_protocol::{AcceptId, AgentMerge};
 use wisp_protocol::{
     AccountChoice, AccountId, AgentFailureKind, AgentOutcome, AgentOutputItem, AgentRun,
     DiffSummary, ErrorKind, ProjectId, RunId, TurnId, WispEvent,
 };
-use wisp_store::{Run as RunRow, SessionModelUsage, Worktree};
+use wisp_store::{Run as RunRow, RunAccept, SessionModelUsage, Worktree};
 
 use super::convert::{self, agent_run, item_bytes, output_item};
 use super::worker::sandbox_path;
@@ -48,6 +50,12 @@ pub(super) enum Command {
     Cancel {
         reply: oneshot::Sender<Result<AgentRun, ErrorObject>>,
     },
+    /// `agent/accept`.
+    Accept {
+        id: AcceptId,
+        reviewed: Option<String>,
+        reply: oneshot::Sender<Result<(AgentRun, AgentMerge), ErrorObject>>,
+    },
 }
 
 struct Live {
@@ -67,7 +75,8 @@ pub(super) struct Actor {
     id: RunId,
     project: ProjectId,
     row: RunRow,
-    worktree: Worktree,
+    /// The run's worktree, until `agent/accept` removes it.
+    worktree: Option<Worktree>,
     live: Option<Live>,
     batch: Batch,
     /// Messages sent to the run while this wispd runs, by turn id, for `agent/send`'s
@@ -85,7 +94,7 @@ impl Actor {
     pub fn new(
         daemon: Arc<Daemon>,
         row: RunRow,
-        worktree: Worktree,
+        worktree: Option<Worktree>,
         turns: HashMap<TurnId, String>,
     ) -> Self {
         let id = RunId::try_from(row.id).unwrap_or_else(|_| RunId::generate());
@@ -113,7 +122,11 @@ impl Actor {
     }
 
     pub fn snapshot(&self) -> Result<AgentRun, ErrorObject> {
-        agent_run(&self.row, Some(&self.worktree))
+        agent_run(&self.row, self.worktree.as_ref())
+    }
+
+    fn accepted(&self) -> bool {
+        self.row.state.status == convert::ACCEPTED
     }
 
     pub async fn run(mut self, mut commands: mpsc::Receiver<Command>, shutdown: CancellationToken) {
@@ -165,12 +178,116 @@ impl Actor {
                 }
                 let _ = reply.send(self.snapshot());
             }
+            Command::Accept {
+                id,
+                reviewed,
+                reply,
+            } => {
+                let answer = self.accept(id, reviewed).await;
+                let _ = reply.send(answer);
+            }
         }
+    }
+
+    /// `agent/accept`: merges the run's latest commit into the project's current branch, removes
+    /// its worktree and branch, and records it `accepted` (#157, #68).
+    async fn accept(
+        &mut self,
+        id: AcceptId,
+        reviewed: Option<String>,
+    ) -> Result<(AgentRun, AgentMerge), ErrorObject> {
+        if let Some(accept) = &self.row.state.accept {
+            if accept.id == Uuid::from(id) {
+                return Ok((self.snapshot()?, convert::merge(accept)));
+            }
+            return Err(super::run_accepted(self.id));
+        }
+        let refused = |why: String| ErrorObject::wisp(ErrorKind::MergeRefused, why);
+        if self.live.is_some() {
+            return Err(refused(format!(
+                "run {} is still running; wait for it to finish, or cancel it, then accept",
+                self.id
+            )));
+        }
+        let Some(commit) = self.row.state.commit_sha.clone() else {
+            return Err(refused(format!(
+                "run {} has no committed changes to accept",
+                self.id
+            )));
+        };
+        if let Some(reviewed) = reviewed
+            && reviewed != commit
+        {
+            return Err(refused(format!(
+                "run {} has committed new changes since {reviewed}, the commit you reviewed; \
+                 review {commit} before accepting",
+                self.id
+            )));
+        }
+        let Some(worktree) = self.worktree.clone() else {
+            return Err(ErrorObject::internal_error(format!(
+                "run {} has no recorded worktree",
+                self.id
+            )));
+        };
+        let worktrees = &self.daemon.agents.worktrees;
+        let repo = Path::new(&worktree.repo_path);
+        let message = merge_message(&self.row.fields.prompt, self.id, &worktree.branch);
+        let accepted = worktrees
+            .accept(repo, &commit, &message)
+            .await
+            .map_err(|error| accept_error(&error))?;
+        info!(run = %self.id, into = %accepted.into, commit = %accepted.commit, "accepted an agent run");
+        if let Err(error) = worktrees
+            .remove(repo, Path::new(&worktree.path), &worktree.branch)
+            .await
+        {
+            warn!(run = %self.id, %error, "could not remove an accepted run's worktree");
+        }
+
+        let accept = RunAccept {
+            id: id.into(),
+            commit: accepted.commit,
+            into: accepted.into,
+            how: convert::merge_how_text(accepted.how).to_owned(),
+        };
+        convert::ACCEPTED.clone_into(&mut self.row.state.status);
+        self.row.state.error = None;
+        self.row.state.accept = Some(accept.clone());
+        let (row_id, state) = (self.row.id, self.row.state.clone());
+        let saved = store(&self.daemon, move |db| {
+            db.accept_run(row_id, &state)
+                .map_err(|error| store_error(&error))
+        })
+        .await;
+        match saved {
+            Ok(row) => self.row = row,
+            Err(error) => {
+                warn!(run = %self.id, error = %error.message, "could not store an accepted run");
+            }
+        }
+        self.worktree = None;
+        let merge = convert::merge(&accept);
+        self.flush().await;
+        self.append(WispEvent::AgentAccepted {
+            run_id: self.id,
+            merge: merge.clone(),
+        })
+        .await;
+        self.append(WispEvent::AgentUpdated {
+            run_id: self.id,
+            state: convert::run_state(&self.row),
+        })
+        .await;
+        Ok((self.snapshot()?, merge))
     }
 
     async fn send(&mut self, turn_id: TurnId, text: String) -> Result<AgentRun, ErrorObject> {
         if text.trim().is_empty() {
             return Err(ErrorObject::invalid_params("text must not be empty"));
+        }
+        if self.accepted() {
+            return Err(super::run_accepted(self.id));
         }
         if let Some(sent) = self.turns.get(&turn_id) {
             return if *sent == text {
@@ -366,12 +483,15 @@ impl Actor {
     }
 
     async fn worker_paths(&self) -> Result<(PathBuf, PathBuf), ErrorObject> {
-        let cwd = sandbox_path(Path::new(&self.worktree.path), "the run's worktree")?;
+        let Some(worktree) = &self.worktree else {
+            return Err(super::run_accepted(self.id));
+        };
+        let cwd = sandbox_path(Path::new(&worktree.path), "the run's worktree")?;
         let git_dir = self
             .daemon
             .agents
             .worktrees
-            .git_common_dir(Path::new(&self.worktree.repo_path))
+            .git_common_dir(Path::new(&worktree.repo_path))
             .await
             .map_err(|error| ErrorObject::wisp(ErrorKind::WorktreeFailed, error.to_string()))?;
         let git_dir = sandbox_path(&git_dir, "the repository's git folder")?;
@@ -522,25 +642,28 @@ impl Actor {
     /// Commits whatever the run changed in its worktree, on its branch, and measures the branch
     /// against the worktree's base. `None` when there was nothing new to commit.
     async fn commit(&self) -> Result<Option<DiffSummary>, String> {
-        if self.worktree.git_dir.is_empty() {
+        let Some(worktree) = &self.worktree else {
+            return Err("the run was accepted, and its worktree is gone".to_owned());
+        };
+        if worktree.git_dir.is_empty() {
             return Err(
                 "the run's worktree has no recorded git folder, so wispd can't commit it safely"
                     .to_owned(),
             );
         }
         let worktrees = &self.daemon.agents.worktrees;
-        let path = Path::new(&self.worktree.path);
-        let git_dir = Path::new(&self.worktree.git_dir);
+        let path = Path::new(&worktree.path);
+        let git_dir = Path::new(&worktree.git_dir);
         let message = commit_message(&self.last_message, self.id);
         let commit = worktrees
-            .commit_all(path, git_dir, Path::new(&self.worktree.repo_path), &message)
+            .commit_all(path, git_dir, Path::new(&worktree.repo_path), &message)
             .await
             .map_err(|error| error.to_string())?;
         let Some(commit) = commit else {
             return Ok(None);
         };
         let stat = worktrees
-            .diff_stat(path, git_dir, &self.worktree.base)
+            .diff_stat(path, git_dir, &worktree.base)
             .await
             .map_err(|error| error.to_string())?;
         Ok(Some(DiffSummary {
@@ -632,6 +755,31 @@ fn model_usage(total: SessionModelUsage) -> ModelUsage {
             cache_write_tokens: total.cache_write_tokens,
             cost_usd_micros: total.cost_usd_micros,
         },
+    }
+}
+
+/// The merge commit's message, when accepting a run needs one: `Merge wisp run: <the task's first
+/// line>`, cut to 72 characters, then the run and its branch.
+fn merge_message(prompt: &str, run: RunId, branch: &str) -> String {
+    let first = prompt
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("agent run");
+    let mut subject: String = format!("Merge wisp run: {}", first.trim());
+    if subject.chars().count() > 72 {
+        subject = subject.chars().take(69).collect::<String>() + "...";
+    }
+    format!("{subject}\n\nAccepted in wisp: agent run {run}, branch {branch}.\n")
+}
+
+fn accept_error(error: &crate::worktree::AcceptError) -> ErrorObject {
+    use crate::worktree::AcceptError;
+    match error {
+        AcceptError::Refused(message) => ErrorObject::wisp(ErrorKind::MergeRefused, message),
+        AcceptError::Conflict { .. } => {
+            ErrorObject::wisp(ErrorKind::MergeConflict, error.to_string())
+        }
+        AcceptError::Git(error) => ErrorObject::wisp(ErrorKind::MergeRefused, error.to_string()),
     }
 }
 

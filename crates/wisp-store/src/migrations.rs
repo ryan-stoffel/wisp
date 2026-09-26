@@ -162,6 +162,16 @@ const MIGRATIONS: &[Migration] = &[
         );
         CREATE INDEX events_run ON events (run_id, seq);",
     },
+    // Accepting a run (#157): `agent/accept`'s client-generated id, for its idempotency, and what
+    // the merge did to the project's repository (`merge_how` is `fastForward`, `merge`, or
+    // `upToDate`). All NULL until the run is accepted.
+    Migration {
+        version: 8,
+        sql: "ALTER TABLE runs ADD COLUMN accept_id TEXT;
+        ALTER TABLE runs ADD COLUMN merge_commit TEXT;
+        ALTER TABLE runs ADD COLUMN merge_into TEXT;
+        ALTER TABLE runs ADD COLUMN merge_how TEXT;",
+    },
     // Turn idempotency across a restart (#190): `Actor::turns` kept sent turns only in memory, so
     // a wispd restart lost `agent/send`'s idempotency (0014) for a run's `turnId`s, and a retried
     // `agent/send` could resume a session twice with the same message. No foreign key to `runs`,
