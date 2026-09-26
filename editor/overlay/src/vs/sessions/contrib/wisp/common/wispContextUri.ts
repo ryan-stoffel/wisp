@@ -63,10 +63,10 @@ export interface IParsedContextUri {
 }
 
 /**
- * The reverse of {@link toContextUri}, or `undefined` for a URI that isn't one of ours, or whose
- * path is the root or exactly one name that passes {@link validateContextFileName}. Nothing gets
- * past this into `context/read`, `context/write`, or the banner with a `..`, a subfolder, or an
- * encoded separator, whether wispd would have refused it too or not.
+ * The reverse of {@link toContextUri}, for a URI whose path is the root or exactly one name that
+ * passes {@link validateContextFileName}; `undefined` for anything else, including a URI that
+ * isn't one of ours. Nothing gets past this into `context/read`, `context/write`, or the banner
+ * with a `..`, a subfolder, or an encoded separator, whether wispd would have refused it too or not.
  */
 export function parseContextUri(uri: URI): IParsedContextUri | undefined {
 	if (uri.scheme !== WISP_CONTEXT_SCHEME || !uri.authority) {
