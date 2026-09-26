@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, isAbsolute, join, relative } from 'node:path';
 import { test } from 'node:test';
 import { LIMITS, nameProblem, textProblem } from '../src/manifest.ts';
+import { checkScenes, parseBody } from '../src/request.ts';
 import { scenarios } from '../src/scenarios.ts';
 
 test('ships the Agents window, startup, and editor scenarios', () => {
@@ -88,4 +89,19 @@ test('the publish job, and the request parser, import only Node built-ins, so th
       );
     }
   }
+});
+
+test("the pull request template's wisp-media block asks for nothing until its example lines are uncommented", async () => {
+  const template = await readFile(join(import.meta.dirname, '..', '..', '..', '.github', 'pull_request_template.md'), 'utf8');
+
+  assert.throws(() => parseBody(template), /names no scene/);
+  const request = parseBody(template.replace(/^# (after|before-after|video):/gm, '$1:'));
+  assert.deepEqual(
+    request.entries.map((entry) => entry.mode),
+    ['after', 'before-after', 'video'],
+  );
+  checkScenes(
+    request,
+    scenarios.map((scenario) => scenario.name),
+  );
 });
