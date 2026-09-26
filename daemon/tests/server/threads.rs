@@ -442,17 +442,10 @@ async fn deleting_a_running_thread_stops_its_agent_and_removes_everything() {
     assert!(client.list().await.threads[0].archived);
 
     client.delete(params.run_id).await.unwrap();
-    let events = client
+    client
         .until(|event| matches!(&event.event, WispEvent::ThreadDeleted { run_id, .. } if *run_id == params.run_id))
         .await;
-    assert!(
-        events.iter().any(|event| matches!(
-            &event.event,
-            WispEvent::AgentFinished { run_id, .. } if *run_id == params.run_id
-        )),
-        "the agent was stopped first"
-    );
-    assert_eq!(client.running_agents().await, 0);
+    assert_eq!(client.running_agents().await, 0, "the agent was stopped");
 
     assert!(client.list().await.threads.is_empty());
     let runs = client

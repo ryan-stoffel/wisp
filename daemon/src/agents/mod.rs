@@ -578,11 +578,19 @@ async fn ask<T>(
     id: RunId,
     command: impl FnOnce(oneshot::Sender<Result<T, ErrorObject>>) -> Command,
 ) -> Result<T, ErrorObject> {
-    let actor = actor_for(daemon, id).await?;
     let (reply, answer) = oneshot::channel();
+    let mut command = command(reply);
     let stopping = || ErrorObject::internal_error("wispd is stopping");
-    actor.send(command(reply)).await.map_err(|_| stopping())?;
-    answer.await.map_err(|_| stopping())?
+    // An actor that `thread/delete` just stopped has closed its channel: look the run up again,
+    // which then finds it gone.
+    for _ in 0..2 {
+        let actor = actor_for(daemon, id).await?;
+        match actor.send(command).await {
+            Ok(()) => return answer.await.map_err(|_| stopping())?,
+            Err(mpsc::error::SendError(returned)) => command = returned,
+        }
+    }
+    Err(stopping())
 }
 
 /// `agent/send`.
