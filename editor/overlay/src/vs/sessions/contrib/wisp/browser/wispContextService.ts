@@ -3,14 +3,15 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
-import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
-import { IObservable, observableValue } from '../../../../base/common/observable.js';
+import { Disposable, DisposableMap, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { autorun, IObservable, observableValue } from '../../../../base/common/observable.js';
 import { localize } from '../../../../nls.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { generateUuidV7 } from '../../../../platform/wisp/common/uuidv7.js';
 import { IWispdService, WispdError, WispdState, WispdSubscriptionMessage } from '../../../../platform/wisp/common/wispd.js';
 import type { ContextFile, ContextReadResult, ProjectId } from '../../../../platform/wisp/common/wispProtocol.js';
+import { IWispProjectsService } from '../../providers/wisp/browser/wispProjectsService.js';
 import { WISP_CONTEXT_EDITOR_WRITER } from '../common/wispContextUri.js';
 
 export const IWispContextService = createDecorator<IWispContextService>('wispContextService');
@@ -52,25 +53,35 @@ export interface IWispContextService {
 	write(project: ProjectId, path: string, content: string): Promise<ContextFile>;
 }
 
-class Watch {
+/** One project's watch. Disposing it ends its subscription, which `WispContextService` does when
+ * the project leaves `IWispProjectsService.projects`, or when the service itself is disposed. */
+class Watch extends Disposable {
 	readonly state = observableValue<WispContextState>('wispContextState', { kind: 'idle' });
-	readonly subscription = new MutableDisposable();
+	readonly subscription = this._register(new MutableDisposable());
 	/** Bumped on every list, resync, and host change, so a stale answer or event is dropped. */
 	generation = 0;
 	/** Whether something has asked for this project's state, so a host connecting should list it. */
 	watching = false;
+
+	/** Whether this watch, or the service, has since been disposed: a `load` in flight when either
+	 * happens must not hand `subscription` a value, since `MutableDisposable` silently drops (never
+	 * disposes) one set after it is disposed. */
+	get disposed(): boolean {
+		return this._store.isDisposed;
+	}
 }
 
 export class WispContextService extends Disposable implements IWispContextService {
 	declare readonly _serviceBrand: undefined;
 
-	private readonly watches = new Map<ProjectId, Watch>();
+	private readonly watches = this._register(new DisposableMap<ProjectId, Watch>());
 	private connection: WispdState | undefined;
 	/** The state arrives from the shared process; a slow first answer must not overwrite a newer event. */
 	private receivedState = false;
 
 	constructor(
 		@IWispdService private readonly wispdService: IWispdService,
+		@IWispProjectsService projectsService: IWispProjectsService,
 		@ILogService private readonly logService: ILogService,
 	) {
 		super();
@@ -83,6 +94,21 @@ export class WispContextService extends Disposable implements IWispContextServic
 				this.onState(state);
 			}
 		}, () => { /* The shared process is gone; the window is closing. */ });
+		// Only once the current host's projects are confidently known (never mid reset, such as the
+		// moment a host change clears the list before relisting) does a project missing from it mean
+		// it is gone, not just not listed yet; dropping a watch ends its `events/subscribe` too.
+		this._register(autorun(reader => {
+			const projects = projectsService.projects.read(reader);
+			if (projectsService.state.read(reader).kind !== 'ready') {
+				return;
+			}
+			const ids = new Set(projects.map(project => project.id));
+			for (const id of [...this.watches.keys()]) {
+				if (!ids.has(id)) {
+					this.watches.deleteAndDispose(id);
+				}
+			}
+		}));
 	}
 
 	state(project: ProjectId): IObservable<WispContextState> {
@@ -126,7 +152,6 @@ export class WispContextService extends Disposable implements IWispContextServic
 		let watch = this.watches.get(project);
 		if (!watch) {
 			watch = new Watch();
-			this._register(watch.subscription);
 			this.watches.set(project, watch);
 		}
 		return watch;
@@ -159,7 +184,8 @@ export class WispContextService extends Disposable implements IWispContextServic
 	 * borrows `project/list`'s: it reflects the log's current head regardless of what it lists.
 	 * Fetching it first, then the files, means a write racing the two is covered by the
 	 * subscription's replay if it lands after the files snapshot, and by the snapshot if it lands
-	 * before; either way `upsert` treats it as one more idempotent update.
+	 * before; either way `upsert` treats it as one more idempotent update. #214 tracks giving
+	 * `context/list` its own `seq`, which would drop the extra round trip.
 	 */
 	private async load(project: ProjectId, watch: Watch): Promise<void> {
 		const generation = ++watch.generation;
@@ -169,7 +195,7 @@ export class WispContextService extends Disposable implements IWispContextServic
 		try {
 			({ seq } = await this.wispdService.request('project/list', {}));
 		} catch (error) {
-			if (generation === watch.generation) {
+			if (generation === watch.generation && !watch.disposed) {
 				this.fail(project, watch, error);
 			}
 			return;
@@ -178,12 +204,15 @@ export class WispContextService extends Disposable implements IWispContextServic
 		try {
 			({ files } = await this.wispdService.request('context/list', { project }));
 		} catch (error) {
-			if (generation === watch.generation) {
+			if (generation === watch.generation && !watch.disposed) {
 				this.fail(project, watch, error);
 			}
 			return;
 		}
-		if (generation !== watch.generation) {
+		if (generation !== watch.generation || watch.disposed) {
+			// Disposed either because this project left the list mid-load, or because the whole
+			// service did (the window closing): `subscription.value` below would silently drop the
+			// new subscription rather than dispose it, since `MutableDisposable` no-ops once disposed.
 			return;
 		}
 		watch.state.set({ kind: 'ready', files }, undefined);
@@ -224,9 +253,17 @@ export class WispContextService extends Disposable implements IWispContextServic
 		}
 	}
 
+	/**
+	 * Folds `file` into a `ready` watch. Anything else (`idle`, `loading`, `failed`) is left alone:
+	 * treating it as an empty list would turn it into a `ready` one holding only this file, hiding a
+	 * `failed` state's error, or racing the in-flight `load` that is about to replace it anyway.
+	 */
 	private upsert(watch: Watch, file: ContextFile): void {
 		const state = watch.state.get();
-		const files = state.kind === 'ready' ? state.files : [];
+		if (state.kind !== 'ready') {
+			return;
+		}
+		const files = state.files;
 		const index = files.findIndex(existing => existing.path === file.path);
 		if (index !== -1 && JSON.stringify(files[index]) === JSON.stringify(file)) {
 			return;
