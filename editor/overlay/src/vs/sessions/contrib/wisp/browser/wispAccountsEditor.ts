@@ -32,10 +32,11 @@ import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPan
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import {
-	cliAccountLabel, formatLimitDetail, formatPeriodValue, formatUsedPercent,
+	cliAccountLabel, cliLabel, formatLimitDetail, formatPeriodValue, formatUsedPercent,
 	IWispAccountsService, keyAccountLabel, matchUsageAccount, providerLabel, windowLabel,
 } from './wispAccounts.js';
 import { IWispHostStatusService } from './wispHostStatusService.js';
+import { WispSignInFlow } from './wispSignIn.js';
 
 export const WISP_SHOW_ACCOUNTS_COMMAND = 'wisp.accounts.show';
 
@@ -169,12 +170,12 @@ export class WispAccountsEditor extends EditorPane {
 				return;
 			}
 			for (const cli of clis) {
-				list.appendChild(this.renderCliRow(cli));
+				list.appendChild(this.renderCliRow(cli, connected));
 			}
 		}));
 	}
 
-	private renderCliRow(cli: DetectedCli): HTMLElement {
+	private renderCliRow(cli: DetectedCli, connected: boolean): HTMLElement {
 		const item = $('li.wisp-accounts-row');
 		const icon = append(item, $('span.wisp-accounts-row-icon', { 'aria-hidden': 'true' }));
 		icon.classList.add(...ThemeIcon.asClassNameArray(Codicon.terminal));
@@ -184,9 +185,18 @@ export class WispAccountsEditor extends EditorPane {
 
 		const signInLabel = localize('wispAccounts.signIn', "Sign in");
 		const signIn = append(item, $<HTMLButtonElement>('button.wisp-accounts-link-button', { type: 'button' }, signInLabel));
-		const reason = localize('wispAccounts.signInUnavailable', "Signing in from wisp isn't available yet.");
-		setDisabled(signIn, true, reason);
-		this.clisRowStore.add(this.hoverService.setupDelayedHover(signIn, { content: reason }));
+		if (connected && cli.installed) {
+			this.clisRowStore.add(addDisposableListener(signIn, EventType.CLICK, () => {
+				const host = this.hostStatusService.configuredHost.get();
+				this.instantiationService.createInstance(WispSignInFlow).run(cli, host);
+			}));
+		} else {
+			const reason = connected
+				? localize('wispAccounts.signInNotInstalled', "Install {0} on the host to sign in.", cliLabel(cli.cli))
+				: localize('wispAccounts.signInNoHost', "Connect to a host to sign in.");
+			setDisabled(signIn, true, reason);
+			this.clisRowStore.add(this.hoverService.setupDelayedHover(signIn, { content: reason }));
+		}
 
 		item.setAttribute('aria-label', `${cliAccountLabel(cli)}, ${describeCliState(cli)}`);
 		return item;
