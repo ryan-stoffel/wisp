@@ -13,15 +13,18 @@ use tempfile::TempDir;
 use tokio::time::Instant;
 use wisp_protocol::jsonrpc::{ErrorObject, INVALID_PARAMS, Message, Notification};
 use wisp_protocol::methods::{
-    AgentCancel, AgentEvents, AgentList, AgentSend, AgentStart, EventsEvent, EventsSubscribe,
-    HostHealth, NotificationMethod, ProjectCreate, RequestMethod, UsageGet,
+    AgentAccept, AgentCancel, AgentDiff, AgentEvents, AgentFile, AgentList, AgentRequestChanges,
+    AgentSend, AgentStart, EventsEvent, EventsSubscribe, HostHealth, NotificationMethod,
+    ProjectCreate, RequestMethod, UsageGet,
 };
 use wisp_protocol::{
-    AccountChoice, AgentCancelParams, AgentEventsParams, AgentFailureKind, AgentListParams,
-    AgentOutcome, AgentOutputItem, AgentPolicy, AgentRun, AgentSendParams, AgentStartParams,
-    AgentStatus, DiffSummary, ErrorKind, EventsEventParams, EventsSubscribeParams,
-    HostHealthParams, InitializeResult, Project, ProjectCreateParams, ProjectId, Provider, RunId,
-    TurnId, UsageGetParams, WispEvent,
+    AcceptId, AccountChoice, AgentAcceptParams, AgentAcceptResult, AgentCancelParams,
+    AgentDiffParams, AgentDiffResult, AgentDiffStats, AgentEventsParams, AgentFailureKind,
+    AgentFileParams, AgentFileResult, AgentFileSide, AgentFileStatus, AgentListParams, AgentMerge,
+    AgentMergeKind, AgentOutcome, AgentOutputItem, AgentPolicy, AgentRequestChangesParams,
+    AgentRun, AgentSendParams, AgentStartParams, AgentStatus, DiffSummary, ErrorKind,
+    EventsEventParams, EventsSubscribeParams, HostHealthParams, InitializeResult, Project,
+    ProjectCreateParams, ProjectId, Provider, RunId, TurnId, UsageGetParams, WispEvent,
 };
 use wispd::backend::fake::{FakeBackend, Script, Step};
 use wispd::backend::process::{CancelPolicy, Environment, Launcher};
@@ -976,4 +979,366 @@ async fn workers_are_refused_where_wispd_cannot_sandbox_them() {
     assert!(list(&mut client).await.is_empty(), "nothing was recorded");
     assert_eq!(worktree_count(dir.path()), 0, "and no worktree was made");
     server.stop().await;
+}
+
+fn decode_base64(text: &str) -> Vec<u8> {
+    let value = |c: u8| -> u32 {
+        match c {
+            b'A'..=b'Z' => u32::from(c - b'A'),
+            b'a'..=b'z' => u32::from(c - b'a') + 26,
+            b'0'..=b'9' => u32::from(c - b'0') + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => panic!("not base64: {c}"),
+        }
+    };
+    let mut out = Vec::new();
+    for chunk in text.as_bytes().chunks(4) {
+        let data: Vec<u8> = chunk.iter().copied().filter(|&c| c != b'=').collect();
+        let n = data
+            .iter()
+            .enumerate()
+            .fold(0, |n, (i, &c)| n | (value(c) << (18 - 6 * i)));
+        let bytes = n.to_be_bytes();
+        out.extend_from_slice(&bytes[1..data.len()]);
+    }
+    out
+}
+
+async fn read_file(
+    client: &mut Conn,
+    run_id: RunId,
+    path: &str,
+    side: AgentFileSide,
+) -> Result<AgentFileResult, ErrorObject> {
+    client
+        .call::<AgentFile>(AgentFileParams {
+            run_id,
+            path: path.to_owned(),
+            side,
+        })
+        .await
+}
+
+async fn content(client: &mut Conn, run_id: RunId, path: &str, side: AgentFileSide) -> String {
+    let file = read_file(client, run_id, path, side).await.unwrap();
+    assert!(file.exists, "{path} on {side:?}");
+    String::from_utf8(decode_base64(&file.content.expect("content"))).unwrap()
+}
+
+/// `agent/diff` and `agent/file` show the run's commit against its base.
+async fn assert_reviewable(
+    client: &mut Conn,
+    run_id: RunId,
+    repo: &Path,
+    commit: &str,
+) -> AgentDiffResult {
+    let diff = client
+        .call::<AgentDiff>(AgentDiffParams { run_id })
+        .await
+        .unwrap();
+    assert_eq!(diff.head, commit);
+    assert_eq!(diff.base, git(repo, &["rev-parse", "main"]));
+    assert_eq!(
+        diff.stats,
+        AgentDiffStats {
+            files: 1,
+            insertions: 2,
+            deletions: 1
+        }
+    );
+    assert_eq!(diff.files.len(), 1);
+    let readme = &diff.files[0];
+    assert_eq!(
+        (readme.path.as_str(), readme.status),
+        ("README.md", AgentFileStatus::Modified)
+    );
+    assert!(
+        readme
+            .diff
+            .as_deref()
+            .unwrap()
+            .contains("+Built by an agent.\n"),
+        "{readme:?}"
+    );
+
+    assert_eq!(
+        content(client, run_id, "README.md", AgentFileSide::Head).await,
+        "# App\nBuilt by an agent.\n"
+    );
+    assert_eq!(
+        content(client, run_id, "README.md", AgentFileSide::Base).await,
+        "hello\n"
+    );
+    diff
+}
+
+/// `agent/file` reads nothing outside the run's commits, whatever path it is given.
+async fn assert_paths_are_checked(client: &mut Conn, run_id: RunId) {
+    let missing = read_file(client, run_id, "nope.md", AgentFileSide::Head)
+        .await
+        .unwrap();
+    assert!(!missing.exists && missing.content.is_none());
+    for escape in [
+        "../../../../etc/passwd",
+        "/etc/passwd",
+        "..",
+        "./README.md",
+        "src/../README.md",
+        ".git/config",
+        ".git/worktrees",
+        "a\\..\\..\\b",
+        "",
+    ] {
+        let error = read_file(client, run_id, escape, AgentFileSide::Head)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, INVALID_PARAMS, "{escape:?}: {error:?}");
+    }
+    let unknown = client
+        .call::<AgentFile>(AgentFileParams {
+            run_id: RunId::generate(),
+            path: "README.md".to_owned(),
+            side: AgentFileSide::Head,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(kind(&unknown), ErrorKind::RunNotFound);
+}
+
+/// An accepted run answers a retry of its accept, and nothing else.
+async fn assert_closed_after_accept(
+    client: &mut Conn,
+    accept: &AgentAcceptParams,
+    accepted: &AgentAcceptResult,
+) {
+    let again = client.call::<AgentAccept>(accept.clone()).await.unwrap();
+    assert_eq!(&again, accepted, "a retry gets the same answer");
+    let other = client
+        .call::<AgentAccept>(AgentAcceptParams {
+            id: AcceptId::generate(),
+            ..accept.clone()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(kind(&other), ErrorKind::RunAccepted);
+    let closed = client
+        .call::<AgentDiff>(AgentDiffParams {
+            run_id: accept.run_id,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(kind(&closed), ErrorKind::RunAccepted);
+    let closed = read_file(client, accept.run_id, "README.md", AgentFileSide::Head)
+        .await
+        .unwrap_err();
+    assert_eq!(kind(&closed), ErrorKind::RunAccepted);
+    let closed = client
+        .call::<AgentRequestChanges>(AgentRequestChangesParams {
+            run_id: accept.run_id,
+            turn_id: TurnId::generate(),
+            text: "one more thing".to_owned(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(kind(&closed), ErrorKind::RunAccepted);
+}
+
+#[tokio::test]
+async fn a_finished_run_is_reviewed_accepted_into_the_branch_and_then_closed() {
+    let dir = temp_dir();
+    let project_params = project_params(dir.path());
+    let note = dir
+        .path()
+        .join("context")
+        .join(project_params.id.to_string())
+        .join("notes.md");
+    let host = Host::start(dir, fake(editing_script(&note)));
+    let mut client = host.client().await;
+    let project = create(&mut client, project_params).await;
+    let repo = PathBuf::from(&project.repo_path);
+    subscribe(&mut client, project.id, 0).await;
+    let params = start_params(project.id, "Rewrite the README");
+    let run_id = params.run_id;
+    let started = client.call::<AgentStart>(params).await.unwrap().run;
+    let branch = started.branch.clone().unwrap();
+    let worktree = PathBuf::from(started.worktree_path.clone().unwrap());
+    let events = until(&mut client, updated_to(AgentStatus::Completed)).await;
+    let WispEvent::AgentUpdated { state, .. } = &events.last().unwrap().event else {
+        unreachable!()
+    };
+    let commit = state.diff.as_ref().expect("a commit").commit.clone();
+
+    let diff = assert_reviewable(&mut client, run_id, &repo, &commit).await;
+    assert_paths_are_checked(&mut client, run_id).await;
+
+    let stale = client
+        .call::<AgentAccept>(AgentAcceptParams {
+            run_id,
+            id: AcceptId::generate(),
+            commit: Some(diff.base.clone()),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(kind(&stale), ErrorKind::MergeRefused);
+    assert!(stale.message.contains("since"), "{}", stale.message);
+
+    let accept = AgentAcceptParams {
+        run_id,
+        id: AcceptId::generate(),
+        commit: Some(commit.clone()),
+    };
+    let accepted = client.call::<AgentAccept>(accept.clone()).await.unwrap();
+    assert_eq!(
+        accepted.merge,
+        AgentMerge {
+            commit: commit.clone(),
+            into: "main".to_owned(),
+            how: AgentMergeKind::FastForward,
+        }
+    );
+    assert_eq!(accepted.run.status, AgentStatus::Accepted);
+    assert_eq!(accepted.run.branch, None);
+    assert_eq!(accepted.run.worktree_path, None);
+    assert_eq!(git(&repo, &["rev-parse", "HEAD"]), commit);
+    assert_eq!(
+        std::fs::read_to_string(repo.join("README.md")).unwrap(),
+        "# App\nBuilt by an agent.\n"
+    );
+    assert!(!worktree.exists(), "the worktree is removed");
+    assert_eq!(
+        git(&repo, &["branch", "--list", &branch]),
+        "",
+        "and its branch"
+    );
+    let events = until(&mut client, updated_to(AgentStatus::Accepted)).await;
+    assert!(events.iter().any(|event| matches!(
+        &event.event,
+        WispEvent::AgentAccepted { run_id: id, merge } if *id == run_id && *merge == accepted.merge
+    )));
+
+    assert_closed_after_accept(&mut client, &accept, &accepted).await;
+
+    // After a restart, the accept is still answered from the store.
+    let host = host.restart(fake(Vec::new())).await;
+    let mut client = host.client().await;
+    let runs = list(&mut client).await;
+    assert_eq!(runs[0].status, AgentStatus::Accepted);
+    assert_eq!(runs[0].branch, None);
+    assert_eq!(
+        client.call::<AgentAccept>(accept).await.unwrap(),
+        AgentAcceptResult {
+            run: runs[0].clone(),
+            merge: accepted.merge,
+        }
+    );
+    let closed = client
+        .call::<AgentSend>(send_params(run_id, TurnId::generate(), "hello?"))
+        .await
+        .unwrap_err();
+    assert_eq!(kind(&closed), ErrorKind::RunAccepted);
+    host.server.stop().await;
+}
+
+#[tokio::test]
+async fn review_reads_commits_not_the_worktree_and_accept_waits_for_the_run_to_stop() {
+    let dir = temp_dir();
+    let host = Host::start(
+        dir,
+        fake(vec![
+            init("review-1"),
+            Step::AwaitFollowUp,
+            end_turn("Noted."),
+            Step::Hang,
+        ]),
+    );
+    let mut client = host.client().await;
+    let project = create(&mut client, project_params(host.dir.path())).await;
+    let repo = PathBuf::from(&project.repo_path);
+    subscribe(&mut client, project.id, 0).await;
+    let params = start_params(project.id, "Link a secret");
+    let run_id = params.run_id;
+    let started = client.call::<AgentStart>(params).await.unwrap().run;
+    let worktree = PathBuf::from(started.worktree_path.unwrap());
+
+    let requested = client
+        .call::<AgentRequestChanges>(AgentRequestChangesParams {
+            run_id,
+            turn_id: TurnId::generate(),
+            text: "Please also update the docs.".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(requested.run.status, AgentStatus::Running);
+    until(
+        &mut client,
+        has_item(AgentOutputItem::Text {
+            message_id: None,
+            text: "Please also update the docs.".to_owned(),
+        }),
+    )
+    .await;
+
+    // The worker writes into its worktree while it runs: nothing is reviewable until wispd
+    // commits, and accept waits for the run to stop.
+    let secret_dir = tempfile::tempdir().unwrap();
+    let secret = secret_dir.path().join("secret.txt");
+    std::fs::write(&secret, "do not read me\n").unwrap();
+    std::os::unix::fs::symlink(&secret, worktree.join("leak")).unwrap();
+    std::os::unix::fs::symlink(secret_dir.path(), worktree.join("leakdir")).unwrap();
+    let live = client
+        .call::<AgentDiff>(AgentDiffParams { run_id })
+        .await
+        .unwrap();
+    assert_eq!(live.base, live.head);
+    assert!(live.files.is_empty());
+    let busy = client
+        .call::<AgentAccept>(AgentAcceptParams {
+            run_id,
+            id: AcceptId::generate(),
+            commit: None,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(kind(&busy), ErrorKind::MergeRefused);
+    assert!(busy.message.contains("running"), "{}", busy.message);
+
+    client
+        .call::<AgentCancel>(AgentCancelParams { run_id })
+        .await
+        .unwrap();
+    until(&mut client, updated_to(AgentStatus::Cancelled)).await;
+
+    let diff = client
+        .call::<AgentDiff>(AgentDiffParams { run_id })
+        .await
+        .unwrap();
+    let paths: Vec<_> = diff.files.iter().map(|file| file.path.as_str()).collect();
+    assert_eq!(paths, ["leak", "leakdir"]);
+    assert_eq!(
+        content(&mut client, run_id, "leak", AgentFileSide::Head).await,
+        secret.to_str().unwrap(),
+        "a symlink reads as its target path, never the target's content"
+    );
+    let through = read_file(
+        &mut client,
+        run_id,
+        "leakdir/secret.txt",
+        AgentFileSide::Head,
+    )
+    .await
+    .unwrap();
+    assert!(!through.exists, "no path leads through a symlinked folder");
+
+    let accepted = client
+        .call::<AgentAccept>(AgentAcceptParams {
+            run_id,
+            id: AcceptId::generate(),
+            commit: Some(diff.head.clone()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(accepted.merge.how, AgentMergeKind::FastForward);
+    assert_eq!(git(&repo, &["rev-parse", "HEAD"]), diff.head);
+    host.server.stop().await;
 }

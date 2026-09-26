@@ -73,11 +73,14 @@ pub(crate) fn initialize(
 
 /// The capabilities this wispd advertises. M2 adds `accounts` (#117) and `agentClis` (#114),
 /// distinct capabilities since the two features (stored API keys and detected CLIs) can ship
-/// independently; M3 adds `agents` (#156): the `agent/*` methods and `agent.*` events.
+/// independently; M3 adds `agents` (#156): the `agent/*` methods and `agent.*` events, and
+/// `agentReview` (#157): `agent/diff`, `agent/file`, `agent/accept`, `agent/requestChanges`, and
+/// `agent.accepted`, so an editor can tell a host that reviews runs from one that only runs them.
 fn capabilities_advertised() -> Capabilities {
     Capabilities(BTreeMap::from([
         ("accounts".to_owned(), serde_json::Map::new()),
         ("agentClis".to_owned(), serde_json::Map::new()),
+        ("agentReview".to_owned(), serde_json::Map::new()),
         ("agents".to_owned(), serde_json::Map::new()),
     ]))
 }

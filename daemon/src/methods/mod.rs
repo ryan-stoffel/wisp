@@ -22,10 +22,10 @@ use tokio_util::sync::CancellationToken;
 use wisp_protocol::jsonrpc::{ErrorObject, INVALID_REQUEST, Request, RequestId, Response};
 use wisp_protocol::methods::{
     AccountsDefaultsGet, AccountsDefaultsSet, AccountsKeysAdd, AccountsKeysList,
-    AccountsKeysRemove, AccountsList, AccountsRefresh, AgentCancel, AgentEvents, AgentList,
-    AgentSend, AgentStart, ContextList, ContextRead, ContextWrite, EventsSubscribe,
-    EventsUnsubscribe, HostHealth, HostVersion, Initialize, ProjectCreate, ProjectList,
-    RequestMethod, UsageGet,
+    AccountsKeysRemove, AccountsList, AccountsRefresh, AgentAccept, AgentCancel, AgentDiff,
+    AgentEvents, AgentFile, AgentList, AgentRequestChanges, AgentSend, AgentStart, ContextList,
+    ContextRead, ContextWrite, EventsSubscribe, EventsUnsubscribe, HostHealth, HostVersion,
+    Initialize, ProjectCreate, ProjectList, RequestMethod, UsageGet,
 };
 use wisp_protocol::{EventsSubscribeResult, EventsUnsubscribeResult, SubscriptionId};
 
@@ -109,17 +109,9 @@ pub(crate) async fn dispatch(context: Context, request: Request) -> Reply {
         ContextWrite::NAME => {
             handle::<ContextWrite, _, _>(&request, |p| context::write(&context, p)).await
         }
-        AgentStart::NAME => {
-            handle::<AgentStart, _, _>(&request, |p| agent::start(&context, p)).await
-        }
-        AgentSend::NAME => handle::<AgentSend, _, _>(&request, |p| agent::send(&context, p)).await,
-        AgentCancel::NAME => {
-            handle::<AgentCancel, _, _>(&request, |p| agent::cancel(&context, p)).await
-        }
-        AgentList::NAME => handle::<AgentList, _, _>(&request, |p| agent::list(&context, p)).await,
-        AgentEvents::NAME => {
-            handle::<AgentEvents, _, _>(&request, |p| agent::events(&context, p)).await
-        }
+        name if name.starts_with("agent/") => agent_method(&context, &request)
+            .await
+            .unwrap_or_else(|| Err(ErrorObject::method_not_found(name))),
         EventsSubscribe::NAME => {
             let subscribed = match request.params() {
                 Ok(params) => events::subscribe(&context, params).await,
@@ -156,6 +148,31 @@ pub(crate) async fn dispatch(context: Context, request: Request) -> Reply {
     Reply::Response(Response {
         id: Some(id),
         result,
+    })
+}
+
+/// Answers an `agent/*` method (#156, #157), or `None` if there is no such method.
+async fn agent_method(context: &Context, request: &Request) -> Option<Result<Value, ErrorObject>> {
+    Some(match request.method.as_str() {
+        AgentStart::NAME => handle::<AgentStart, _, _>(request, |p| agent::start(context, p)).await,
+        AgentSend::NAME => handle::<AgentSend, _, _>(request, |p| agent::send(context, p)).await,
+        AgentCancel::NAME => {
+            handle::<AgentCancel, _, _>(request, |p| agent::cancel(context, p)).await
+        }
+        AgentList::NAME => handle::<AgentList, _, _>(request, |p| agent::list(context, p)).await,
+        AgentEvents::NAME => {
+            handle::<AgentEvents, _, _>(request, |p| agent::events(context, p)).await
+        }
+        AgentDiff::NAME => handle::<AgentDiff, _, _>(request, |p| agent::diff(context, p)).await,
+        AgentFile::NAME => handle::<AgentFile, _, _>(request, |p| agent::file(context, p)).await,
+        AgentAccept::NAME => {
+            handle::<AgentAccept, _, _>(request, |p| agent::accept(context, p)).await
+        }
+        AgentRequestChanges::NAME => {
+            handle::<AgentRequestChanges, _, _>(request, |p| agent::request_changes(context, p))
+                .await
+        }
+        _ => return None,
     })
 }
 
