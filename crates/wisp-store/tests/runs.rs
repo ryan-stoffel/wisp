@@ -284,6 +284,7 @@ fn a_version_6_database_gains_runs_events_and_worktree_git_dirs() {
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch(
             "DROP TABLE runs; DROP TABLE log_meta; DROP TABLE events;
+             DROP TABLE threads; DROP TABLE repos;
              ALTER TABLE worktrees DROP COLUMN git_dir;
              DELETE FROM schema_version WHERE version >= 7;",
         )

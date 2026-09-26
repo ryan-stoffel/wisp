@@ -227,7 +227,7 @@ impl Store {
     }
 }
 
-fn insert_run(
+pub(crate) fn insert_run(
     conn: &Connection,
     id: Uuid,
     fields: &RunFields,
