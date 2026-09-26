@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use sha2::{Digest, Sha256};
+use wisp_protocol::ProjectId;
 
 /// The environment variable that sets the data folder when `--data-dir` is not given.
 pub const DATA_DIR_ENV: &str = "WISPD_DATA_DIR";
@@ -100,6 +101,20 @@ impl DataDir {
     #[must_use]
     pub fn log_file(&self) -> PathBuf {
         self.root.join("logs").join("wispd.log")
+    }
+
+    /// The folder holding every project's shared context (0005, #155): `context/` in the data
+    /// folder.
+    #[must_use]
+    pub fn context_root(&self) -> PathBuf {
+        self.root.join("context")
+    }
+
+    /// One project's shared context folder: `context/<project-id>/` in the data folder. #156
+    /// hands this path to a backend as its shared context folder.
+    #[must_use]
+    pub fn context_dir(&self, project: ProjectId) -> PathBuf {
+        self.context_root().join(project.to_string())
     }
 
     /// A command for `program` with [`DATA_DIR_ENV`] set to this folder.
@@ -227,6 +242,12 @@ mod tests {
         assert_eq!(dir.lock_file(), Path::new("/d/wispd.lock"));
         assert_eq!(dir.store_file(), Path::new("/d/wispd.sqlite3"));
         assert_eq!(dir.log_file(), Path::new("/d/logs/wispd.log"));
+        assert_eq!(dir.context_root(), Path::new("/d/context"));
+        let project = wisp_protocol::ProjectId::generate();
+        assert_eq!(
+            dir.context_dir(project),
+            Path::new("/d/context").join(project.to_string())
+        );
     }
 
     #[test]

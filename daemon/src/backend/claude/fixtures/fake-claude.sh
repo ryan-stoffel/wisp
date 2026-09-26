@@ -9,7 +9,8 @@
 #   @sleep <s>     sleep
 #   @stderr <text> write a line to stderr
 #   @exit <code>   exit
-#   @trap-int      on SIGINT, record it and exit 130
+#   @trap-int      on SIGINT, record it and exit 130; prints @trap-armed once installed, a
+#                  deterministic handshake so a test never sends SIGINT before the trap exists
 #   @ignore-int    ignore SIGINT
 #   @hang          wait forever
 #   @spawn-child   spawn a child that dumps its own environment to $dir/child-env, stripping the
@@ -30,7 +31,7 @@ while IFS= read -r line <&3; do
     '@sleep '*) sleep "${line#@sleep }" ;;
     '@stderr '*) printf '%s\n' "${line#@stderr }" >&2 ;;
     '@exit '*) exit "${line#@exit }" ;;
-    '@trap-int') trap 'echo SIGINT >> "$dir/signals"; exit 130' INT ;;
+    '@trap-int') trap 'echo SIGINT >> "$dir/signals"; exit 130' INT; printf '%s\n' @trap-armed ;;
     '@ignore-int') trap '' INT ;;
     '@hang') while :; do sleep 60 & wait $!; done ;;
     '@spawn-child')

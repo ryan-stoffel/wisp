@@ -13,6 +13,9 @@
 //! - [`attach`]: reaching the server and bridging stdio to it, behind `wispd attach`.
 //! - [`backend`]: the interface over the vendor CLIs that run agents (0004), and the process
 //!   supervision they share.
+//! - `context`: each project's shared context folder (0005, #155): `context/list`, `context/read`,
+//!   `context/write`, and a watcher that turns an agent's own writes on disk into
+//!   `context.changed` events.
 //! - `detect`: detecting which vendor CLIs are installed and signed in, without touching their
 //!   credentials (#114).
 //! - [`launch_agent`]: the launch agent that `attach` starts wispd through, when it is installed.
@@ -20,12 +23,16 @@
 //!   `serve` running (#61).
 //! - [`keystore`]: where API keys live, the macOS login Keychain (#117).
 //! - [`usage`]: turns backend usage events into `wisp-store` rows (#120).
+//! - `routing`: picks a task's backend and account, forces the coordinator's no-write policy,
+//!   falls a failed subscription run back to a key account, and checks a coordinator's turn
+//!   against the no-write policy (#119).
 //! - [`worktree`]: creates, inspects, and removes the git worktrees agent runs use (#154).
 
 #![warn(missing_docs)]
 
 pub mod attach;
 pub mod backend;
+mod context;
 mod detect;
 mod event_log;
 pub mod keystore;
@@ -34,6 +41,7 @@ pub mod logging;
 mod methods;
 pub mod paths;
 mod repo;
+pub mod routing;
 pub mod server;
 pub mod service;
 mod spawn;

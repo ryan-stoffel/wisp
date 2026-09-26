@@ -121,6 +121,19 @@ pub enum Event {
         /// The follow-up's id.
         turn_id: TurnId,
     },
+    /// Routing (#119) started this run on a different account after the previous attempt failed
+    /// as [`FailureKind::NotSignedIn`] or [`FailureKind::RateLimited`]. Always the first event of
+    /// a run that has one, before [`Event::SessionStarted`]. Every event after this one, including
+    /// this run's own `Usage` and `RateLimit` events, belongs to `to_account`, not `from_account`:
+    /// a caller recording usage per account switches which account it charges here.
+    AccountFallback {
+        /// The account the previous attempt used.
+        from_account: String,
+        /// The account this run uses instead.
+        to_account: String,
+        /// Why that attempt failed.
+        reason: FailureKind,
+    },
     /// Something in the CLI's output that the backend skipped. It never ends a run.
     Warning {
         /// What was wrong.
@@ -565,6 +578,24 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&todo).unwrap(),
             json!({"kind": "todoList", "items": [{"text": "Write tests", "status": "inProgress"}]})
+        );
+    }
+
+    #[test]
+    fn account_fallback_serializes_with_both_accounts_and_its_reason() {
+        let event = Event::AccountFallback {
+            from_account: "claude".into(),
+            to_account: "01a0d34e-01e0-7dc0-b326-598cbff22aa1".into(),
+            reason: FailureKind::RateLimited,
+        };
+        assert_eq!(
+            serde_json::to_value(&event).unwrap(),
+            json!({
+                "kind": "accountFallback",
+                "fromAccount": "claude",
+                "toAccount": "01a0d34e-01e0-7dc0-b326-598cbff22aa1",
+                "reason": "rateLimited"
+            })
         );
     }
 

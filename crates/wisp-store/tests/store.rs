@@ -438,8 +438,9 @@ fn a_version_1_database_migrates_and_keeps_its_projects() {
         })
         .expect("read schema version");
     assert_eq!(
-        version, 5,
-        "migrations 3 (accounts, #117), 4 (usage, #120), and 5 (worktrees, #154) also apply"
+        version, 6,
+        "migrations 3 (accounts, #117), 4 (usage, #120), 5 (worktrees, #154), and 6 (role \
+         defaults, #119) also apply"
     );
     let account_columns: Vec<String> = conn
         .prepare("SELECT name FROM pragma_table_info('accounts')")
@@ -455,8 +456,8 @@ fn a_version_1_database_migrates_and_keeps_its_projects() {
 }
 
 /// A database as `develop` (schema version 3, `accounts` but no usage tables) leaves it, opened by
-/// a build that also knows migrations 4 (#120) and 5 (worktrees, #154). Both the pre-existing
-/// `accounts` row and the new usage tables must be intact afterward.
+/// a build that also knows migrations 4 (#120), 5 (worktrees, #154), and 6 (role defaults, #119).
+/// Both the pre-existing `accounts` row and the new usage tables must be intact afterward.
 #[test]
 fn a_version_3_database_from_develop_migrates_to_usage_tables_and_keeps_its_account() {
     let (_dir, path) = temp_db_path();
@@ -491,7 +492,7 @@ fn a_version_3_database_from_develop_migrates_to_usage_tables_and_keeps_its_acco
     .expect("write a version 3 database, as develop's #117 leaves it");
     drop(conn);
 
-    let store = Store::open(&path).expect("open should migrate to version 5");
+    let store = Store::open(&path).expect("open should migrate to the latest version");
     let account = store
         .get_account(account_id)
         .expect("get")
@@ -527,7 +528,10 @@ fn a_version_3_database_from_develop_migrates_to_usage_tables_and_keeps_its_acco
             row.get(0)
         })
         .expect("read schema version");
-    assert_eq!(version, 5);
+    assert_eq!(
+        version, 6,
+        "migrations 5 (worktrees, #154) and 6 (role defaults, #119) also apply"
+    );
 }
 
 #[test]
