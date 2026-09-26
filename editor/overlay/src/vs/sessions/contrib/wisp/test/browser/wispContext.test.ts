@@ -6,17 +6,24 @@ import assert from 'assert';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { DisposableStore, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { Emitter } from '../../../../../base/common/event.js';
+import { observableValue } from '../../../../../base/common/observable.js';
 import { URI } from '../../../../../base/common/uri.js';
+import type { ICodeEditor, IViewZone, IViewZoneChangeAccessor } from '../../../../../editor/browser/editorBrowser.js';
 import { FileChangeType, FileSystemProviderErrorCode, FileType } from '../../../../../platform/files/common/files.js';
+import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { IQuickInputService } from '../../../../../platform/quickinput/common/quickInput.js';
 import { WispdError } from '../../../../../platform/wisp/common/wispd.js';
 import type { ContextFile } from '../../../../../platform/wisp/common/wispProtocol.js';
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
-import { validateContextFileName, WispContextAddFileFlow } from '../../browser/wispContextAddFile.js';
+import { WispContextAddFileFlow } from '../../browser/wispContextAddFile.js';
+import { WispContextEditorBanner } from '../../browser/wispContextEditorBanner.js';
 import { WispContextFileSystemProvider } from '../../browser/wispContextFileSystemProvider.js';
 import { IWispContextService, WispContextService } from '../../browser/wispContextService.js';
 import { contextFileDetail, projectFacts } from '../../browser/wispProjectView.js';
-import { parseContextUri, toContextUri } from '../../common/wispContextUri.js';
+import type { IWispHostStatus } from '../../browser/wispHostStatus.js';
+import type { IWispHostStatusService } from '../../browser/wispHostStatusService.js';
+import { parseContextUri, toContextUri, validateContextFileName } from '../../common/wispContextUri.js';
 import { agentsWindowServices, IAgentsWindowServices, settle } from './wispAgentsTestServices.js';
 import { connected, connecting, disconnected, project, SSH_COMMAND } from './wispHostTestUtils.js';
 
@@ -31,7 +38,12 @@ suite('wisp: shared context', () => {
 
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
-	/** Services whose wispd answers `project/list` at `seq` 9 and `context/list` with `files`. */
+	/**
+	 * Services whose wispd answers `project/list` at `seq` 9 with `ONE` and `TWO`, and `context/list`
+	 * with `files`. wispd only ever serves `context/*` for a project it also lists (it checks
+	 * `ensure_project_exists`), so `WispContextService`'s own watch of `IWispProjectsService.projects`
+	 * needs both listed for these tests' projects to stay watched instead of pruned.
+	 */
 	function services(host = 'local', files: ContextFile[] = [contextFile('notes.md')]): IAgentsWindowServices & { contextService: WispContextService } {
 		const context = agentsWindowServices(disposables, true, host);
 		// Every answer copies its files: real IPC never hands the caller wispd's own objects, and an
@@ -39,7 +51,7 @@ suite('wisp: shared context', () => {
 		context.wispd.handler = async (method, params) => {
 			switch (method) {
 				case 'project/list':
-					return { projects: [], seq: 9 };
+					return { projects: [project(ONE, 'billing'), project(TWO, 'magic')], seq: 9 };
 				case 'context/list':
 					return { files: files.map(file => ({ ...file })) };
 				case 'context/read': {
@@ -190,6 +202,70 @@ suite('wisp: shared context', () => {
 			assert.strictEqual((write?.[1] as { writer?: string }).writer, 'editor');
 		});
 
+		test('write while the list is failed leaves the failure in place, instead of a one-file ready list', async () => {
+			const { wispd, contextService } = services();
+			const handler = wispd.handler!;
+			wispd.handler = async (method, params) => {
+				if (method === 'context/list') {
+					throw new WispdError(-32603, 'the shared context folder is unavailable', undefined);
+				}
+				return handler(method, params);
+			};
+			contextService.state(ONE);
+			wispd.setState(connected());
+			await settle();
+			assert.strictEqual(contextService.state(ONE).get().kind, 'failed');
+
+			await contextService.write(ONE, 'plan.md', '# Plan');
+			const state = contextService.state(ONE).get();
+			assert.strictEqual(state.kind, 'failed', 'the optimistic upsert did not paper over the error with a partial list');
+		});
+
+		test('write while the list is still loading does not create a one-file ready list', async () => {
+			const { wispd, contextService } = services();
+			let resolveList!: (result: { files: ContextFile[] }) => void;
+			const listAnswer = new Promise<{ files: ContextFile[] }>(resolve => { resolveList = resolve; });
+			const handler = wispd.handler!;
+			wispd.handler = async (method, params) => method === 'context/list' ? listAnswer : handler(method, params);
+
+			contextService.state(ONE);
+			wispd.setState(connected());
+			await settle();
+			assert.strictEqual(contextService.state(ONE).get().kind, 'loading');
+
+			await contextService.write(ONE, 'plan.md', '# Plan');
+			assert.strictEqual(contextService.state(ONE).get().kind, 'loading', 'the optimistic upsert did not touch the loading state');
+
+			resolveList({ files: [contextFile('notes.md')] });
+			await settle();
+			// The list that was already in flight, not the write, is what makes it ready.
+			assert.deepStrictEqual(readyFiles(contextService, ONE).map(f => f.path), ['notes.md']);
+		});
+
+		test('a project that leaves IWispProjectsService.projects has its watch, and its subscription, disposed', async () => {
+			const { wispd, contextService, projects } = services();
+			contextService.state(ONE);
+			wispd.setState(connected());
+			await settle();
+			assert.strictEqual(contextService.state(ONE).get().kind, 'ready');
+			const subscription = contextSubscription(wispd);
+			assert.ok(subscription.active);
+
+			// projects.reload() re-lists with the original handler, now answering as if ONE no longer exists.
+			const originalHandler = wispd.handler!;
+			wispd.handler = async (method, params) => method === 'project/list' ? { projects: [], seq: 20 } : originalHandler(method, params);
+			projects.reload();
+			await settle();
+
+			assert.strictEqual(subscription.active, false, 'the watch\'s subscription ended');
+			// Asking again re-lists from scratch, proving the watch itself, not just its subscription, was dropped.
+			const requestsBefore = wispd.requests.filter(([method]) => method === 'context/list').length;
+			contextService.state(ONE);
+			await settle();
+			const requestsAfter = wispd.requests.filter(([method]) => method === 'context/list').length;
+			assert.strictEqual(requestsAfter, requestsBefore + 1);
+		});
+
 		test('read is a plain passthrough that needs no watch or list', async () => {
 			const { wispd, contextService } = services();
 			wispd.setState(connected());
@@ -296,11 +372,38 @@ suite('wisp: shared context', () => {
 
 	suite('add file', () => {
 
+		/** Stubs `IQuickInputService` so the flow's one input box accepts `answer` at once. */
+		function stubQuickInput(instantiationService: IAgentsWindowServices['instantiationService'], answer: string): void {
+			instantiationService.stub(IQuickInputService, {
+				createInputBox: () => {
+					const store = new DisposableStore();
+					const listeners: { accept?: () => void; hide?: () => void } = {};
+					const box = {
+						value: '', title: '', prompt: '', placeholder: '', ignoreFocusOut: false, validationMessage: undefined as string | undefined, severity: 0,
+						onDidAccept: (fn: () => void) => { listeners.accept = fn; return store.add(toDisposable(() => { listeners.accept = undefined; })); },
+						onDidChangeValue: () => store.add(toDisposable(() => { /* unused in this flow */ })),
+						onDidHide: (fn: () => void) => { listeners.hide = fn; return store.add(toDisposable(() => { listeners.hide = undefined; })); },
+						show: () => { box.value = answer; queueMicrotask(() => { listeners.accept?.(); listeners.hide?.(); }); },
+						hide: () => listeners.hide?.(),
+						dispose: () => store.dispose(),
+					};
+					return box;
+				},
+			} as unknown as IQuickInputService);
+		}
+
+		function stubOpenedEditor(instantiationService: IAgentsWindowServices['instantiationService']): URI[] {
+			const opened: URI[] = [];
+			instantiationService.stub(IEditorService, { openEditor: async (input: { resource: URI }) => { opened.push(input.resource); return undefined; } } as unknown as IEditorService);
+			return opened;
+		}
+
 		test('validateContextFileName rejects paths, dot-files, bad extensions, empty and long names', () => {
 			assert.strictEqual(validateContextFileName(''), 'Enter a file name.');
 			assert.match(validateContextFileName('a/b.md') ?? '', /not a path/);
 			assert.match(validateContextFileName('.hidden.md') ?? '', /dot/);
 			assert.match(validateContextFileName('notes.pdf') ?? '', /\.md, \.markdown, or \.txt/);
+			assert.match(validateContextFileName('notes\0.md') ?? '', /NUL/);
 			assert.strictEqual(validateContextFileName('notes.md'), undefined);
 			assert.strictEqual(validateContextFileName('agenda.markdown'), undefined);
 			assert.strictEqual(validateContextFileName('todo.txt'), undefined);
@@ -311,24 +414,8 @@ suite('wisp: shared context', () => {
 			const context = services();
 			context.wispd.setState(connected());
 			await settle();
-			const opened: URI[] = [];
-			context.instantiationService.stub(IEditorService, { openEditor: async (input: { resource: URI }) => { opened.push(input.resource); return undefined; } } as unknown as IEditorService);
-			context.instantiationService.stub(IQuickInputService, {
-				createInputBox: () => {
-					const store = new DisposableStore();
-					const listeners: { accept?: () => void; hide?: () => void } = {};
-					const box = {
-						value: '', title: '', prompt: '', placeholder: '', ignoreFocusOut: false, validationMessage: undefined as string | undefined, severity: 0,
-						onDidAccept: (fn: () => void) => { listeners.accept = fn; return store.add(toDisposable(() => { listeners.accept = undefined; })); },
-						onDidChangeValue: () => store.add(toDisposable(() => { /* unused in this flow */ })),
-						onDidHide: (fn: () => void) => { listeners.hide = fn; return store.add(toDisposable(() => { listeners.hide = undefined; })); },
-						show: () => { box.value = 'plan.md'; queueMicrotask(() => { listeners.accept?.(); listeners.hide?.(); }); },
-						hide: () => listeners.hide?.(),
-						dispose: () => store.dispose(),
-					};
-					return box;
-				},
-			} as unknown as IQuickInputService);
+			const opened = stubOpenedEditor(context.instantiationService);
+			stubQuickInput(context.instantiationService, 'plan.md');
 
 			const file = await context.instantiationService.createInstance(WispContextAddFileFlow).run(ONE);
 			assert.strictEqual(file?.path, 'plan.md');
@@ -336,6 +423,107 @@ suite('wisp: shared context', () => {
 			assert.strictEqual((write?.[1] as { content: string; writer?: string }).content, '');
 			assert.strictEqual((write?.[1] as { content: string; writer?: string }).writer, 'editor');
 			assert.deepStrictEqual(opened.map(uri => uri.toString()), [toContextUri(ONE, 'plan.md').toString()]);
+		});
+
+		test('typing an existing file\'s name opens it instead of overwriting it', async () => {
+			const context = services(); // seeded with notes.md, per the services() default
+			context.wispd.setState(connected());
+			await settle();
+			const opened = stubOpenedEditor(context.instantiationService);
+			stubQuickInput(context.instantiationService, 'notes.md');
+
+			const file = await context.instantiationService.createInstance(WispContextAddFileFlow).run(ONE);
+			assert.strictEqual(file?.path, 'notes.md');
+			assert.ok(!context.wispd.requests.some(([method]) => method === 'context/write'), 'the existing file is never overwritten');
+			assert.deepStrictEqual(opened.map(uri => uri.toString()), [toContextUri(ONE, 'notes.md').toString()]);
+		});
+
+		test('a read failure that is not contextNotFound is reported, and nothing is written', async () => {
+			const context = services();
+			const handler = context.wispd.handler!;
+			context.wispd.handler = async (method, params) => {
+				if (method === 'context/read') {
+					throw new WispdError(-32603, 'the shared context folder is unavailable', undefined);
+				}
+				return handler(method, params);
+			};
+			context.wispd.setState(connected());
+			await settle();
+			const errors: string[] = [];
+			context.instantiationService.stub(INotificationService, { error: (message: string) => errors.push(message) } as unknown as INotificationService);
+			stubQuickInput(context.instantiationService, 'notes.md');
+
+			const file = await context.instantiationService.createInstance(WispContextAddFileFlow).run(ONE);
+			assert.strictEqual(file, undefined);
+			assert.strictEqual(errors.length, 1);
+			assert.match(errors[0], /unavailable/);
+			assert.ok(!context.wispd.requests.some(([method]) => method === 'context/write'));
+		});
+	});
+
+	suite('editor banner', () => {
+
+		/** A minimal `ICodeEditor`: only the three members `WispContextEditorBanner` calls. */
+		function fakeEditor(initialModel: { uri: URI } | null) {
+			const modelChange = new Emitter<void>();
+			let model = initialModel;
+			let nextId = 1;
+			const zones = new Map<string, IViewZone>();
+			const editor = {
+				getModel: () => model,
+				onDidChangeModel: modelChange.event,
+				changeViewZones: (callback: (accessor: IViewZoneChangeAccessor) => void) => {
+					callback({
+						addZone: (zone: IViewZone) => { const id = String(nextId++); zones.set(id, zone); return id; },
+						removeZone: (id: string) => { zones.delete(id); },
+						layoutZone: () => { /* unused by the banner */ },
+					} as IViewZoneChangeAccessor);
+				},
+			};
+			return {
+				editor: editor as unknown as ICodeEditor,
+				zones,
+				setModel: (next: { uri: URI } | null) => { model = next; modelChange.fire(); },
+				dispose: () => modelChange.dispose(),
+			};
+		}
+
+		function fakeHostStatus(host: string): IWispHostStatusService {
+			return { status: observableValue<IWispHostStatus>('status', { host } as unknown as IWispHostStatus) } as unknown as IWispHostStatusService;
+		}
+
+		test('adds a zone naming the host for a wisp-context: model, and removes it for any other', () => {
+			const { editor, zones, setModel, dispose } = fakeEditor({ uri: toContextUri(ONE, 'notes.md') });
+			const banner = new WispContextEditorBanner(editor, fakeHostStatus('this Mac'));
+			assert.strictEqual(zones.size, 1);
+			assert.match([...zones.values()][0].domNode.textContent ?? '', /this Mac/);
+
+			setModel({ uri: URI.file('/tmp/other.md') });
+			assert.strictEqual(zones.size, 0, 'a plain file model gets no zone');
+
+			setModel({ uri: toContextUri(ONE, 'notes.md') });
+			assert.strictEqual(zones.size, 1, 'switching back to a wisp-context model adds one again');
+
+			banner.dispose();
+			assert.strictEqual(zones.size, 0, 'disposing the contribution removes its zone');
+			dispose();
+		});
+
+		test('a plain editor model never gets a zone', () => {
+			const { editor, zones, dispose } = fakeEditor({ uri: URI.file('/tmp/plain.md') });
+			const banner = new WispContextEditorBanner(editor, fakeHostStatus('this Mac'));
+			assert.strictEqual(zones.size, 0);
+			banner.dispose();
+			dispose();
+		});
+
+		test('the project\'s shared context folder itself, with no path, gets no zone', () => {
+			const root = URI.from({ scheme: 'wisp-context', authority: ONE, path: '/' });
+			const { editor, zones, dispose } = fakeEditor({ uri: root });
+			const banner = new WispContextEditorBanner(editor, fakeHostStatus('this Mac'));
+			assert.strictEqual(zones.size, 0);
+			banner.dispose();
+			dispose();
 		});
 	});
 
@@ -349,8 +537,8 @@ suite('wisp: shared context', () => {
 			assert.deepStrictEqual(projectFacts(project(ONE, 'billing'), 'this Mac', '/Users/ryan').map(f => [f.label, f.detail, f.done])[2], ['Shared context', '0 files', false]);
 		});
 
-		test('contextFileDetail names the writer and when, or just when for a file wispd never saw written', () => {
-			assert.strictEqual(contextFileDetail(contextFile('notes.md', { lastWriter: 'editor', modifiedAt: new Date(Date.now() - 60_000).toISOString() })), 'editor · 1 min ago');
+		test('contextFileDetail reads the editor\'s own writes as "you", or just when for a file wispd never saw written', () => {
+			assert.strictEqual(contextFileDetail(contextFile('notes.md', { lastWriter: 'editor', modifiedAt: new Date(Date.now() - 60_000).toISOString() })), 'you · 1 min ago');
 			assert.match(contextFileDetail(contextFile('notes.md', { lastWriter: undefined, modifiedAt: new Date(Date.now() - 60_000).toISOString() })), /^1 min ago$/);
 		});
 	});
@@ -364,6 +552,32 @@ suite('wisp: shared context', () => {
 			assert.deepStrictEqual(parseContextUri(uri), { project: ONE, path: 'notes.md' });
 			assert.deepStrictEqual(parseContextUri(URI.from({ scheme: 'wisp-context', authority: ONE, path: '/' })), { project: ONE, path: '' });
 			assert.strictEqual(parseContextUri(URI.file('/notes.md')), undefined);
+		});
+
+		test('parseContextUri refuses a .., a subfolder, and an encoded separator: only one valid name reaches wispd', () => {
+			// Constructed directly, as a stray link or another provider's URI would be, not through
+			// toContextUri, which only ever builds a well-formed path.
+			assert.strictEqual(parseContextUri(URI.from({ scheme: 'wisp-context', authority: ONE, path: '/../secrets.md' })), undefined);
+			assert.strictEqual(parseContextUri(URI.from({ scheme: 'wisp-context', authority: ONE, path: '/..' })), undefined);
+			assert.strictEqual(parseContextUri(URI.from({ scheme: 'wisp-context', authority: ONE, path: '/sub/notes.md' })), undefined);
+			// URI.parse decodes the path, so a link spelled with %2f or %2e%2e arrives exactly like the
+			// literal separator or dots above; parsing the encoded string proves that path too.
+			assert.strictEqual(parseContextUri(URI.parse(`wisp-context://${ONE}/%2e%2e%2fsecrets.md`)), undefined);
+			assert.strictEqual(parseContextUri(URI.parse(`wisp-context://${ONE}/sub%2fnotes.md`)), undefined);
+			// A leading double slash is just an odd but harmless spelling of the same top-level name.
+			assert.deepStrictEqual(parseContextUri(URI.from({ scheme: 'wisp-context', authority: ONE, path: '//notes.md' })), { project: ONE, path: 'notes.md' });
+		});
+
+		test('a bad path never reaches context/read or context/write: the provider reports FileNotFound', async () => {
+			const context = services();
+			const fsProvider = context.instantiationService.createInstance(WispContextFileSystemProvider);
+			disposables.add(fsProvider);
+			for (const bad of ['/../secrets.md', '/sub/notes.md']) {
+				const uri = URI.from({ scheme: 'wisp-context', authority: ONE, path: bad });
+				await assert.rejects(fsProvider.readFile(uri), (error: Error) =>
+					(error as unknown as { code: string }).code === FileSystemProviderErrorCode.FileNotFound, bad);
+			}
+			assert.deepStrictEqual(context.wispd.requests, [], 'wispd never saw a request for any of them');
 		});
 	});
 });
