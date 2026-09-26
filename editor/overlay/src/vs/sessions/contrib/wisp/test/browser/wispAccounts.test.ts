@@ -5,7 +5,7 @@
 import assert from 'assert';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { InMemoryStorageService, StorageScope } from '../../../../../platform/storage/common/storage.js';
+import { InMemoryStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { WispdState } from '../../../../../platform/wisp/common/wispd.js';
 import type { AccountUsage, Capabilities, DetectedCli, KeyAccount } from '../../../../../platform/wisp/common/wispProtocol.js';
@@ -170,6 +170,7 @@ suite('wisp: accounts', () => {
 						case 'accounts/list': return { clis, checkedAt: new Date().toISOString() };
 						case 'accounts/keys/list': return { accounts: keys };
 						case 'usage/get': return { accounts: usageList };
+						case 'accounts/defaults/get': return {};
 					}
 					throw new Error(`unexpected method ${method}`);
 				};
@@ -198,6 +199,7 @@ suite('wisp: accounts', () => {
 						case 'accounts/list': return { clis, checkedAt: new Date().toISOString() };
 						case 'accounts/keys/list': return { accounts: [] };
 						case 'usage/get': return { accounts: [] };
+						case 'accounts/defaults/get': return {};
 					}
 					throw new Error(`unexpected method ${method}`);
 				};
@@ -221,6 +223,7 @@ suite('wisp: accounts', () => {
 					if (method === 'accounts/keys/list') { throw new Error('store unavailable'); }
 					if (method === 'usage/get') { return { accounts: [] }; }
 					if (method === 'accounts/list' || method === 'accounts/refresh') { return { clis: [cli()], checkedAt: new Date().toISOString() }; }
+					if (method === 'accounts/defaults/get') { return {}; }
 					throw new Error(`unexpected method ${method}`);
 				};
 				accounts.reload();
@@ -246,6 +249,7 @@ suite('wisp: accounts', () => {
 				wispd.handler = async method => {
 					if (method === 'accounts/keys/list') { calls++; return { accounts: [] }; }
 					if (method === 'usage/get') { return { accounts: [] }; }
+					if (method === 'accounts/defaults/get') { return {}; }
 					throw new Error(`unexpected method ${method}`);
 				};
 				accounts.reload();
@@ -283,24 +287,168 @@ suite('wisp: accounts', () => {
 			}
 		});
 
-		test('the coordinator\'s account choice persists across instances, and clears', () => {
-			const disposables = new DisposableStore();
-			try {
-				const wispd = disposables.add(new TestWispdService());
-				const storage = disposables.add(new InMemoryStorageService());
-				const first = disposables.add(new WispAccountsService(wispd, new NullLogService(), storage));
-				assert.strictEqual(first.coordinatorChoice.get(), undefined);
-				first.setCoordinatorChoice({ kind: 'cli', cli: 'claude' });
-				assert.deepStrictEqual(first.coordinatorChoice.get(), { kind: 'cli', cli: 'claude' });
+		suite('coordinatorChoice', () => {
 
-				const second = disposables.add(new WispAccountsService(disposables.add(new TestWispdService()), new NullLogService(), storage));
-				assert.deepStrictEqual(second.coordinatorChoice.get(), { kind: 'cli', cli: 'claude' });
-
-				second.setCoordinatorChoice(undefined);
-				assert.strictEqual(storage.get('wisp.accounts.coordinatorChoice', StorageScope.APPLICATION), undefined);
-			} finally {
-				disposables.dispose();
+			function baseHandler(defaultsGet: () => { coordinator?: { kind: string; backend?: string; id?: string } }): (method: string) => Promise<unknown> {
+				return async method => {
+					if (method === 'accounts/keys/list') { return { accounts: [] }; }
+					if (method === 'usage/get') { return { accounts: [] }; }
+					if (method === 'accounts/defaults/get') { return defaultsGet(); }
+					throw new Error(`unexpected method ${method}`);
+				};
 			}
+
+			test('reload reads the default from accounts/defaults/get, mapping a subscription to a CLI and a key to itself', async () => {
+				const disposables = new DisposableStore();
+				try {
+					const { service: accounts, wispd } = service(disposables);
+					wispd.handler = baseHandler(() => ({ coordinator: { kind: 'subscription', backend: 'claude' } }));
+					accounts.reload();
+					wispd.setState(connected());
+					await settle();
+					assert.strictEqual(accounts.coordinatorChoiceState.get().kind, 'ready');
+					assert.deepStrictEqual(accounts.coordinatorChoice.get(), { kind: 'cli', cli: 'claude' });
+				} finally {
+					disposables.dispose();
+				}
+			});
+
+			test('a key default maps straight through, and no default is undefined', async () => {
+				const disposables = new DisposableStore();
+				try {
+					const { service: accounts, wispd } = service(disposables);
+					wispd.handler = baseHandler(() => ({ coordinator: { kind: 'key', id: 'key-1' } }));
+					accounts.reload();
+					wispd.setState(connected());
+					await settle();
+					assert.deepStrictEqual(accounts.coordinatorChoice.get(), { kind: 'key', id: 'key-1' });
+				} finally {
+					disposables.dispose();
+				}
+			});
+
+			test('a failed accounts/defaults/get reports its message', async () => {
+				const disposables = new DisposableStore();
+				try {
+					const { service: accounts, wispd } = service(disposables);
+					wispd.handler = async method => {
+						if (method === 'accounts/keys/list' || method === 'usage/get') { return { accounts: [] }; }
+						if (method === 'accounts/defaults/get') { throw new Error('daemon unavailable'); }
+						throw new Error(`unexpected method ${method}`);
+					};
+					accounts.reload();
+					wispd.setState(connected());
+					await settle();
+					assert.strictEqual(accounts.coordinatorChoiceState.get().kind, 'failed');
+					assert.strictEqual((accounts.coordinatorChoiceState.get() as { message: string }).message, 'daemon unavailable');
+				} finally {
+					disposables.dispose();
+				}
+			});
+
+			test('setCoordinatorChoice maps the choice, sends accounts/defaults/set, and reconciles with the answer', async () => {
+				const disposables = new DisposableStore();
+				try {
+					const { service: accounts, wispd } = service(disposables);
+					wispd.handler = baseHandler(() => ({}));
+					accounts.reload();
+					wispd.setState(connected());
+					await settle();
+
+					wispd.handler = async (method, params) => {
+						if (method === 'accounts/defaults/set') {
+							assert.deepStrictEqual(params, { role: 'coordinator', account: { kind: 'subscription', backend: 'claude' } });
+							return { coordinator: { kind: 'subscription', backend: 'claude' } };
+						}
+						throw new Error(`unexpected method ${method}`);
+					};
+					await accounts.setCoordinatorChoice({ kind: 'cli', cli: 'claude' });
+					assert.deepStrictEqual(accounts.coordinatorChoice.get(), { kind: 'cli', cli: 'claude' });
+
+					wispd.handler = async method => {
+						if (method === 'accounts/defaults/set') { return {}; }
+						throw new Error(`unexpected method ${method}`);
+					};
+					await accounts.setCoordinatorChoice(undefined);
+					assert.strictEqual(accounts.coordinatorChoice.get(), undefined);
+				} finally {
+					disposables.dispose();
+				}
+			});
+
+			test('a failed setCoordinatorChoice reverts to the previous value and rethrows', async () => {
+				const disposables = new DisposableStore();
+				try {
+					const { service: accounts, wispd } = service(disposables);
+					wispd.handler = baseHandler(() => ({ coordinator: { kind: 'key', id: 'key-1' } }));
+					accounts.reload();
+					wispd.setState(connected());
+					await settle();
+					assert.deepStrictEqual(accounts.coordinatorChoice.get(), { kind: 'key', id: 'key-1' });
+
+					wispd.handler = async method => {
+						if (method === 'accounts/defaults/set') { throw new Error('"nope" is not a backend wispd knows'); }
+						throw new Error(`unexpected method ${method}`);
+					};
+					await assert.rejects(accounts.setCoordinatorChoice({ kind: 'cli', cli: 'codex' }), /is not a backend wispd knows/);
+					assert.deepStrictEqual(accounts.coordinatorChoice.get(), { kind: 'key', id: 'key-1' });
+				} finally {
+					disposables.dispose();
+				}
+			});
+
+			test('migrates a locally stored choice once when wispd has no default yet, and deletes it', async () => {
+				const disposables = new DisposableStore();
+				try {
+					const { service: accounts, wispd, storage } = service(disposables);
+					storage.store('wisp.accounts.coordinatorChoice', JSON.stringify({ kind: 'cli', cli: 'codex' }), StorageScope.APPLICATION, StorageTarget.MACHINE);
+
+					let setCalls = 0;
+					wispd.handler = async (method, params) => {
+						if (method === 'accounts/keys/list' || method === 'usage/get') { return { accounts: [] }; }
+						if (method === 'accounts/defaults/get') { return {}; }
+						if (method === 'accounts/defaults/set') {
+							setCalls++;
+							assert.deepStrictEqual(params, { role: 'coordinator', account: { kind: 'subscription', backend: 'codex' } });
+							return { coordinator: { kind: 'subscription', backend: 'codex' } };
+						}
+						throw new Error(`unexpected method ${method}`);
+					};
+					accounts.reload();
+					wispd.setState(connected());
+					await settle();
+
+					assert.strictEqual(setCalls, 1);
+					assert.deepStrictEqual(accounts.coordinatorChoice.get(), { kind: 'cli', cli: 'codex' });
+					assert.strictEqual(storage.get('wisp.accounts.coordinatorChoice', StorageScope.APPLICATION), undefined);
+
+					// A reconnect does not migrate again: the local copy is already gone.
+					wispd.setState(disconnected('exited'));
+					wispd.setState(connected());
+					await settle();
+					assert.strictEqual(setCalls, 1);
+				} finally {
+					disposables.dispose();
+				}
+			});
+
+			test('does not overwrite a default wispd already has with a stale local choice, but still deletes it', async () => {
+				const disposables = new DisposableStore();
+				try {
+					const { service: accounts, wispd, storage } = service(disposables);
+					storage.store('wisp.accounts.coordinatorChoice', JSON.stringify({ kind: 'cli', cli: 'codex' }), StorageScope.APPLICATION, StorageTarget.MACHINE);
+					wispd.handler = baseHandler(() => ({ coordinator: { kind: 'key', id: 'key-1' } }));
+
+					accounts.reload();
+					wispd.setState(connected());
+					await settle();
+
+					assert.deepStrictEqual(accounts.coordinatorChoice.get(), { kind: 'key', id: 'key-1' });
+					assert.strictEqual(storage.get('wisp.accounts.coordinatorChoice', StorageScope.APPLICATION), undefined);
+				} finally {
+					disposables.dispose();
+				}
+			});
 		});
 	});
 });

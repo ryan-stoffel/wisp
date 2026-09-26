@@ -14,8 +14,10 @@ import { localize, localize2 } from '../../../../nls.js';
 import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IQuickInputService, IQuickPickItem, IQuickPickSeparator } from '../../../../platform/quickinput/common/quickInput.js';
 import { IActionViewItemService } from '../../../../platform/actions/browser/actionViewItemService.js';
+import { WispdError } from '../../../../platform/wisp/common/wispd.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ChatContextKeys } from '../../../../workbench/contrib/chat/common/actions/chatContextKeys.js';
 import { WISP_PROJECT_SESSION_TYPE } from '../../providers/wisp/common/wispProjects.js';
@@ -30,8 +32,8 @@ const inProject = ChatContextKeys.chatSessionType.isEqualTo(WISP_PROJECT_SESSION
 
 // The composer's account picker (docs/design/agents-window.md: "Claude Code: Max" in the
 // mockups), in the same input toolbar as the branch and host footer items (wispComposerFooter.ts).
-// It remembers the coordinator's chosen account locally until wispd's role defaults (#119, PR
-// #164) land; see `IWispAccountsService.coordinatorChoice` and the follow-up issue it names.
+// The coordinator's chosen account is this host's role default (#119's `accounts/defaults/set`);
+// see `IWispAccountsService.coordinatorChoice`.
 
 registerAction2(class ComposerAccountAction extends Action2 {
 	constructor() {
@@ -54,6 +56,7 @@ async function pickAccount(accessor: ServicesAccessor): Promise<void> {
 	const accountsService = accessor.get(IWispAccountsService);
 	const quickInputService = accessor.get(IQuickInputService);
 	const commandService = accessor.get(ICommandService);
+	const notificationService = accessor.get(INotificationService);
 
 	const clis = accountsService.clis.get().filter(cli => cli.signedIn);
 	const keyAccounts = accountsService.keyAccounts.get();
@@ -89,8 +92,19 @@ async function pickAccount(accessor: ServicesAccessor): Promise<void> {
 		return;
 	}
 	if (picked.choice) {
-		accountsService.setCoordinatorChoice(picked.choice);
+		try {
+			await accountsService.setCoordinatorChoice(picked.choice);
+		} catch (error) {
+			notificationService.error(localize('wispComposer.accountSetFailed', "Couldn't set the coordinator's account: {0}", describeSetAccountError(error)));
+		}
 	}
+}
+
+function describeSetAccountError(error: unknown): string {
+	if (error instanceof WispdError) {
+		return error.message;
+	}
+	return error instanceof Error ? error.message : String(error);
 }
 
 registerAction2(class PickAccountAction extends Action2 {

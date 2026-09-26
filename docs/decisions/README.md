@@ -16,6 +16,7 @@ A decision that affects more than one issue gets a record here. Records supersed
 | [0010](0010-wispd-attach.md) | `wispd attach` starts wispd through the LaunchAgent `io.github.ryan-stoffel.wisp.wispd` or as a detached `serve`, and exits 4 when it never reaches wispd |
 | [0011](0011-agents-window-baseline.md) | wisp opens into upstream's Agents window, laid out like Cursor's Projects: a built-in `ISessionsProvider` and wisp-owned sidebar in the overlay, subagents as tool-origin chats behind the Agents pill, and a few patches |
 | [0012](0012-account-routing.md) | `AccountChoice` names a subscription by its backend or a key account by id; per-role defaults live in a `role_defaults` store table; a backend serves both credential kinds for its provider, so fallback never switches backends |
+| [0013](0013-worker-sandbox.md) | Workers run in their vendor's own OS sandbox: they write only their worktree, the shared context folder, and temp; their commands can't read a denylist of credential stores but do have network access; wispd commits. Claude workers use `--restricted` with Claude Code's Bash sandbox |
 
 Numbers are assigned in order. Take the next free number when you start the record, add a row to this table in the same PR, and link the record from its issue.
 
