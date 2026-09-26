@@ -22,10 +22,11 @@ export const WISP_CONTEXT_EDITOR_BANNER_ID = 'wisp.contrib.contextEditorBanner';
  * correction landed, so the packaged app's screenshot caught the file's own first line drawn over
  * the bar's text, even though the same logic passed in a unit test that fakes the observer's
  * timing. A fixed line count sidesteps that race entirely: nothing about it depends on the browser
- * laying anything out first. 3, not 2: measured against the actual CI capture at its width, this
- * message's first two lines alone run about 55-60 characters, leaving no margin for a shorter
- * message to reliably clear in only 2 (round three's own first attempt at a shorter message still
- * clipped "every agent... reads it", missing criterion 3).
+ * laying anything out first. Getting three lines to actually fit this zone's own (fixed, small)
+ * height needed the CSS tightened too (#106's fourth review): less vertical padding, a tighter
+ * line-height, and top instead of center alignment so trimming a few px never clips both edges at
+ * once; `-webkit-line-clamp: 3` on `.wisp-context-banner-text` is a safety net on top of that,
+ * capping the text itself at three lines regardless.
  */
 const BANNER_LINES = 3;
 
@@ -35,7 +36,7 @@ const BANNER_LINES = 3;
  * zone's hover title ({@link wispContextBannerTitle}).
  */
 export function wispContextBannerMessage(host: string): string {
-	return localize('wispContext.banner', "On {0}, outside the repo. Every agent here reads it.", host);
+	return localize('wispContext.banner', "On {0}, outside the repo. Every agent in this project reads it.", host);
 }
 
 /** The full sentence (issue #106's acceptance criteria), as the zone's hover title. */
@@ -79,7 +80,9 @@ export class WispContextEditorBanner extends Disposable implements IEditorContri
 
 	private renderZone(host: string): void {
 		this.removeZone();
-		const domNode = $('.wisp-context-banner', { role: 'note', title: wispContextBannerTitle(host) }, wispContextBannerMessage(host));
+		const message = wispContextBannerMessage(host);
+		const text = $('.wisp-context-banner-text', undefined, message);
+		const domNode = $('.wisp-context-banner', { role: 'note', title: wispContextBannerTitle(host) }, text);
 		this.editor.changeViewZones(accessor => {
 			this.zoneId = accessor.addZone({ afterLineNumber: 0, heightInLines: BANNER_LINES, domNode });
 		});

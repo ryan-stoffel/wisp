@@ -607,6 +607,10 @@ suite('wisp: shared context', () => {
 			assert.strictEqual(zone.domNode.textContent, wispContextBannerMessage('this Mac'));
 			assert.strictEqual(zone.domNode.getAttribute('title'), wispContextBannerTitle('this Mac'), 'the full sentence is reachable on hover even though the bar itself shows the shorter message');
 			assert.notStrictEqual(wispContextBannerMessage('this Mac'), wispContextBannerTitle('this Mac'));
+			// The -webkit-line-clamp safety net (#106's fourth review) targets this inner wrapper, not
+			// the zone's own domNode, which the zone infrastructure positions and sizes itself.
+			const text = zone.domNode.querySelector('.wisp-context-banner-text');
+			assert.strictEqual(text?.textContent, wispContextBannerMessage('this Mac'));
 
 			banner.dispose();
 			dispose();
