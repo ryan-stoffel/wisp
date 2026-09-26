@@ -5,6 +5,7 @@
 // not the command palette), as ci/screenshots/src/scenarios.ts's own `answerFolderPicker` and
 // `createProject`, which this reuses to stay consistent with what's already proven there.
 import type { ElectronApplication, Page } from 'playwright-core';
+import { clickNewProjectButton } from './wispUi.ts';
 
 interface ElectronDialog {
   showOpenDialog: () => Promise<{ canceled: boolean; filePaths: string[] }>;
@@ -27,7 +28,7 @@ export async function stubFolderPicker(app: ElectronApplication, folderPath: str
  * and accepts the name step's suggested default (the folder's own name).
  */
 export async function createLocalProject(window: Page): Promise<void> {
-  await window.locator('.part.sidebar button.wisp-threads-new-project').click();
+  await clickNewProjectButton(window);
   const name = window.locator('.quick-input-widget input');
   await name.waitFor({ state: 'visible' });
   await name.press('Enter');

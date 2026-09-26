@@ -88,6 +88,27 @@ export function projectIdFromSession(dataSession: string): string {
   return dataSession.replace(/^wisp\.project:\/?/, '');
 }
 
+const NEW_PROJECT_BUTTON = '.part.sidebar button.wisp-threads-new-project';
+
+/**
+ * Clicks the sidebar's New Project "+", first waiting for it to actually be enabled.
+ * `wispThreadsView.ts`'s `enableable` disables a button through `aria-disabled`, not the native
+ * `disabled` attribute (screen readers announce the reason, which a real `disabled` button can't
+ * carry), so Playwright's own actionability checks -- which wait on the native attribute, not
+ * `aria-disabled` -- happily click it while it is still disabled, whose handler then does nothing.
+ * The button becomes enabled reactively once the host connects; on a slow or loaded runner, that
+ * autorun can lag behind the chip's own DOM update by more than an instant.
+ */
+export async function clickNewProjectButton(window: Page): Promise<void> {
+  const button = window.locator(NEW_PROJECT_BUTTON);
+  await button.waitFor({ state: 'visible' });
+  await window.waitForFunction(
+    (selector) => document.querySelector(selector)?.getAttribute('aria-disabled') !== 'true',
+    NEW_PROJECT_BUTTON,
+  );
+  await button.click();
+}
+
 /** Opens the host chip's own menu (wispHostMenu.ts's `showHostMenu`), by clicking the chip. */
 export async function openHostMenu(window: Page): Promise<void> {
   await window.locator(HOST_CHIP).click();
@@ -125,7 +146,7 @@ export async function fillAddHostInput(window: Page, destination: string): Promi
  * rather than a fixed wait that could still be looking at the path box.
  */
 export async function createRemoteProject(window: Page, path: string): Promise<void> {
-  await window.locator('.part.sidebar button.wisp-threads-new-project').click();
+  await clickNewProjectButton(window);
   const input = window.locator(QUICK_INPUT);
   await input.waitFor({ state: 'visible' });
   await input.fill(path);
