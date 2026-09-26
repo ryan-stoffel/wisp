@@ -499,7 +499,9 @@ async fn gc_orphans_removes_an_unknown_worktree_and_keeps_a_known_one() {
 
     let mut keep = HashSet::new();
     keep.insert(known.path.clone());
-    let report = mgr.gc_orphans(&keep).await;
+    let mut known_repos = HashSet::new();
+    known_repos.insert(repo.clone());
+    let report = mgr.gc_orphans(&keep, &known_repos).await;
 
     assert_eq!(
         report.removed.as_slice(),
@@ -508,20 +510,43 @@ async fn gc_orphans_removes_an_unknown_worktree_and_keeps_a_known_one() {
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     assert!(known.path.exists());
     assert!(!orphan.path.exists());
-    // gc removes the orphan's folder directly, with no git command against its repository
-    // (#171), so the repo's own worktree bookkeeping still lists the orphan's now-deleted
-    // folder as a prunable entry until something else runs `git worktree prune` there.
+    assert_eq!(worktree_count(&repo), 2, "main plus the known worktree");
+}
+
+#[tokio::test]
+async fn gc_orphans_prunes_known_repos_so_an_orphans_branch_can_be_checked_out_and_deleted() {
+    // #171 review: removing the orphan's folder directly, with no `git worktree remove`, left
+    // its repository's own `.git/worktrees/<id>` entry behind, still naming the branch and path
+    // the orphaned run used. Until pruned, git refuses to check that branch out, delete it, or
+    // reuse its path, anywhere in the user's own checkout.
+    let repo_dir = tempfile::tempdir().unwrap();
+    let repo = init_repo(repo_dir.path()).canonicalize().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let mgr = manager(data_dir.path());
+    let orphan = mgr.create(&repo, RunId::generate(), None).await.unwrap();
+
+    let mut known_repos = HashSet::new();
+    known_repos.insert(repo.clone());
+    let report = mgr.gc_orphans(&HashSet::new(), &known_repos).await;
+
+    assert_eq!(
+        report.removed.as_slice(),
+        std::slice::from_ref(&orphan.path)
+    );
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert!(!orphan.path.exists());
     assert_eq!(
         worktree_count(&repo),
-        3,
-        "main, the known worktree, and the orphan's now-stale, unpruned entry"
+        1,
+        "only the repo's main worktree remains"
     );
-    git(&repo, &["worktree", "prune"]);
-    assert_eq!(
-        worktree_count(&repo),
-        2,
-        "pruning the repo separately clears the stale entry gc's direct folder removal left"
-    );
+
+    // The branch is neither pinned by a stale worktree entry nor deleted by gc (#206 tracks
+    // whether gc itself should ever delete it): the user can still check it out and remove it
+    // themselves, exactly as if the worktree had been removed properly.
+    git(&repo, &["checkout", "-q", &orphan.branch]);
+    git(&repo, &["checkout", "-q", "main"]);
+    git(&repo, &["branch", "-D", &orphan.branch]);
 }
 
 #[tokio::test]
@@ -532,7 +557,7 @@ async fn gc_orphans_removes_a_folder_that_is_not_a_worktree_at_all() {
     std::fs::create_dir_all(&bogus).unwrap();
     std::fs::write(bogus.join("file.txt"), "hi").unwrap();
 
-    let report = mgr.gc_orphans(&HashSet::new()).await;
+    let report = mgr.gc_orphans(&HashSet::new(), &HashSet::new()).await;
 
     assert_eq!(report.removed.as_slice(), std::slice::from_ref(&bogus));
     assert!(!bogus.exists());
@@ -547,7 +572,7 @@ async fn gc_orphans_on_a_missing_root_does_nothing() {
     let data_dir = tempfile::tempdir().unwrap();
     let mgr = manager(&data_dir.path().join("never-created"));
 
-    let report = mgr.gc_orphans(&HashSet::new()).await;
+    let report = mgr.gc_orphans(&HashSet::new(), &HashSet::new()).await;
 
     assert!(report.removed.is_empty());
     assert!(report.errors.is_empty());
@@ -789,7 +814,7 @@ async fn gc_orphans_never_runs_a_git_command_against_a_repository_an_orphan_is_r
         "the evil repo's main worktree plus the orphan, registered to it"
     );
 
-    let report = mgr.gc_orphans(&HashSet::new()).await;
+    let report = mgr.gc_orphans(&HashSet::new(), &HashSet::new()).await;
 
     assert_eq!(report.removed.as_slice(), std::slice::from_ref(&orphan));
     assert!(report.errors.is_empty(), "{:?}", report.errors);
@@ -818,7 +843,7 @@ async fn gc_orphans_refuses_a_symlinked_run_folder_instead_of_following_it_out_o
     let run_dir = project_dir.join("run-id");
     symlink(outside.path(), &run_dir).unwrap();
 
-    let report = mgr.gc_orphans(&HashSet::new()).await;
+    let report = mgr.gc_orphans(&HashSet::new(), &HashSet::new()).await;
 
     assert!(report.removed.is_empty(), "{:?}", report.removed);
     assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
@@ -849,7 +874,7 @@ async fn gc_orphans_does_not_descend_into_a_symlinked_project_folder() {
     let project_symlink = mgr.root().join("some-project");
     symlink(outside.path(), &project_symlink).unwrap();
 
-    let report = mgr.gc_orphans(&HashSet::new()).await;
+    let report = mgr.gc_orphans(&HashSet::new(), &HashSet::new()).await;
 
     assert!(report.removed.is_empty(), "{:?}", report.removed);
     assert!(report.errors.is_empty(), "{:?}", report.errors);

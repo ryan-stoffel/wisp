@@ -59,11 +59,17 @@
 //! there is no `.git` file or repo-local config of the worker's to distrust there.
 //!
 //! [`WorktreeManager::gc_orphans`] takes a third path (#171): an orphan folder has no
-//! [`CreatedWorktree::git_dir`] pinned for it the way a known worktree does, so it runs no git
-//! command there at all, against any repository. It removes the plain folder directly, after
-//! confirming with `lstat` that the folder (and each project folder above it under
-//! [`WorktreeManager::root`]) is a real directory rather than a symlink a worker could plant to
-//! send that removal somewhere else.
+//! [`CreatedWorktree::git_dir`] pinned for it the way a known worktree does, so it never
+//! discovers a repository from, or trusts, an orphan's own `.git` file. It removes the plain
+//! folder directly, after confirming with `lstat` that the folder (and each project folder above
+//! it under [`WorktreeManager::root`]) is a real directory rather than a symlink a worker could
+//! plant to send that removal somewhere else. Removing a folder this way can leave its
+//! repository with a stale `.git/worktrees/<id>` entry that still names the branch and path an
+//! orphaned run used; until pruned, git refuses to check that branch out, delete it, or reuse
+//! its path, anywhere. So `gc_orphans` also prunes every repository the caller passes it in
+//! `known_repos` — never one discovered from an orphan, only ones the store already knows —
+//! the same trust [`WorktreeManager::create`] and [`WorktreeManager::remove`] already place in
+//! `repo_root`.
 //!
 //! **Known gap (#175):** a `-c` override wins over a config value no matter how that value was
 //! set, including through an `include`/`includeIf`, so hooks and hooksPath stay closed either
@@ -355,7 +361,7 @@ pub struct Commit {
 pub struct GcReport {
     /// Worktree folders it removed.
     pub removed: Vec<PathBuf>,
-    /// Folders it could not remove, and why.
+    /// A folder it could not remove, or a repository it could not prune, and why.
     pub errors: Vec<(PathBuf, String)>,
 }
 
@@ -668,17 +674,29 @@ impl WorktreeManager {
 
     /// Removes every worktree folder under [`WorktreeManager::root`] that isn't in `known`
     /// (normally every [`wisp_store::Worktree::path`] the store has), and cleans up any project
-    /// folder that becomes empty as a result.
+    /// folder that becomes empty as a result. Afterward, prunes every repository in
+    /// `known_repos` (normally every project repository the store has): removing an orphan's
+    /// folder directly, with no git command, can leave that repository's own
+    /// `.git/worktrees/<id>` entry behind, still naming the branch and path the orphaned run
+    /// used, and until pruned, git refuses to check that branch out, delete it, or reuse its
+    /// path, anywhere (#171).
     ///
     /// An orphan folder is worker-writable, and gc has no `git_dir` pinned for it the way a known
     /// worktree does (#171: nothing was ever recorded for something the store has since
-    /// forgotten). So gc never discovers a repository from an orphan's `.git` file, or runs a git
-    /// command against whatever that file names — it could have been rewritten to redirect
-    /// anywhere, the same class of attack #166 closed for the calls scoped to a known worktree.
-    /// gc only ever removes the plain folder, after confirming it (and the project folder above
-    /// it) is a real directory, never a symlink a worker could plant to make gc follow it outside
-    /// [`WorktreeManager::root`].
-    pub async fn gc_orphans(&self, known: &HashSet<PathBuf>) -> GcReport {
+    /// forgotten). So removing it never discovers a repository from an orphan's `.git` file, or
+    /// runs a git command against whatever that file names — it could have been rewritten to
+    /// redirect anywhere, the same class of attack #166 closed for the calls scoped to a known
+    /// worktree. gc only ever removes the plain folder, after confirming it (and the project
+    /// folder above it) is a real directory, never a symlink a worker could plant to make gc
+    /// follow it outside [`WorktreeManager::root`]. The pruning pass runs only against
+    /// `known_repos`, never against anything discovered from an orphan: the same trust
+    /// [`WorktreeManager::create`] and [`WorktreeManager::remove`] already place in `repo_root`,
+    /// the user's own checkout.
+    pub async fn gc_orphans(
+        &self,
+        known: &HashSet<PathBuf>,
+        known_repos: &HashSet<PathBuf>,
+    ) -> GcReport {
         let mut report = GcReport::default();
         let project_dirs = match read_dir_entries(&self.root).await {
             Ok(entries) => entries,
@@ -693,6 +711,10 @@ impl WorktreeManager {
             if !is_real_dir(&project_dir).await {
                 // Not a genuine directory wispd created: a stray file, or a symlink planted to
                 // make gc follow it outside `root` (#171). Either way, never descended into.
+                warn!(
+                    path = %project_dir.display(),
+                    "gc found a project entry that is not a real directory; left alone, not followed"
+                );
                 continue;
             }
             let run_dirs = match read_dir_entries(&project_dir).await {
@@ -721,6 +743,14 @@ impl WorktreeManager {
                 let _ = tokio::fs::remove_dir(&project_dir).await;
             }
         }
+
+        for repo_root in known_repos {
+            let _guard = self.lock_repo(repo_root).await;
+            if let Err(error) = self.run_git_ok(repo_root, &["worktree", "prune"]).await {
+                report.errors.push((repo_root.clone(), error.to_string()));
+            }
+        }
+
         report
     }
 
