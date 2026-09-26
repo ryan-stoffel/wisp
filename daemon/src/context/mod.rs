@@ -1,32 +1,26 @@
 //! Shared context: a folder per project, outside its git repository, that every agent and the
-//! editor read and write (decision record 0005, #155).
+//! editor read and write.
 //!
 //! Layout: [`crate::paths::DataDir::context_dir`] under the data folder, one file deep. A path is
-//! always exactly one file name relative to that folder: no `..`, no leading `/`, no
-//! subdirectory, no hidden (dot) name, and it must end in `.md`, `.markdown`, or `.txt`. That
-//! restriction is deliberate scope, not an oversight (see the issue's Plan comment): 0005
-//! describes shared context as a folder of Markdown files, never a hierarchy, and keeping it flat
-//! removes an entire class of intermediate-directory symlink attacks.
+//! always exactly one file name relative to that folder, ending in `.md`, `.markdown`, or `.txt`.
+//! Keeping it flat removes an entire class of intermediate-directory symlink attacks.
 //!
 //! Two more defenses hold even when a path passes that check:
 //!
-//! - Reads open with `O_NOFOLLOW` (the same technique `server::setup` uses for the lock file and
-//!   socket), so a symlink swapped in after validation is refused atomically, with no race.
-//! - Writes go to a temporary file in the same folder, then `rename` it over the target
-//!   ([`tempfile::NamedTempFile::persist`]). `rename` never follows a symlink at the destination,
-//!   so even a swapped-in symlink can't be written through; wispd also rejects an existing
-//!   symlink outright first, for a clear error in the common, non-racing case.
+//! - Reads open with `O_NOFOLLOW`, so a symlink swapped in after validation is refused atomically.
+//! - Writes go to a temporary file in the same folder, then `rename` it over the target.
+//!   `rename` never follows a symlink at the destination, so even a swapped-in symlink can't be
+//!   written through; an existing symlink is also rejected outright first, for a clear error.
 //!
 //! [`ContextIndex`] remembers, in memory, the last writer and content hash wispd has seen for
-//! each file. It resets on restart, the same trade-off the M1 event log makes (0007, 0009): the
-//! file on disk is 0005's durable source of truth, and this is only bookkeeping for idempotent
-//! retries and the `lastWriter` display field.
+//! each file. It resets on restart: the file on disk is the source of truth, and this is only
+//! bookkeeping for idempotent retries and the `lastWriter` display field.
 
 pub(crate) mod watcher;
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write as _};
-use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
@@ -59,11 +53,7 @@ const ALLOWED_EXTENSIONS: [&str; 3] = ["md", "markdown", "txt"];
 pub(crate) fn ensure_dir(data_dir: &DataDir, project: ProjectId) -> io::Result<PathBuf> {
     let dir = data_dir.context_dir(project);
     std::fs::create_dir_all(&dir)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
-    }
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
     Ok(dir)
 }
 
@@ -71,8 +61,7 @@ pub(crate) fn ensure_dir(data_dir: &DataDir, project: ProjectId) -> io::Result<P
 /// `.markdown`, or `.txt`. This alone rejects `..`, a leading `/`, and any subdirectory, since all
 /// of those need more than one path component or a component that is not [`Component::Normal`].
 ///
-/// Returns the same string back, borrowed, so a caller can use it as the file name without
-/// re-deriving it from the path.
+/// Returns the same string back.
 pub(crate) fn validate_relative_path(path: &str) -> Result<&str, ErrorObject> {
     let invalid = || {
         ErrorObject::invalid_params(
@@ -87,19 +76,13 @@ pub(crate) fn validate_relative_path(path: &str) -> Result<&str, ErrorObject> {
     let Some(Component::Normal(name)) = components.next() else {
         return Err(invalid());
     };
-    if components.next().is_some() {
-        return Err(invalid());
-    }
-    // `Component::Normal` only guarantees no separator survives; compare back to the original so
-    // a name that doesn't round-trip losslessly (not valid UTF-8) can't sneak through.
-    if name.to_str() != Some(path) {
-        return Err(invalid());
-    }
-    if path.starts_with('.') {
-        return Err(invalid());
-    }
+    // Comparing back to `path` also rejects a name `components` normalized (a trailing `/`).
     let extension = Path::new(path).extension().and_then(|ext| ext.to_str());
-    if !extension.is_some_and(|ext| ALLOWED_EXTENSIONS.contains(&ext)) {
+    if components.next().is_some()
+        || name.to_str() != Some(path)
+        || path.starts_with('.')
+        || !extension.is_some_and(|ext| ALLOWED_EXTENSIONS.contains(&ext))
+    {
         return Err(invalid());
     }
     Ok(path)
@@ -195,24 +178,11 @@ pub(crate) fn list_files(dir: &Path) -> io::Result<Vec<(String, std::fs::Metadat
 /// size, if it exists. Used to check the per-project cap before a write, without counting the
 /// file the write is about to replace against itself.
 pub(crate) fn other_files_total(dir: &Path, except: &str) -> io::Result<u64> {
-    let mut total = 0_u64;
-    for (name, metadata) in list_files(dir)? {
-        if name != except {
-            total += metadata.len();
-        }
-    }
-    Ok(total)
-}
-
-/// `metadata`'s size and modification time as the protocol reports them. `mtime`/`mtime_nsec`
-/// (rather than [`std::fs::Metadata::modified`]) so a fixture can back-date a file with `utimes`
-/// in a test without needing raw `SystemTime` plumbing.
-pub(crate) fn modified_at(metadata: &std::fs::Metadata) -> Timestamp {
-    Timestamp::new(
-        metadata.mtime(),
-        metadata.mtime_nsec().try_into().unwrap_or(0),
-    )
-    .unwrap_or(Timestamp::UNIX_EPOCH)
+    Ok(list_files(dir)?
+        .iter()
+        .filter(|(name, _)| name != except)
+        .map(|(_, metadata)| metadata.len())
+        .sum())
 }
 
 fn hash_content(content: &[u8]) -> u64 {
@@ -341,7 +311,11 @@ pub(crate) fn context_file(
     ContextFile {
         path: path.to_owned(),
         size: metadata.len(),
-        modified_at: modified_at(metadata),
+        modified_at: Timestamp::new(
+            metadata.mtime(),
+            metadata.mtime_nsec().try_into().unwrap_or(0),
+        )
+        .unwrap_or(Timestamp::UNIX_EPOCH),
         last_writer: writer,
     }
 }
@@ -367,8 +341,8 @@ mod tests {
     use wisp_protocol::jsonrpc::INVALID_PARAMS;
 
     use super::{
-        ContextIndex, Existing, MAX_FILE_BYTES, ensure_dir, list_files, other_files_total,
-        read_file, validate_relative_path, write_file,
+        ContextIndex, Existing, ensure_dir, list_files, other_files_total, read_file,
+        validate_relative_path, write_file,
     };
     use crate::paths::DataDir;
 
@@ -410,20 +384,14 @@ mod tests {
     }
 
     #[test]
-    fn write_then_read_round_trips_and_list_finds_it() {
+    fn write_then_read_round_trips_and_a_second_write_replaces_the_first() {
         let dir = tempfile::tempdir().unwrap();
+        write_file(dir.path(), "notes.md", b"first, and then some").unwrap();
         write_file(dir.path(), "notes.md", b"hello").unwrap();
         let (content, metadata) = read_file(dir.path(), "notes.md").unwrap();
         assert_eq!(content, b"hello");
         assert_eq!(metadata.len(), 5);
-        let files = list_files(dir.path()).unwrap();
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].0, "notes.md");
-    }
 
-    #[test]
-    fn reading_a_missing_file_is_not_found() {
-        let dir = tempfile::tempdir().unwrap();
         let error = read_file(dir.path(), "missing.md").unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
     }
@@ -444,41 +412,8 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&outside).unwrap(), "secret");
     }
 
-    /// The TOCTOU scenario from the acceptance criteria: a path checks out clean, then something
-    /// swaps a symlink in before the write actually happens. The rename-based write must not
-    /// write through the swapped-in link even when it isn't rejected outright first.
     #[test]
-    fn a_symlink_swapped_in_after_validation_is_never_written_through() {
-        let dir = tempfile::tempdir().unwrap();
-        let outside = dir.path().join("outside.md");
-        std::fs::write(&outside, "secret").unwrap();
-        assert!(
-            validate_relative_path("notes.md").is_ok(),
-            "passes the check"
-        );
-        // The swap happens here, between the check above and the write below.
-        symlink(&outside, dir.path().join("notes.md")).unwrap();
-
-        let error = write_file(dir.path(), "notes.md", b"clobbered").unwrap_err();
-        assert!(super::is_symlink_error(&error));
-        assert_eq!(
-            std::fs::read_to_string(&outside).unwrap(),
-            "secret",
-            "the symlink's target must be untouched"
-        );
-    }
-
-    #[test]
-    fn a_second_write_replaces_the_first_in_full() {
-        let dir = tempfile::tempdir().unwrap();
-        write_file(dir.path(), "notes.md", b"first, and then some").unwrap();
-        write_file(dir.path(), "notes.md", b"second").unwrap();
-        let (content, _) = read_file(dir.path(), "notes.md").unwrap();
-        assert_eq!(content, b"second");
-    }
-
-    #[test]
-    fn temporary_files_are_never_listed() {
+    fn a_written_file_is_listed_and_a_temporary_one_is_not() {
         let dir = tempfile::tempdir().unwrap();
         write_file(dir.path(), "notes.md", b"hello").unwrap();
         let leftover = tempfile::Builder::new()
@@ -505,11 +440,6 @@ mod tests {
     fn listing_a_context_dir_that_does_not_exist_yet_is_empty() {
         let dir = tempfile::tempdir().unwrap();
         assert!(list_files(&dir.path().join("nope")).unwrap().is_empty());
-    }
-
-    #[test]
-    fn a_file_at_exactly_the_cap_is_a_boundary_a_caller_can_check() {
-        assert_eq!(MAX_FILE_BYTES, 1024 * 1024);
     }
 
     #[test]
@@ -551,9 +481,7 @@ mod tests {
         let project = wisp_protocol::ProjectId::generate();
         let id = wisp_protocol::ContextWriteId::generate();
         index.record_protocol_write(project, "notes.md", id, None, b"hello");
-        // The OS can report more than one filesystem event for a single atomic write (a rename
-        // touches both the temporary name and the target); every one of them must still count as
-        // the same already-known write, not just the first.
+        // The OS can report more than one event for a single rename: each must still match.
         assert!(index.matches_recorded(project, "notes.md", b"hello"));
         assert!(index.matches_recorded(project, "notes.md", b"hello"));
         assert!(

@@ -1,39 +1,14 @@
-//! Routes a task to a backend and account (#119), for M3's runner (#156) to start.
+//! Routes a task to a backend and account for the runner (`crate::agents`) to start.
 //!
-//! [`resolve`] picks the account: the one a task names, or its role's stored default
-//! (`accounts/defaults/get` and `accounts/defaults/set`, `methods::defaults`), and forces the
-//! coordinator's no-write policy regardless of what was asked for (0004). [`start`] then starts
-//! the run, and retries once on a key-account fallback if it fails signed out or rate limited
-//! (0004's fallback).
-//!
-//! What checks a coordinator's turn for a policy violation lives here too, in [`snapshot`] and
-//! [`check`]: a backend's own arguments and tool list already keep a no-write run from calling a
-//! write tool (0004), but this is 0004's second check, and it doesn't depend on any one backend.
-//!
-//! # What owns calling this, and how
-//!
-//! #156's runner (`crate::agents`) calls `resolve` and `start` for workers; nothing calls
-//! `snapshot` or `check` yet. Who owns what (see #119's decision record, 0012):
-//!
-//! - #156 (the M3 runner, workers only) calls `resolve` and `start` for a worker's
-//!   `workspace-write` run, maps [`Event::AccountFallback`] to an `agent/*` notification, and
-//!   charges usage after it to `to_account`, not the account the run started on.
-//! - Whichever M4 issue runs a coordinator's turn (0012, since M4's task issues don't exist yet)
-//!   calls `resolve` and `start` the same way, and additionally calls [`snapshot`] before the
-//!   turn and [`check`] after it, stopping the run and reporting a `policyViolation` event on a
-//!   violation.
-//! - [`start`]'s returned [`Started::run`] already forwards to whichever attempt is actually
-//!   running, including after a fallback (see [`FallbackRun`]), so a caller never needs to track
-//!   that itself.
+//! [`resolve`] picks the account: the one a task names, or its role's stored default. [`start`]
+//! forces the coordinator's no-write policy regardless of what was asked for, starts the run, and
+//! retries once on a key-account fallback if it fails signed out or rate limited. Its returned
+//! [`Started::run`] forwards to whichever attempt is actually running (see [`FallbackRun`]).
 
 use std::collections::HashMap;
-use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use sha2::{Digest, Sha256};
 use wisp_protocol::{AccountChoice, AccountId, Provider, Role};
 
 use crate::backend::key_account::{self, KeyAccountError};
@@ -44,8 +19,8 @@ use crate::backend::{
 };
 use crate::keystore::KeyStore;
 
-/// Every backend wispd can route to, by the provider whose credentials it takes (0004: a backend
-/// takes both a subscription login and a key account for the same provider).
+/// Every backend wispd can route to, by the provider whose credentials it takes: a backend takes
+/// both a subscription login and a key account for the same provider.
 #[derive(Clone, Default)]
 pub struct BackendRegistry {
     by_provider: HashMap<Provider, Arc<dyn Backend>>,
@@ -92,15 +67,14 @@ impl BackendRegistry {
     }
 }
 
-/// What routing needs to know about key accounts (#117) besides their keys, which
+/// What routing needs to know about key accounts besides their keys, which
 /// [`key_account::resolve`] reads from the Keychain only once a route is about to start.
 pub trait KeyAccounts: Send + Sync {
     /// `id`'s provider, or `None` if no key account has that id.
     fn provider_of(&self, id: AccountId) -> Option<Provider>;
 
     /// A key account configured for `provider`, to fall back to when a subscription run for it
-    /// fails, or `None` if none exists. M2 has no separate "fallback account" setting (#119): any
-    /// key account for the same provider serves.
+    /// fails, or `None` if none exists. Any key account for the same provider serves.
     fn fallback_for(&self, provider: Provider) -> Option<AccountId>;
 }
 
@@ -151,24 +125,11 @@ impl Selection {
     }
 }
 
-/// The policy `role` actually gets: always [`ToolPolicy::NoWrite`] for [`Role::Coordinator`],
-/// whatever `policy` asks for (0004).
-fn enforced_policy(role: Role, policy: ToolPolicy) -> ToolPolicy {
-    if role == Role::Coordinator {
-        ToolPolicy::NoWrite
-    } else {
-        policy
-    }
-}
-
 /// What [`resolve`] found for a task: its backend, the account it will run as (once its
-/// credential is read), and the policy it actually gets, which may not be what was requested
-/// (0004's coordinator policy).
+/// credential is read), its role, and the policy it asked for.
 ///
-/// Every field is private. A coordinator's forced [`ToolPolicy::NoWrite`] is meaningless if
-/// something between `resolve` and `start` can change it back, so nothing outside this module can
-/// read or write one without going through [`Resolved::policy`], and [`start`] enforces it again
-/// from [`Resolved::role`] regardless of what `policy()` already says.
+/// Every field is private, so nothing between `resolve` and `start` can change the role that
+/// [`start`] enforces the coordinator's no-write policy from.
 pub struct Resolved {
     backend: Arc<dyn Backend>,
     provider: Provider,
@@ -178,7 +139,7 @@ pub struct Resolved {
 }
 
 impl Resolved {
-    /// The account this run will use, once its credential is read (#118): a backend's name for a
+    /// The account this run will use, once its credential is read: a backend's name for a
     /// subscription, or a key account's id.
     #[must_use]
     pub fn account_id(&self) -> String {
@@ -188,23 +149,10 @@ impl Resolved {
         }
     }
 
-    /// The backend that will run it, to check what it can do before starting (#156). Reading
-    /// it can't change the policy [`start`] enforces.
+    /// The backend that will run it, to check what it can do before starting.
     #[must_use]
     pub fn backend(&self) -> &dyn Backend {
         self.backend.as_ref()
-    }
-
-    /// The role this run is for.
-    #[must_use]
-    pub fn role(&self) -> Role {
-        self.role
-    }
-
-    /// The policy this run actually gets.
-    #[must_use]
-    pub fn policy(&self) -> ToolPolicy {
-        self.policy
     }
 }
 
@@ -253,11 +201,9 @@ pub enum RoutingError {
 }
 
 /// Picks `role`'s account and backend: `requested` if given, else `role`'s entry in `defaults`.
-/// The coordinator always gets [`ToolPolicy::NoWrite`], whatever `policy` asks for (0004); a
-/// worker gets `policy` as given.
 ///
 /// This reads no credential and starts nothing; [`start`] does both, right before spawning the
-/// backend's process, so a key sits in memory for as little time as possible (#118).
+/// backend's process, so a key sits in memory for as little time as possible.
 ///
 /// # Errors
 ///
@@ -300,19 +246,19 @@ pub fn resolve(
         provider,
         selection,
         role,
-        policy: enforced_policy(role, policy),
+        policy,
     })
 }
 
-/// Starts `request` through `resolved`, reading its credential first.
+/// Starts `request` through `resolved`, reading its credential first. The coordinator always
+/// gets [`ToolPolicy::NoWrite`], whatever `resolved` asked for; a worker gets its policy as given.
 ///
 /// If the run fails as [`FailureKind::NotSignedIn`] or [`FailureKind::RateLimited`] and
 /// `resolved`'s account is a subscription with a key account configured for the same provider
 /// (`accounts.fallback_for`), starts once more on that key account and reports the switch as an
 /// [`Event::AccountFallback`], before the fallback run's own events, which are charged to
-/// `to_account` (see the events for the accounting story). Never retries twice, and never retries
-/// a key account's own failure (0004: fallback only ever goes from a subscription to a key
-/// account).
+/// `to_account`. Never retries twice, and never retries a key account's own failure: fallback
+/// only ever goes from a subscription to a key account.
 ///
 /// # Errors
 ///
@@ -332,10 +278,11 @@ pub fn start(
         role,
         policy,
     } = resolved;
-    // Re-enforced here, not just trusted from `resolved`: `Resolved`'s fields are private and
-    // `policy` is already correct by construction, but the coordinator's no-write policy is
-    // exactly the thing that must never depend on one code path remembering to apply it.
-    let policy = enforced_policy(role, policy);
+    let policy = if role == Role::Coordinator {
+        ToolPolicy::NoWrite
+    } else {
+        policy
+    };
     let is_subscription = matches!(selection, Selection::Subscription { .. });
     let account = selection
         .into_account_ref(keys.as_ref(), provider)
@@ -343,7 +290,7 @@ pub fn start(
     request.account = account.clone();
     request.policy = policy;
     if policy == ToolPolicy::NoWrite {
-        // A no-write run never writes, so it has no worker sandbox (0013), whatever was asked.
+        // A no-write run never writes, so it has no worker sandbox, whatever was asked.
         request.sandbox = None;
     }
     let started = backend.start(request.clone())?;
@@ -522,193 +469,6 @@ async fn drive_with_fallback(
             return;
         }
     }
-}
-
-/// A fingerprint of a working tree's tracked and untracked state, taken by [`snapshot`] before a
-/// coordinator's turn and compared by [`check`] after it. Equal snapshots mean nothing changed,
-/// whether or not the tree was already dirty when the turn started (0004: "if `git status`
-/// changes during its turn").
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TreeSnapshot([u8; 32]);
-
-/// Why [`snapshot`] or [`check`] could not read the working tree.
-#[derive(Debug, thiserror::Error)]
-pub enum PolicyCheckError {
-    /// `git` could not be run at all.
-    #[error("could not run git: {0}")]
-    Spawn(#[from] std::io::Error),
-    /// The blocking task that ran `git` panicked.
-    #[error("checking the working tree panicked: {0}")]
-    Panicked(String),
-    /// `git` itself failed, such as when `repo_path` is not a git repository.
-    #[error("git failed: {stderr}")]
-    GitFailed {
-        /// Its stderr.
-        stderr: String,
-    },
-}
-
-/// Takes a fingerprint of `repo_path`'s working tree: `git status --porcelain=v1 -z
-/// --untracked-files=all --ignore-submodules=none`, a `git diff --binary --no-ext-diff` against
-/// `HEAD` (or the empty tree, in a repository with no commits yet), and the contents of every
-/// untracked file the status lists, all under one hash. [`check`] compares it against a later
-/// snapshot to tell whether a coordinator's no-write turn changed anything (0004): a tree that was
-/// already dirty when this is taken and stays exactly as dirty is not a violation.
-///
-/// Runs git with `-c core.fsmonitor=false`, so an untrusted repo's `fsmonitor` hook never runs as
-/// part of wispd, `GIT_OPTIONAL_LOCKS=0`, so this never waits on or takes the user's index lock,
-/// and `--no-ext-diff`, so a repo's configured `diff.external` never runs inside wispd either.
-///
-/// This only ever sees what `git status` and `git diff` see: a write to a file `.gitignore`
-/// excludes passes uncaught (0004 accepts this; see decision 0012).
-///
-/// # Errors
-///
-/// [`PolicyCheckError`] if `git` could not be run or failed, such as when `repo_path` is not a
-/// git repository.
-pub async fn snapshot(repo_path: &Path) -> Result<TreeSnapshot, PolicyCheckError> {
-    let repo_path = repo_path.to_owned();
-    let digest = tokio::task::spawn_blocking(move || fingerprint(&repo_path))
-        .await
-        .map_err(|error| PolicyCheckError::Panicked(error.to_string()))??;
-    Ok(TreeSnapshot(digest))
-}
-
-/// 0004's second check on the coordinator's no-write policy: compares a fresh [`snapshot`] of
-/// `repo_path` against `before`, which the caller took earlier, such as right before the turn
-/// started. Returns the [`Failure`] to end the run with if anything changed, or `None` if the
-/// tree matches `before`, dirty or not.
-///
-/// # Errors
-///
-/// [`PolicyCheckError`], the same as [`snapshot`].
-pub async fn check(
-    repo_path: &Path,
-    before: &TreeSnapshot,
-) -> Result<Option<Failure>, PolicyCheckError> {
-    let after = snapshot(repo_path).await?;
-    if after == *before {
-        return Ok(None);
-    }
-    // Cheap next to the hashing `snapshot` already did, and only run on the rare violation path:
-    // a second, human-readable status naming what changed, for 0004's "shows the diff" (#119's
-    // review, N5). If this second call itself fails, the violation is still reported, just
-    // without the paths.
-    let paths = changed_paths(repo_path).await.unwrap_or_default();
-    let message = if paths.is_empty() {
-        "the coordinator's no-write turn changed the working tree".to_owned()
-    } else {
-        format!(
-            "the coordinator's no-write turn changed the working tree:\n{}",
-            paths.join("\n")
-        )
-    };
-    Ok(Some(Failure {
-        failure: FailureKind::PolicyViolation,
-        message,
-        exit: None,
-        stderr_tail: None,
-    }))
-}
-
-/// The empty tree's well-known object id, the same for every git repository: `git hash-object -t
-/// tree /dev/null`. [`fingerprint`] diffs against it instead of `HEAD` in a repository with no
-/// commits yet, where `HEAD` doesn't resolve to anything `git diff` can use.
-const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-
-/// What [`fingerprint`] diffs the working tree against: `HEAD` once it resolves to a commit, or
-/// the empty tree before the repository's first commit, so a coordinator working in a brand new
-/// project doesn't fail every turn's check.
-fn diff_target(repo_path: &Path) -> Result<&'static str, PolicyCheckError> {
-    let resolves = std::process::Command::new("git")
-        .arg("-c")
-        .arg("core.fsmonitor=false")
-        .args(["rev-parse", "--verify", "-q", "HEAD"])
-        .current_dir(repo_path)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()?
-        .success();
-    Ok(if resolves { "HEAD" } else { EMPTY_TREE })
-}
-
-fn fingerprint(repo_path: &Path) -> Result<[u8; 32], PolicyCheckError> {
-    let status = run_git(
-        repo_path,
-        &[
-            "status",
-            "--porcelain=v1",
-            "-z",
-            "--untracked-files=all",
-            "--ignore-submodules=none",
-        ],
-    )?;
-    let target = diff_target(repo_path)?;
-    let diff = run_git(repo_path, &["diff", target, "--binary", "--no-ext-diff"])?;
-    let mut hasher = Sha256::new();
-    hasher.update(&status);
-    hasher.update(&diff);
-    for path in untracked_paths(&status) {
-        hasher.update(&path);
-        hasher.update([0]);
-        if let Ok(contents) = std::fs::read(repo_path.join(OsStr::from_bytes(&path))) {
-            hasher.update(&contents);
-        }
-    }
-    let mut digest = [0u8; 32];
-    digest.copy_from_slice(&hasher.finalize());
-    Ok(digest)
-}
-
-/// The paths `git status` lists as changed, one per line, for a violation's message. A separate,
-/// human-readable call from [`fingerprint`]'s hashed one, made only once a violation is already
-/// known.
-async fn changed_paths(repo_path: &Path) -> Result<Vec<String>, PolicyCheckError> {
-    let repo_path = repo_path.to_owned();
-    let output = tokio::task::spawn_blocking(move || {
-        run_git(
-            &repo_path,
-            &[
-                "status",
-                "--porcelain=v1",
-                "--untracked-files=all",
-                "--ignore-submodules=none",
-            ],
-        )
-    })
-    .await
-    .map_err(|error| PolicyCheckError::Panicked(error.to_string()))??;
-    Ok(String::from_utf8_lossy(&output)
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(str::to_owned)
-        .collect())
-}
-
-fn run_git(repo_path: &Path, args: &[&str]) -> Result<Vec<u8>, PolicyCheckError> {
-    let output = std::process::Command::new("git")
-        .arg("-c")
-        .arg("core.fsmonitor=false")
-        .args(args)
-        .current_dir(repo_path)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .output()?;
-    if !output.status.success() {
-        return Err(PolicyCheckError::GitFailed {
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        });
-    }
-    Ok(output.stdout)
-}
-
-/// The paths of `??` (untracked) entries in `-z`-terminated porcelain output.
-fn untracked_paths(porcelain_z: &[u8]) -> Vec<Vec<u8>> {
-    porcelain_z
-        .split(|&b| b == 0)
-        .filter(|entry| entry.starts_with(b"?? "))
-        .map(|entry| entry[3..].to_vec())
-        .collect()
 }
 
 #[cfg(test)]

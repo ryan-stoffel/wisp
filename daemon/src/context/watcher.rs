@@ -1,14 +1,8 @@
 //! Turns an agent's own writes to shared context, made directly on disk outside any wispd call,
-//! into `context.changed` events (0005, #155).
+//! into `context.changed` events.
 //!
-//! wispd watches with the `notify` crate (`FSEvents` on macOS) rather than rescanning the folder
-//! on a timer. Nothing else would ever see an agent's write: it never goes through wispd at all,
-//! so there is no request to hang the check off. A poll loop would then have to choose between
-//! missing a quick write between ticks and burning cycles ticking often enough not to, while
-//! `FSEvents` already tells the kernel's own record of every write to the tree, for free. One
-//! watcher covers the whole `context/` folder, recursively, from before any project exists, so a
-//! project created later needs no watch of its own: `FSEvents` reports changes anywhere under the
-//! root it was given, including in a subfolder created after the watch started.
+//! One recursive watcher covers the whole `context/` folder from before any project exists, so a
+//! project created later needs no watch of its own.
 
 use std::path::{Component, Path};
 
@@ -27,12 +21,8 @@ use crate::server::Daemon;
 /// If the platform's watcher backend could not be started or could not watch the folder.
 pub(crate) fn start(daemon: std::sync::Arc<Daemon>) -> notify::Result<RecommendedWatcher> {
     let root = daemon.data_dir.context_root();
-    // FSEvents reports its own canonical form of a path, which on macOS can differ from wispd's
-    // own spelling (`/tmp/...` versus the real `/private/tmp/...`, for example). Canonicalizing
-    // once here, rather than comparing against `root` as wispd spelled it, keeps `relative_file`
-    // matching every event instead of silently matching none of them. `context_root` is created
-    // just before this is called (`Server::start`), so canonicalizing it should not fail; if it
-    // somehow does, falling back to `root` at least keeps the watch itself running.
+    // FSEvents reports canonical paths (`/private/tmp/...` for `/tmp/...`), so `relative_file`
+    // must compare against the canonical root or it matches no event at all.
     let canonical_root = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
     let mut watcher =
         notify::recommended_watcher(move |event: notify::Result<Event>| match event {
@@ -95,8 +85,8 @@ fn observe(daemon: &Daemon, context_root: &Path, path: &Path) {
     daemon
         .context
         .record_external_write(project, &name, &content);
-    let writer = daemon.context.writer_of(project, &name);
-    let file = context_file(&name, &metadata, writer);
+    // An external write has no writer.
+    let file = context_file(&name, &metadata, None);
     let seq = daemon.log.append_blocking(
         jiff::Timestamp::now(),
         Some(project),

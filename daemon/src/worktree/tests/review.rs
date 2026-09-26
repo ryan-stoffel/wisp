@@ -1,4 +1,4 @@
-//! Reviewing and accepting a run's commit (#157), against real temporary repositories.
+//! Reviewing and accepting a run's commit, against real temporary repositories.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -8,7 +8,8 @@ use wisp_protocol::RunId;
 use super::{git, git_output, init_repo, manager, rev_parse, write_sentinel_script};
 use crate::worktree::review::Target;
 use crate::worktree::{
-    AcceptError, ChangeStatus, CreatedWorktree, MAX_BLOB_BYTES, MergeHow, WorktreeManager,
+    AcceptError, Blob, ChangeStatus, CommitDiff, CreatedWorktree, MAX_BLOB_BYTES, MergeHow,
+    WorktreeManager,
 };
 
 struct Fixture {
@@ -57,6 +58,20 @@ impl Fixture {
             .sha
     }
 
+    async fn diff(&self, base: &str, head: &str) -> CommitDiff {
+        self.mgr
+            .diff_commits(self.worktree(), &self.created.git_dir, base, head)
+            .await
+            .unwrap()
+    }
+
+    async fn blob(&self, commit: &str, path: &str, max: u64) -> Option<Blob> {
+        self.mgr
+            .read_blob(self.worktree(), &self.created.git_dir, commit, path, max)
+            .await
+            .unwrap()
+    }
+
     async fn accept(&self, commit: &str) -> Result<crate::worktree::Accepted, AcceptError> {
         self.mgr
             .accept(&self.repo, commit, "Merge wisp run: test\n")
@@ -69,11 +84,7 @@ async fn diff_commits_lists_each_file_with_its_stats_and_diff() {
     let f = fixture().await;
     let base = f.created.base.clone();
     assert_eq!(
-        f.mgr
-            .diff_commits(f.worktree(), &f.created.git_dir, &base, &base)
-            .await
-            .unwrap()
-            .files,
+        f.diff(&base, &base).await.files,
         [],
         "no commit yet: nothing to review"
     );
@@ -89,11 +100,7 @@ async fn diff_commits_lists_each_file_with_its_stats_and_diff() {
     std::fs::write(f.worktree().join("logo.bin"), [0_u8, 159, 146, 150, 0]).unwrap();
     let head = f.commit().await;
 
-    let diff = f
-        .mgr
-        .diff_commits(f.worktree(), &f.created.git_dir, &base, &head)
-        .await
-        .unwrap();
+    let diff = f.diff(&base, &head).await;
     let summary: Vec<_> = diff
         .files
         .iter()
@@ -152,11 +159,7 @@ async fn a_huge_file_diff_is_cut_short_but_keeps_its_stats() {
     std::fs::write(f.worktree().join("big.txt"), &big).unwrap();
     std::fs::write(f.worktree().join("small.txt"), "small\n").unwrap();
     let head = f.commit().await;
-    let diff = f
-        .mgr
-        .diff_commits(f.worktree(), &f.created.git_dir, &f.created.base, &head)
-        .await
-        .unwrap();
+    let diff = f.diff(&f.created.base, &head).await;
     let big_file = &diff.files[0];
     assert_eq!(big_file.path, "big.txt");
     assert_eq!(big_file.insertions, 40_000);
@@ -181,11 +184,7 @@ async fn diff_caps_count_json_escapes() {
         .unwrap();
     }
     let head = f.commit().await;
-    let diff = f
-        .mgr
-        .diff_commits(f.worktree(), &f.created.git_dir, &f.created.base, &head)
-        .await
-        .unwrap();
+    let diff = f.diff(&f.created.base, &head).await;
     assert_eq!(diff.files.len(), 20);
     let mut total = 0;
     for file in &diff.files {
@@ -227,58 +226,31 @@ async fn read_blob_returns_either_side_byte_for_byte() {
     std::fs::write(f.worktree().join("dir/inner.md"), "inner\n").unwrap();
     std::fs::write(f.worktree().join("*.md"), "literally star\n").unwrap();
     let head = f.commit().await;
-    let (path, git_dir) = (f.worktree(), &f.created.git_dir);
 
     for (name, bytes) in exact {
-        let blob = f
-            .mgr
-            .read_blob(path, git_dir, &head, name, MAX_BLOB_BYTES)
-            .await
-            .unwrap()
-            .unwrap();
+        let blob = f.blob(&head, name, MAX_BLOB_BYTES).await.unwrap();
         assert_eq!(blob.content.as_deref(), Some(*bytes), "{name}");
         assert_eq!(blob.size, bytes.len() as u64, "{name}");
     }
-    let base_readme = f
-        .mgr
-        .read_blob(path, git_dir, &base, "README.md", MAX_BLOB_BYTES)
-        .await
-        .unwrap()
-        .unwrap();
+    let base_readme = f.blob(&base, "README.md", MAX_BLOB_BYTES).await.unwrap();
     assert_eq!(base_readme.content.as_deref(), Some(&b"hello\n"[..]));
     assert_eq!(
-        f.mgr
-            .read_blob(path, git_dir, &base, "no-newline.txt", MAX_BLOB_BYTES)
-            .await
-            .unwrap(),
+        f.blob(&base, "no-newline.txt", MAX_BLOB_BYTES).await,
         None,
         "added files have no base side"
     );
     assert_eq!(
-        f.mgr
-            .read_blob(path, git_dir, &head, "dir", MAX_BLOB_BYTES)
-            .await
-            .unwrap(),
+        f.blob(&head, "dir", MAX_BLOB_BYTES).await,
         None,
         "a folder is not a file"
     );
-    let star = f
-        .mgr
-        .read_blob(path, git_dir, &head, "*.md", MAX_BLOB_BYTES)
-        .await
-        .unwrap()
-        .unwrap();
+    let star = f.blob(&head, "*.md", MAX_BLOB_BYTES).await.unwrap();
     assert_eq!(
         star.content.as_deref(),
         Some(&b"literally star\n"[..]),
         "paths are literal, never patterns"
     );
-    let capped = f
-        .mgr
-        .read_blob(path, git_dir, &head, "crlf.txt", 3)
-        .await
-        .unwrap()
-        .unwrap();
+    let capped = f.blob(&head, "crlf.txt", 3).await.unwrap();
     assert_eq!((capped.size, capped.content), (10, None));
 }
 
@@ -292,33 +264,13 @@ async fn a_committed_symlink_reads_as_its_target_and_is_never_followed() {
     std::os::unix::fs::symlink(outside.path(), f.worktree().join("dirlink")).unwrap();
     let head = f.commit().await;
 
-    let link = f
-        .mgr
-        .read_blob(
-            f.worktree(),
-            &f.created.git_dir,
-            &head,
-            "link",
-            MAX_BLOB_BYTES,
-        )
-        .await
-        .unwrap()
-        .unwrap();
+    let link = f.blob(&head, "link", MAX_BLOB_BYTES).await.unwrap();
     assert_eq!(
         link.content.as_deref(),
         Some(secret.to_string_lossy().as_bytes())
     );
     assert_eq!(
-        f.mgr
-            .read_blob(
-                f.worktree(),
-                &f.created.git_dir,
-                &head,
-                "dirlink/secret.txt",
-                MAX_BLOB_BYTES
-            )
-            .await
-            .unwrap(),
+        f.blob(&head, "dirlink/secret.txt", MAX_BLOB_BYTES).await,
         None,
         "a path through a symlinked folder does not exist in git's tree"
     );
@@ -679,12 +631,8 @@ async fn a_failing_user_filter_leaves_the_checkout_as_it_was() {
 /// The agent's commit, and the changes Accept's checkout would make for it, from HEAD.
 async fn fast_forward_target(f: &Fixture) -> (String, String, Vec<(char, String)>) {
     std::fs::write(f.worktree().join("README.md"), "agent\n").unwrap();
-    std::fs::write(f.worktree().join("new/dir/added.txt"), "agent\n")
-        .or_else(|_| {
-            std::fs::create_dir_all(f.worktree().join("new/dir"))?;
-            std::fs::write(f.worktree().join("new/dir/added.txt"), "agent\n")
-        })
-        .unwrap();
+    std::fs::create_dir_all(f.worktree().join("new/dir")).unwrap();
+    std::fs::write(f.worktree().join("new/dir/added.txt"), "agent\n").unwrap();
     let commit = f.commit().await;
     let head = rev_parse(&f.repo, "HEAD");
     let changes = git_output(

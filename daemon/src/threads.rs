@@ -1,5 +1,4 @@
-//! Normal threads (#110, decision 0017): agents with no coordinator, behind the `threads`
-//! capability.
+//! Normal threads: agents with no coordinator, behind the `threads` capability.
 //!
 //! A thread is an agent run that belongs to a repo entry instead of a project: its run's
 //! `project_id`, and so its `agent.*` events and `agent/list`, use the entry's id. The runner
@@ -26,15 +25,9 @@ use wisp_protocol::{
 };
 use wisp_store::RepoFields;
 
-use crate::agents::{self, NewRun, NewThread};
+use crate::agents::{self, NewRun, NewThread, store_error};
 use crate::repo;
 use crate::server::Daemon;
-
-/// The folder under wispd's data folder that holds threads' scratch repositories.
-const SCRATCH_DIR: &str = "scratch";
-
-/// The scratch entry's name.
-const SCRATCH_NAME: &str = "No Repo";
 
 const MAX_PATH_BYTES: usize = 1024;
 
@@ -45,16 +38,12 @@ async fn store<T: Send + 'static>(
     daemon.store.run(&CancellationToken::new(), job).await
 }
 
-fn store_error(error: &wisp_store::StoreError) -> ErrorObject {
-    agents::store_error(error)
-}
-
 fn corrupt(what: &str, id: Uuid) -> ErrorObject {
     ErrorObject::internal_error(format!("the stored {what} {id} has an invalid id"))
 }
 
 /// A store row as the protocol's repo entry.
-pub(crate) fn repo_entry(row: wisp_store::Repo) -> Result<Repo, ErrorObject> {
+fn repo_entry(row: wisp_store::Repo) -> Result<Repo, ErrorObject> {
     Ok(Repo {
         id: RepoId::try_from(row.id).map_err(|_| corrupt("repo entry", row.id))?,
         name: row.fields.name,
@@ -65,7 +54,7 @@ pub(crate) fn repo_entry(row: wisp_store::Repo) -> Result<Repo, ErrorObject> {
 }
 
 /// A store row as the protocol's thread.
-pub(crate) fn thread_entry(row: &wisp_store::Thread) -> Result<Thread, ErrorObject> {
+fn thread_entry(row: &wisp_store::Thread) -> Result<Thread, ErrorObject> {
     Ok(Thread {
         id: RunId::try_from(row.id).map_err(|_| corrupt("thread", row.id))?,
         repo: RepoId::try_from(row.repo_id).map_err(|_| corrupt("thread", row.id))?,
@@ -266,7 +255,7 @@ fn add(
 
 /// The folder that holds threads' scratch repositories, created and canonical.
 fn scratch_root(daemon: &Daemon) -> Result<PathBuf, ErrorObject> {
-    let root = daemon.data_dir.root().join(SCRATCH_DIR);
+    let root = daemon.data_dir.root().join("scratch");
     std::fs::create_dir_all(&root)
         .and_then(|()| root.canonicalize())
         .map_err(|error| {
@@ -286,7 +275,7 @@ async fn scratch_entry(daemon: &Arc<Daemon>) -> Result<wisp_store::Repo, ErrorOb
             return Ok(repo);
         }
         let fields = RepoFields {
-            name: SCRATCH_NAME.to_owned(),
+            name: "No Repo".to_owned(),
             path: root.to_string_lossy().into_owned(),
             scratch: true,
         };
@@ -330,12 +319,7 @@ pub(crate) async fn start(
     let scope = ProjectId::try_from(entry.id).map_err(|_| corrupt("repo entry", entry.id))?;
     // A retry, or a run id that is taken, needs no new scratch repository: `agents::create`
     // answers it from the existing run.
-    let taken = store(&daemon, move |db| {
-        db.get_run(run_id.into())
-            .map(|row| row.is_some())
-            .map_err(|e| store_error(&e))
-    })
-    .await?;
+    let taken = run_exists(&daemon, run_id).await?;
     let scratch = if entry.fields.scratch {
         let dir = PathBuf::from(&entry.fields.path).join(run_id.to_string());
         if !taken {
@@ -385,15 +369,18 @@ pub(crate) async fn start(
     })
 }
 
-/// Removes a scratch repository made for a `thread/start` that didn't create its run.
-async fn remove_unused_scratch(daemon: &Arc<Daemon>, run_id: RunId, dir: &Path) {
-    let exists = store(daemon, move |db| {
+async fn run_exists(daemon: &Daemon, run_id: RunId) -> Result<bool, ErrorObject> {
+    store(daemon, move |db| {
         db.get_run(run_id.into())
             .map(|row| row.is_some())
             .map_err(|e| store_error(&e))
     })
-    .await;
-    if matches!(exists, Ok(false)) {
+    .await
+}
+
+/// Removes a scratch repository made for a `thread/start` that didn't create its run.
+async fn remove_unused_scratch(daemon: &Arc<Daemon>, run_id: RunId, dir: &Path) {
+    if matches!(run_exists(daemon, run_id).await, Ok(false)) {
         remove_scratch(daemon, run_id, dir);
     }
 }
@@ -482,7 +469,6 @@ pub(crate) async fn delete(
 /// Deletes thread `run_id` once its CLI has exited: the thread, run, and worktree rows and the
 /// run's stored events in one transaction, its events in memory, then `worktree` and its
 /// branch, and for a thread with no repo its scratch repository and its own context folder.
-/// Startup's garbage collection removes a worktree folder that a crash left behind.
 pub(crate) async fn purge(
     daemon: &Arc<Daemon>,
     run_id: RunId,

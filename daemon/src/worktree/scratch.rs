@@ -1,4 +1,4 @@
-//! Scratch repositories for normal threads with no repo (#110, decision 0017).
+//! Scratch repositories for normal threads with no repo.
 //!
 //! Each such thread gets its own repository, made here, so the runner treats it like any other:
 //! a worktree cut from its first commit, and wispd's commit when the CLI ends. The repository
@@ -7,13 +7,6 @@
 use std::path::Path;
 
 use super::{WorktreeError, WorktreeManager};
-
-/// The branch a scratch repository starts on.
-const BRANCH: &str = "main";
-
-/// The identity of commits in a scratch repository.
-const NAME: &str = "wisp";
-const EMAIL: &str = "wisp@localhost";
 
 impl WorktreeManager {
     /// Makes `path` a git repository with one empty commit on `main`, unless it already is one
@@ -38,13 +31,12 @@ impl WorktreeManager {
         {
             return Ok(());
         }
-        let head = format!("refs/heads/{BRANCH}");
         self.run_git_ok(path, &["init", "--quiet"]).await?;
-        self.run_git_ok(path, &["symbolic-ref", "HEAD", &head])
+        self.run_git_ok(path, &["symbolic-ref", "HEAD", "refs/heads/main"])
             .await?;
-        self.run_git_ok(path, &["config", "user.name", NAME])
+        self.run_git_ok(path, &["config", "user.name", "wisp"])
             .await?;
-        self.run_git_ok(path, &["config", "user.email", EMAIL])
+        self.run_git_ok(path, &["config", "user.email", "wisp@localhost"])
             .await?;
         self.run_git_ok(
             path,

@@ -1,8 +1,8 @@
-//! Reviewing and accepting a run's commit (#157, #68).
+//! Reviewing and accepting a run's commit.
 //!
 //! [`WorktreeManager::diff_commits`] and [`WorktreeManager::read_blob`] compare and read two
 //! commits: the worktree's base and the run's latest commit. They only read git objects, through
-//! the pinned, hardened worktree calls (#166), and never the worktree's files, which the worker
+//! the pinned, hardened worktree calls, and never the worktree's files, which the worker
 //! owns: a symlink is a blob holding its target, and is never followed.
 //!
 //! [`WorktreeManager::accept`] merges the run's commit into the project repository's current
@@ -29,20 +29,20 @@ use tokio::time::timeout;
 use tracing::warn;
 
 use super::{
-    ChangeStatus, ChangedFile, DiffStat, NO_DIFF_DRIVERS, WorktreeError, WorktreeManager,
-    changed_file, collect, describe_failure, owned_args,
+    ChangeStatus, ChangedFile, DiffStat, NO_DIFF_DRIVERS, TIMEOUT, WorktreeError, WorktreeManager,
+    describe_failure, git_failed, timed_out,
 };
 use crate::backend::process::Output;
 use crate::json::escaped_len as json_len;
 
 /// The largest file [`WorktreeManager::read_blob`] returns: 4 MiB, which base64 turns into about
-/// 5.4 MiB, inside 0007's 8 MiB frame.
+/// 5.4 MiB, inside the 8 MiB frame.
 pub const MAX_BLOB_BYTES: u64 = 4 * 1024 * 1024;
 
 /// The most unified diff one file carries in [`WorktreeManager::diff_commits`].
 const MAX_FILE_DIFF_BYTES: usize = 256 * 1024;
 
-/// The most unified diff [`WorktreeManager::diff_commits`] returns in all, half of 0007's frame.
+/// The most unified diff [`WorktreeManager::diff_commits`] returns in all, half of the frame.
 const MAX_TOTAL_DIFF_BYTES: usize = 4 * 1024 * 1024;
 
 /// The most JSON the file list of [`WorktreeManager::diff_commits`] takes, not counting diffs:
@@ -206,8 +206,8 @@ const IN_PROGRESS: &[(&str, &str)] = &[
 
 impl WorktreeManager {
     /// The files that differ between commits `base` and `head`, with stats and size-capped
-    /// unified diffs, read through the worktree's pinned git folder like
-    /// [`WorktreeManager::diff`] (#166). It reads only commits, never the worktree's files.
+    /// unified diffs, read through the worktree's pinned git folder. It reads only commits,
+    /// never the worktree's files.
     ///
     /// # Errors
     ///
@@ -349,29 +349,17 @@ impl WorktreeManager {
                     }
                     Some(Output::Exited(exit)) => {
                         close(&mut current, &mut sections, &mut total);
-                        return Ok((sections, exit));
+                        return (sections, exit);
                     }
                     None => unreachable!("Output::Exited always comes last"),
                 }
             }
         };
-        let (sections, exit) = match timeout(self.timeout, read).await {
-            Ok(Ok(read)) => read,
-            Ok(Err(error)) => return Err(error),
-            Err(_) => {
-                return Err(WorktreeError::Timeout {
-                    cwd: worktree_path.to_owned(),
-                    args: owned_args(args),
-                    timeout: self.timeout,
-                });
-            }
+        let Ok((sections, exit)) = timeout(TIMEOUT, read).await else {
+            return Err(timed_out(worktree_path, args, TIMEOUT));
         };
         if !exit.info.success() {
-            return Err(WorktreeError::GitFailed {
-                cwd: worktree_path.to_owned(),
-                args: owned_args(args),
-                detail: exit.stderr_tail,
-            });
+            return Err(git_failed(worktree_path, args, exit.stderr_tail));
         }
         if sections.len() != expected {
             warn!(
@@ -384,7 +372,7 @@ impl WorktreeManager {
     }
 
     /// The file at `path` in `commit`, read from git's objects through the worktree's pinned git
-    /// folder (#166): `None` when there is no file there (nothing, a folder, or a submodule).
+    /// folder: `None` when there is no file there (nothing, a folder, or a submodule).
     /// Its content is left out when it is over `max` bytes. `path` must already have passed
     /// [`validate_repo_path`]; it is matched literally, never as a pattern.
     ///
@@ -439,20 +427,9 @@ impl WorktreeManager {
         }
         let args = ["cat-file", "blob", object.as_str()];
         let spec = self.worktree_spec(worktree_path, git_dir, &args).await?;
-        let process = self.launcher.spawn(&spec)?;
-        let Ok((mut bytes, exit)) = timeout(self.timeout, collect(process)).await else {
-            return Err(WorktreeError::Timeout {
-                cwd: worktree_path.to_owned(),
-                args: owned_args(&args),
-                timeout: self.timeout,
-            });
-        };
+        let (mut bytes, exit) = self.spawn_collect(&spec, &args, TIMEOUT).await?;
         if !exit.info.success() {
-            return Err(WorktreeError::GitFailed {
-                cwd: worktree_path.to_owned(),
-                args: owned_args(&args),
-                detail: exit.stderr_tail,
-            });
+            return Err(git_failed(worktree_path, &args, exit.stderr_tail));
         }
         // `collect` ends every line with `\n`, including a last line that had none.
         let size_bytes = usize::try_from(size).unwrap_or(usize::MAX);
@@ -460,11 +437,8 @@ impl WorktreeManager {
             bytes.pop();
         }
         if bytes.len() != size_bytes {
-            return Err(WorktreeError::GitFailed {
-                cwd: worktree_path.to_owned(),
-                args: owned_args(&args),
-                detail: format!("read {} bytes of a {size}-byte file", bytes.len()),
-            });
+            let detail = format!("read {} bytes of a {size}-byte file", bytes.len());
+            return Err(git_failed(worktree_path, &args, detail));
         }
         Ok(Some(Blob {
             size,
@@ -490,7 +464,7 @@ impl WorktreeManager {
         let repo = repo_root.display().to_string();
 
         let head_ref = self
-            .run_checkout_git(&repo_root, &["symbolic-ref", "--quiet", "HEAD"])
+            .run_git(&repo_root, &["symbolic-ref", "--quiet", "HEAD"])
             .await?;
         let into = match head_ref.stdout.trim().strip_prefix("refs/heads/") {
             Some(branch) if head_ref.success() => branch.to_owned(),
@@ -522,7 +496,7 @@ impl WorktreeManager {
         };
 
         let changes = self
-            .run_checkout_git_ok(
+            .run_git_ok(
                 &repo_root,
                 &[
                     "diff",
@@ -634,7 +608,7 @@ impl WorktreeManager {
     ) -> Result<(), AcceptError> {
         let paths: HashSet<&str> = changes.iter().map(|(_, path)| path.as_str()).collect();
         let status = self
-            .run_checkout_git_ok(
+            .run_git_ok(
                 repo_root,
                 &[
                     "status",
@@ -824,7 +798,7 @@ impl WorktreeManager {
                 "--",
             ];
             args.extend_from_slice(chunk);
-            let listing = self.run_checkout_git_ok(repo_root, &args).await?;
+            let listing = self.run_git_ok(repo_root, &args).await?;
             for entry in z_tokens(&listing) {
                 let Some((meta, name)) = entry.split_once('\t') else {
                     continue;
@@ -873,7 +847,7 @@ impl WorktreeManager {
         for chunk in files.chunks(200) {
             let mut args = vec!["hash-object", "--"];
             args.extend(chunk.iter().map(|(path, _)| *path));
-            let hashes = self.run_checkout_git_ok(repo_root, &args).await?;
+            let hashes = self.run_git_ok(repo_root, &args).await?;
             for ((path, mode), object) in chunk.iter().zip(hashes.lines()) {
                 ids.insert((*path).to_owned(), format!("{mode} {}", object.trim()));
             }
@@ -884,7 +858,7 @@ impl WorktreeManager {
     /// `git rev-parse --git-path <name>` as an absolute path.
     async fn git_path(&self, repo_root: &Path, name: &str) -> Result<PathBuf, WorktreeError> {
         let path = self
-            .run_checkout_git_ok(
+            .run_git_ok(
                 repo_root,
                 &["rev-parse", "--path-format=absolute", "--git-path", name],
             )
@@ -897,7 +871,7 @@ impl WorktreeManager {
         for (name, _) in IN_PROGRESS {
             args.extend_from_slice(&["--git-path", name]);
         }
-        let paths = self.run_checkout_git_ok(repo_root, &args).await?;
+        let paths = self.run_git_ok(repo_root, &args).await?;
         for ((_, what), path) in IN_PROGRESS.iter().zip(paths.lines()) {
             if tokio::fs::symlink_metadata(path).await.is_ok() {
                 return Err(AcceptError::Refused(format!(
@@ -914,20 +888,12 @@ impl WorktreeManager {
         ancestor: &str,
         descendant: &str,
     ) -> Result<bool, WorktreeError> {
-        let output = self
-            .run_checkout_git(
-                repo_root,
-                &["merge-base", "--is-ancestor", ancestor, descendant],
-            )
-            .await?;
+        let args = ["merge-base", "--is-ancestor", ancestor, descendant];
+        let output = self.run_git(repo_root, &args).await?;
         match output.exit.info.code {
             Some(0) => Ok(true),
             Some(1) => Ok(false),
-            _ => Err(WorktreeError::GitFailed {
-                cwd: repo_root.to_owned(),
-                args: owned_args(&["merge-base", "--is-ancestor", ancestor, descendant]),
-                detail: describe_failure(&output),
-            }),
+            _ => Err(git_failed(repo_root, &args, describe_failure(&output))),
         }
     }
 
@@ -942,7 +908,7 @@ impl WorktreeManager {
         message: &str,
     ) -> Result<String, AcceptError> {
         let tree = self
-            .run_checkout_git(
+            .run_git(
                 repo_root,
                 &[
                     "merge-tree",
@@ -967,11 +933,11 @@ impl WorktreeManager {
                 });
             }
             _ => {
-                return Err(AcceptError::Git(WorktreeError::GitFailed {
-                    cwd: repo_root.to_owned(),
-                    args: owned_args(&["merge-tree", "--write-tree", head, target]),
-                    detail: describe_failure(&tree),
-                }));
+                return Err(AcceptError::Git(git_failed(
+                    repo_root,
+                    &["merge-tree", "--write-tree", head, target],
+                    describe_failure(&tree),
+                )));
             }
         }
         let tree = z_tokens(&tree.stdout)
@@ -987,7 +953,7 @@ impl WorktreeManager {
             )));
         }
         let commit = self
-            .run_checkout_git_ok(
+            .run_git_ok(
                 repo_root,
                 &[
                     "commit-tree",
@@ -1004,32 +970,6 @@ impl WorktreeManager {
             .await?;
         Ok(commit.trim().to_owned())
     }
-
-    /// `git args` in the user's own checkout, with its own configuration. Like every call through
-    /// [`WorktreeManager::run_git`], it runs no hooks.
-    async fn run_checkout_git(
-        &self,
-        repo_root: &Path,
-        args: &[&str],
-    ) -> Result<super::GitOutput, WorktreeError> {
-        self.run_git(repo_root, args).await
-    }
-
-    async fn run_checkout_git_ok(
-        &self,
-        repo_root: &Path,
-        args: &[&str],
-    ) -> Result<String, WorktreeError> {
-        let output = self.run_checkout_git(repo_root, args).await?;
-        if !output.success() {
-            return Err(WorktreeError::GitFailed {
-                cwd: repo_root.to_owned(),
-                args: owned_args(args),
-                detail: describe_failure(&output),
-            });
-        }
-        Ok(output.stdout)
-    }
 }
 
 /// Parses `git diff --name-status -z`: a status, then one path, or two for a rename or copy,
@@ -1039,9 +979,31 @@ fn parse_name_status_z(output: &str) -> Vec<ChangedFile> {
     let mut files = Vec::new();
     while let Some(code) = tokens.next() {
         let first = tokens.next().unwrap_or_default().to_owned();
-        let second = (code.starts_with('R') || code.starts_with('C'))
-            .then(|| tokens.next().unwrap_or_default().to_owned());
-        files.push(changed_file(code, first, second));
+        let status = match code.as_bytes().first() {
+            Some(b'A') => ChangeStatus::Added,
+            Some(b'M') => ChangeStatus::Modified,
+            Some(b'D') => ChangeStatus::Deleted,
+            Some(b'R') => ChangeStatus::Renamed,
+            Some(b'C') => ChangeStatus::Copied,
+            Some(b'T') => ChangeStatus::TypeChanged,
+            Some(b'U') => ChangeStatus::Unmerged,
+            _ => ChangeStatus::Unknown(code.to_owned()),
+        };
+        files.push(
+            if matches!(status, ChangeStatus::Renamed | ChangeStatus::Copied) {
+                ChangedFile {
+                    status,
+                    path: tokens.next().unwrap_or_default().to_owned(),
+                    old_path: Some(first),
+                }
+            } else {
+                ChangedFile {
+                    status,
+                    path: first,
+                    old_path: None,
+                }
+            },
+        );
     }
     files
 }

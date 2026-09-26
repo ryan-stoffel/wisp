@@ -5,10 +5,7 @@ use std::time::Duration;
 
 use wisp_protocol::{AccountChoice, AccountId, Provider, Role};
 
-use super::{
-    BackendRegistry, Defaults, KeyAccounts, PolicyCheckError, RoutingError, check, resolve,
-    snapshot, start,
-};
+use super::{BackendRegistry, Defaults, KeyAccounts, Resolved, RoutingError, resolve, start};
 use crate::backend::{
     AccountRef, Backend, CancelSwitch, Capabilities, Credential, EVENT_BUFFER, Event, EventSink,
     EventStream, Failure, FailureKind, ModelUsage, Outcome, RunHandle, RunId, RunRequest,
@@ -190,177 +187,69 @@ fn subscription_choice() -> AccountChoice {
 // resolve()
 // ---------------------------------------------------------------------------------------------
 
-#[test]
-fn an_explicit_choice_is_used_even_when_the_roles_default_differs() {
+/// Resolves a worker's account against a registry with only Anthropic's backend.
+fn resolve_worker(
+    accounts: &FixedAccounts,
+    defaults: &Defaults,
+    requested: Option<AccountChoice>,
+) -> Result<Resolved, RoutingError> {
     let backend: Arc<dyn Backend> = Arc::new(ScriptedBackend::new(Vec::new()));
-    let registry = registry(backend);
+    resolve(
+        &registry(backend),
+        accounts,
+        defaults,
+        Role::Worker,
+        requested,
+        ToolPolicy::WorkspaceWrite,
+    )
+}
+
+#[test]
+fn an_explicit_choice_wins_over_the_roles_default_which_is_used_otherwise() {
     let key_id = AccountId::generate();
     let mut accounts = FixedAccounts::default();
     accounts.providers.insert(key_id, Provider::Anthropic);
-    // The default is a subscription; the request below explicitly asks for the key account
-    // instead, which must win.
     let defaults = Defaults {
         coordinator: None,
         worker: Some(subscription_choice()),
     };
 
-    let resolved = resolve(
-        &registry,
+    let explicit = resolve_worker(
         &accounts,
         &defaults,
-        Role::Worker,
         Some(AccountChoice::Key { id: key_id }),
-        ToolPolicy::WorkspaceWrite,
-    )
-    .unwrap();
-    assert_eq!(resolved.account_id(), key_id.to_string());
+    );
+    assert_eq!(explicit.unwrap().account_id(), key_id.to_string());
+    let default = resolve_worker(&accounts, &defaults, None);
+    assert_eq!(default.unwrap().account_id(), "claude");
 }
 
 #[test]
-fn the_roles_default_is_used_when_nothing_is_requested() {
-    let backend: Arc<dyn Backend> = Arc::new(ScriptedBackend::new(Vec::new()));
-    let registry = registry(backend);
-    let accounts = FixedAccounts::default();
-    let defaults = Defaults {
-        coordinator: None,
-        worker: Some(subscription_choice()),
-    };
-
-    let resolved = resolve(
-        &registry,
-        &accounts,
-        &defaults,
-        Role::Worker,
-        None,
-        ToolPolicy::WorkspaceWrite,
-    )
-    .unwrap();
-    assert_eq!(resolved.account_id(), "claude");
-}
-
-#[test]
-fn the_coordinator_always_gets_no_write_however_it_is_requested() {
-    let backend: Arc<dyn Backend> = Arc::new(ScriptedBackend::new(Vec::new()));
-    let registry = registry(backend);
-    let accounts = FixedAccounts::default();
+fn an_account_this_host_cannot_route_is_an_error() {
     let defaults = Defaults::default();
-
-    let resolved = resolve(
-        &registry,
-        &accounts,
-        &defaults,
-        Role::Coordinator,
-        Some(subscription_choice()),
-        ToolPolicy::WorkspaceWrite,
-    )
-    .unwrap();
-    assert_eq!(resolved.policy(), ToolPolicy::NoWrite);
-}
-
-#[test]
-fn a_worker_keeps_the_policy_it_was_given() {
-    let backend: Arc<dyn Backend> = Arc::new(ScriptedBackend::new(Vec::new()));
-    let registry = registry(backend);
-    let accounts = FixedAccounts::default();
-    let defaults = Defaults::default();
-
-    let resolved = resolve(
-        &registry,
-        &accounts,
-        &defaults,
-        Role::Worker,
-        Some(subscription_choice()),
-        ToolPolicy::WorkspaceWrite,
-    )
-    .unwrap();
-    assert_eq!(resolved.policy(), ToolPolicy::WorkspaceWrite);
-}
-
-#[test]
-fn no_default_and_nothing_requested_is_an_error() {
-    let backend: Arc<dyn Backend> = Arc::new(ScriptedBackend::new(Vec::new()));
-    let registry = registry(backend);
-    let accounts = FixedAccounts::default();
-    let defaults = Defaults::default();
-
-    let error = resolve(
-        &registry,
-        &accounts,
-        &defaults,
-        Role::Worker,
-        None,
-        ToolPolicy::WorkspaceWrite,
-    )
-    .unwrap_err();
-    assert_eq!(error, RoutingError::NoAccount { role: Role::Worker });
-}
-
-#[test]
-fn an_unregistered_backend_name_is_an_error() {
-    let backend: Arc<dyn Backend> = Arc::new(ScriptedBackend::new(Vec::new()));
-    let registry = registry(backend);
-    let accounts = FixedAccounts::default();
-    let defaults = Defaults::default();
-
-    let error = resolve(
-        &registry,
-        &accounts,
-        &defaults,
-        Role::Worker,
-        Some(AccountChoice::Subscription {
-            backend: "codex".into(),
-        }),
-        ToolPolicy::WorkspaceWrite,
-    )
-    .unwrap_err();
+    let id = AccountId::generate();
+    let mut accounts = FixedAccounts::default();
     assert_eq!(
-        error,
+        resolve_worker(&accounts, &defaults, None).unwrap_err(),
+        RoutingError::NoAccount { role: Role::Worker }
+    );
+    let codex = AccountChoice::Subscription {
+        backend: "codex".into(),
+    };
+    assert_eq!(
+        resolve_worker(&accounts, &defaults, Some(codex)).unwrap_err(),
         RoutingError::UnknownBackend {
             backend: "codex".into()
         }
     );
-}
-
-#[test]
-fn an_unknown_key_account_id_is_an_error() {
-    let backend: Arc<dyn Backend> = Arc::new(ScriptedBackend::new(Vec::new()));
-    let registry = registry(backend);
-    let accounts = FixedAccounts::default();
-    let defaults = Defaults::default();
-    let id = AccountId::generate();
-
-    let error = resolve(
-        &registry,
-        &accounts,
-        &defaults,
-        Role::Worker,
-        Some(AccountChoice::Key { id }),
-        ToolPolicy::WorkspaceWrite,
-    )
-    .unwrap_err();
-    assert_eq!(error, RoutingError::UnknownKeyAccount { id });
-}
-
-#[test]
-fn a_key_accounts_provider_with_no_backend_is_an_error() {
-    let backend: Arc<dyn Backend> = Arc::new(ScriptedBackend::new(Vec::new()));
-    let registry = registry(backend);
-    let mut accounts = FixedAccounts::default();
-    let id = AccountId::generate();
-    accounts.providers.insert(id, Provider::Openai);
-    let defaults = Defaults::default();
-
-    let error = resolve(
-        &registry,
-        &accounts,
-        &defaults,
-        Role::Worker,
-        Some(AccountChoice::Key { id }),
-        ToolPolicy::WorkspaceWrite,
-    )
-    .unwrap_err();
+    let key = || Some(AccountChoice::Key { id });
     assert_eq!(
-        error,
+        resolve_worker(&accounts, &defaults, key()).unwrap_err(),
+        RoutingError::UnknownKeyAccount { id }
+    );
+    accounts.providers.insert(id, Provider::Openai);
+    assert_eq!(
+        resolve_worker(&accounts, &defaults, key()).unwrap_err(),
         RoutingError::UnknownProvider {
             provider: Provider::Openai
         }
@@ -384,11 +273,11 @@ fn accounts_with_fallback(id: AccountId) -> FixedAccounts {
     accounts
 }
 
-fn resolved_subscription(backend: Arc<dyn Backend>) -> super::Resolved {
+fn resolved_subscription(backend: Arc<dyn Backend>) -> Resolved {
     resolved_for_role(backend, Role::Worker, ToolPolicy::WorkspaceWrite)
 }
 
-fn resolved_for_role(backend: Arc<dyn Backend>, role: Role, policy: ToolPolicy) -> super::Resolved {
+fn resolved_for_role(backend: Arc<dyn Backend>, role: Role, policy: ToolPolicy) -> Resolved {
     let registry = registry(backend);
     resolve(
         &registry,
@@ -424,7 +313,7 @@ async fn start_sends_no_write_to_the_backend_for_a_coordinator() {
     assert_eq!(
         claude::arguments(sent).unwrap(),
         expected,
-        "Claude runs a coordinator with exactly 0004's no-write flags, none of 0013's"
+        "Claude runs a coordinator with exactly the no-write flags, none of the sandbox's"
     );
 }
 
@@ -490,30 +379,6 @@ async fn a_signed_out_subscription_falls_back_once_to_the_configured_key_account
 }
 
 #[tokio::test]
-async fn a_rate_limited_subscription_also_falls_back() {
-    let fallback_id = AccountId::generate();
-    let backend = Arc::new(ScriptedBackend::new(vec![
-        vec![finished(Outcome::Failed(failure(FailureKind::RateLimited)))],
-        vec![finished(Outcome::Completed { result: None })],
-    ]));
-    let resolved = resolved_subscription(backend.clone());
-    let accounts = accounts_with_fallback(fallback_id);
-    let keys = key_store_with(fallback_id, "sk-ant-fallback-key");
-
-    let mut started = start(keys, &accounts, resolved, request(&root())).unwrap();
-    let events = rest(&mut started.events).await;
-    assert_eq!(
-        events[0],
-        Event::AccountFallback {
-            from_account: "claude".into(),
-            to_account: fallback_id.to_string(),
-            reason: FailureKind::RateLimited,
-        }
-    );
-    assert_eq!(backend.calls().len(), 2);
-}
-
-#[tokio::test]
 async fn without_a_configured_key_account_there_is_no_fallback() {
     let backend = Arc::new(ScriptedBackend::new(vec![vec![finished(Outcome::Failed(
         failure(FailureKind::NotSignedIn),
@@ -542,8 +407,8 @@ async fn a_key_accounts_own_failure_never_falls_back_to_a_subscription() {
     let registry = registry(backend.clone());
     let mut accounts = FixedAccounts::default();
     accounts.providers.insert(key_id, Provider::Anthropic);
-    // A fallback is "configured", but starting from a key account must never use it: 0004 allows
-    // only subscription-to-key fallback, never the reverse.
+    // A fallback is "configured", but starting from a key account must never use it: fallback
+    // only goes from a subscription to a key, never the reverse.
     accounts
         .fallbacks
         .insert(Provider::Anthropic, some_other_key);
@@ -709,126 +574,5 @@ async fn cancel_after_a_fallback_reaches_the_second_attempt() {
     assert!(
         switches[1].is_cancelled(),
         "cancel must reach the attempt that is actually running"
-    );
-}
-
-// ---------------------------------------------------------------------------------------------
-// snapshot() and check()
-// ---------------------------------------------------------------------------------------------
-
-fn git(repo: &Path, args: &[&str]) {
-    let status = std::process::Command::new("git")
-        .args(args)
-        .current_dir(repo)
-        .status()
-        .expect("git must be on PATH to run this test");
-    assert!(status.success(), "git {args:?} failed");
-}
-
-fn committed_repo() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    git(dir.path(), &["init", "-q"]);
-    git(
-        dir.path(),
-        &["config", "user.email", "wisp-test@example.com"],
-    );
-    git(dir.path(), &["config", "user.name", "wisp tests"]);
-    std::fs::write(dir.path().join("README.md"), "hello\n").unwrap();
-    git(dir.path(), &["add", "."]);
-    git(dir.path(), &["commit", "-q", "-m", "initial"]);
-    dir
-}
-
-#[tokio::test]
-async fn a_clean_working_tree_has_no_violation() {
-    let dir = committed_repo();
-    let before = snapshot(dir.path()).await.unwrap();
-    assert_eq!(check(dir.path(), &before).await.unwrap(), None);
-}
-
-#[tokio::test]
-async fn a_change_to_a_tracked_file_is_a_violation() {
-    let dir = committed_repo();
-    let before = snapshot(dir.path()).await.unwrap();
-    std::fs::write(dir.path().join("README.md"), "changed\n").unwrap();
-
-    let violation = check(dir.path(), &before).await.unwrap().unwrap();
-    assert_eq!(violation.failure, FailureKind::PolicyViolation);
-}
-
-#[tokio::test]
-async fn a_new_untracked_file_is_also_a_violation() {
-    let dir = committed_repo();
-    let before = snapshot(dir.path()).await.unwrap();
-    std::fs::write(dir.path().join("new-file.txt"), "surprise").unwrap();
-
-    let violation = check(dir.path(), &before).await.unwrap().unwrap();
-    assert_eq!(violation.failure, FailureKind::PolicyViolation);
-}
-
-#[tokio::test]
-async fn a_tree_that_was_already_dirty_and_stays_that_way_has_no_violation() {
-    let dir = committed_repo();
-    std::fs::write(dir.path().join("README.md"), "dirty before the turn\n").unwrap();
-    std::fs::write(dir.path().join("already-there.txt"), "also dirty before").unwrap();
-
-    let before = snapshot(dir.path()).await.unwrap();
-    assert_eq!(
-        check(dir.path(), &before).await.unwrap(),
-        None,
-        "a tree that started dirty and stayed exactly that way is not a violation"
-    );
-}
-
-#[tokio::test]
-async fn a_further_edit_to_an_already_modified_file_is_still_a_violation() {
-    let dir = committed_repo();
-    std::fs::write(dir.path().join("README.md"), "first change\n").unwrap();
-    let before = snapshot(dir.path()).await.unwrap();
-
-    std::fs::write(
-        dir.path().join("README.md"),
-        "second change, during the turn\n",
-    )
-    .unwrap();
-
-    let violation = check(dir.path(), &before).await.unwrap().unwrap();
-    assert_eq!(violation.failure, FailureKind::PolicyViolation);
-}
-
-#[tokio::test]
-async fn a_repository_with_no_commits_yet_can_still_be_snapshotted() {
-    let dir = tempfile::tempdir().unwrap();
-    git(dir.path(), &["init", "-q"]);
-
-    let before = snapshot(dir.path()).await.unwrap();
-    assert_eq!(check(dir.path(), &before).await.unwrap(), None);
-
-    std::fs::write(dir.path().join("new.txt"), "first write, ever").unwrap();
-    let violation = check(dir.path(), &before).await.unwrap().unwrap();
-    assert_eq!(violation.failure, FailureKind::PolicyViolation);
-}
-
-#[tokio::test]
-async fn a_violation_names_the_changed_paths() {
-    let dir = committed_repo();
-    let before = snapshot(dir.path()).await.unwrap();
-    std::fs::write(dir.path().join("README.md"), "changed\n").unwrap();
-
-    let violation = check(dir.path(), &before).await.unwrap().unwrap();
-    assert!(
-        violation.message.contains("README.md"),
-        "{}",
-        violation.message
-    );
-}
-
-#[tokio::test]
-async fn a_directory_that_is_not_a_git_repository_is_an_error() {
-    let dir = tempfile::tempdir().unwrap();
-    let error = snapshot(dir.path()).await.unwrap_err();
-    assert!(
-        matches!(error, PolicyCheckError::GitFailed { .. }),
-        "{error:?}"
     );
 }

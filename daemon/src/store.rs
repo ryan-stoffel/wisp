@@ -35,16 +35,12 @@ const CANCELLED: u8 = 2;
 
 type Job = Box<dyn FnOnce(&mut Store) + Send>;
 
-enum Message {
+pub(crate) enum Message {
     Job(Job),
     Stop,
 }
 
-pub(crate) struct StoreHandle {
-    state: State,
-}
-
-enum State {
+pub(crate) enum StoreHandle {
     Open {
         jobs: mpsc::Sender<Message>,
         thread: Mutex<Option<JoinHandle<()>>>,
@@ -60,7 +56,7 @@ impl StoreHandle {
             Ok(store) => store,
             Err(error) => {
                 error!(path = %path.display(), %error, "could not open the project store");
-                return Self::unavailable();
+                return Self::Unavailable;
             }
         };
         let (jobs, queue) = mpsc::channel();
@@ -70,28 +66,20 @@ impl StoreHandle {
         match spawned {
             Ok(thread) => {
                 info!(path = %path.display(), "opened the project store");
-                Self {
-                    state: State::Open {
-                        jobs,
-                        thread: Mutex::new(Some(thread)),
-                    },
+                Self::Open {
+                    jobs,
+                    thread: Mutex::new(Some(thread)),
                 }
             }
             Err(error) => {
                 error!(%error, "could not start the project store's thread");
-                Self::unavailable()
+                Self::Unavailable
             }
         }
     }
 
-    fn unavailable() -> Self {
-        Self {
-            state: State::Unavailable,
-        }
-    }
-
     pub fn state(&self) -> StoreState {
-        let State::Open { thread, .. } = &self.state else {
+        let Self::Open { thread, .. } = self else {
             return StoreState::Unavailable;
         };
         let running = thread
@@ -113,7 +101,7 @@ impl StoreHandle {
         cancel: &CancellationToken,
         job: impl FnOnce(&mut Store) -> Result<T, ErrorObject> + Send + 'static,
     ) -> Result<T, ErrorObject> {
-        let State::Open { jobs, .. } = &self.state else {
+        let Self::Open { jobs, .. } = self else {
             return Err(unavailable());
         };
         let status = Arc::new(AtomicU8::new(QUEUED));
@@ -156,7 +144,7 @@ impl StoreHandle {
 
     /// Stops the thread after the job it is running, and closes the database.
     pub async fn stop(&self) {
-        let State::Open { jobs, thread } = &self.state else {
+        let Self::Open { jobs, thread } = self else {
             return;
         };
         let _ = jobs.send(Message::Stop);
@@ -191,11 +179,13 @@ pub(crate) fn store_error(error: &StoreError) -> ErrorObject {
             ErrorKind::ProjectNotFound,
             format!("no project has id {id}"),
         ),
-        other => {
-            error!(error = %other, "the project store failed");
-            ErrorObject::internal_error(format!("the project store failed: {other}"))
-        }
+        other => failed(other),
     }
+}
+
+fn failed(error: &StoreError) -> ErrorObject {
+    error!(%error, "the project store failed");
+    ErrorObject::internal_error(format!("the project store failed: {error}"))
 }
 
 /// The store's id and fields for a `project/create`.
@@ -242,20 +232,7 @@ pub(crate) fn account_store_error(error: &StoreError) -> ErrorObject {
             ErrorKind::AccountNotFound,
             format!("no key account has id {id}"),
         ),
-        other => {
-            error!(error = %other, "the project store failed");
-            ErrorObject::internal_error(format!("the project store failed: {other}"))
-        }
-    }
-}
-
-/// `provider`'s text for the `accounts.provider` column.
-pub(crate) fn provider_text(provider: Provider) -> &'static str {
-    match provider {
-        Provider::Anthropic => "anthropic",
-        Provider::Openai => "openai",
-        Provider::Cursor => "cursor",
-        Provider::Unknown => "unknown",
+        other => failed(other),
     }
 }
 
@@ -277,8 +254,14 @@ pub(crate) fn account_fields(
     label: String,
     masked_key: String,
 ) -> AccountFields {
+    let provider = match provider {
+        Provider::Anthropic => "anthropic",
+        Provider::Openai => "openai",
+        Provider::Cursor => "cursor",
+        Provider::Unknown => "unknown",
+    };
     AccountFields {
-        provider: provider_text(provider).to_owned(),
+        provider: provider.to_owned(),
         label,
         masked_key,
     }
@@ -311,16 +294,13 @@ pub(crate) fn account_choice(default: RoleDefault) -> Result<AccountChoice, Erro
     }
 }
 
-/// Vendor CLIs wispd ships or plans an adapter for (0004), ahead of #170's real detection of which
-/// are actually installed and signed in (#114). `role_default` checks a `Subscription` choice's
-/// backend name against this fixed list; #170 replaces it with something wispd has actually
-/// probed.
+/// Vendor CLIs wispd ships or plans an adapter for, not yet the ones actually installed.
 const KNOWN_BACKENDS: &[&str] = &["claude", "codex", "cursor"];
 
 /// An `accounts/defaults/set` choice as the store's [`RoleDefault`], checked against `db_store`
-/// first: a `Key` must be a real row in `accounts` (#117), and a `Subscription`'s backend must be
-/// one of [`KNOWN_BACKENDS`]. Unvalidated, a typo or a removed key account would only surface
-/// later, as a `RoutingError` when a task tries to start (#119).
+/// first: a `Key` must be a real row in `accounts`, and a `Subscription`'s backend must be one of
+/// [`KNOWN_BACKENDS`]. Unvalidated, a typo or a removed key account would only surface later, as a
+/// `RoutingError` when a task tries to start.
 ///
 /// # Errors
 ///
@@ -393,13 +373,11 @@ mod tests {
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
     use wisp_protocol::jsonrpc::{INTERNAL_ERROR, REQUEST_CANCELLED, WISP_ERROR};
-    use wisp_protocol::{
-        AccountId, ErrorKind, ProjectCreateParams, ProjectId, Provider, StoreState,
-    };
+    use wisp_protocol::{AccountId, ErrorKind, ProjectId, Provider, StoreState};
     use wisp_store::StoreError;
 
     use super::{
-        StoreHandle, account_fields, account_store_error, fields, key_account, project, store_error,
+        StoreHandle, account_fields, account_store_error, key_account, project, store_error,
     };
 
     fn row(id: Uuid) -> wisp_store::Project {
@@ -421,23 +399,13 @@ mod tests {
         assert_eq!(mapped.repo_path, "/src/wisp");
         assert_eq!(mapped.created_at, row(id.into()).created_at);
         assert_eq!(mapped.updated_at, row(id.into()).updated_at);
-
-        let params = ProjectCreateParams {
-            id,
-            name: "n".to_owned(),
-            repo_path: "/r".to_owned(),
-        };
-        let (uuid, fields) = fields(params);
-        assert_eq!(uuid, Uuid::from(id));
-        assert_eq!(
-            (fields.name.as_str(), fields.repo_path.as_str()),
-            ("n", "/r")
-        );
     }
 
     #[test]
     fn a_row_whose_id_is_not_v7_is_an_internal_error() {
         let error = project(row(Uuid::nil())).unwrap_err();
+        assert_eq!(error.code, INTERNAL_ERROR);
+        let error = key_account(account_row(Uuid::nil())).unwrap_err();
         assert_eq!(error.code, INTERNAL_ERROR);
     }
 
@@ -484,12 +452,6 @@ mod tests {
         assert_eq!(fields.provider, "openai");
         assert_eq!(fields.label, "Work");
         assert_eq!(fields.masked_key, "sk-proj-...wxyz");
-    }
-
-    #[test]
-    fn an_account_row_whose_id_is_not_v7_is_an_internal_error() {
-        let error = key_account(account_row(Uuid::nil())).unwrap_err();
-        assert_eq!(error.code, INTERNAL_ERROR);
     }
 
     #[test]

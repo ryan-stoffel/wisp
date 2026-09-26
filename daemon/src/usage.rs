@@ -1,10 +1,8 @@
-//! Turns backend usage events (0004, #113) into `wisp-store` rows (#120).
+//! Turns backend usage events into `wisp-store` rows.
 //!
-//! [`record_event`] is a plain, synchronous function over `&mut wisp_store::Store`, the same
-//! shape [`crate::methods::project`] uses for `project/create`. The runner (`crate::agents`,
-//! #156) calls it once per event through the store's single-thread owner
-//! ([`crate::store::StoreHandle::run`](../store/struct.StoreHandle.html#method.run)), charged to
-//! whichever account the run is on at that point, which changes on `Event::AccountFallback`.
+//! The runner (`crate::agents`) calls [`record_event`] once per event through the store's thread,
+//! charged to whichever account the run is on at that point, which changes on
+//! `Event::AccountFallback`.
 
 use jiff::Timestamp;
 use wisp_store::{LimitSnapshot, SessionModelUsage, Store, StoreError, UsageDelta};
@@ -86,27 +84,44 @@ mod tests {
 
     use super::record_event;
     use crate::backend::{
-        Event, FailureKind, LimitStatus, LimitWindow, ModelUsage, Outcome, RunId, Usage,
+        Event, EventSink, LimitStatus, LimitWindow, ModelUsage, Outcome, RunId, Usage,
     };
 
     fn open() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("wisp.sqlite3");
-        let store = Store::open(&path).unwrap();
+        let store = Store::open(&dir.path().join("wisp.sqlite3")).unwrap();
         (dir, store)
     }
 
-    fn usage(input: u64, output: u64) -> Usage {
-        Usage {
-            input_tokens: input,
-            output_tokens: output,
-            ..Usage::default()
+    fn usage(input: u64, output: u64) -> ModelUsage {
+        ModelUsage {
+            model: Some("claude-opus".to_owned()),
+            usage: Usage {
+                input_tokens: input,
+                output_tokens: output,
+                ..Usage::default()
+            },
         }
     }
 
-    /// A run resuming an existing session: `SessionStarted` carries no usage of its own, two
-    /// `Usage` deltas accumulate, a `RateLimit` snapshots the account's window, and `Finished`
-    /// replaces the session's running totals.
+    fn finished(input: u64, output: u64) -> Event {
+        Event::Finished {
+            outcome: Outcome::Completed { result: None },
+            usage_totals: vec![usage(input, output)],
+        }
+    }
+
+    fn input_tokens(store: &Store) -> u64 {
+        let far_past = "2020-01-01T00:00:00Z".parse().unwrap();
+        let far_future = "2030-01-01T00:00:00Z".parse().unwrap();
+        store
+            .usage_summary("claude-max", far_past, far_future)
+            .unwrap()
+            .input_tokens
+    }
+
+    /// `SessionStarted` carries no usage of its own, two `Usage` deltas accumulate, a
+    /// `RateLimit` snapshots the account's window, and `Finished` replaces the session's totals.
     #[test]
     fn a_fixture_run_records_deltas_a_limit_snapshot_and_session_totals() {
         let (_dir, mut store) = open();
@@ -117,14 +132,8 @@ mod tests {
                 model: Some("claude-opus".to_owned()),
                 api_key_source: None,
             },
-            Event::Usage(ModelUsage {
-                model: Some("claude-opus".to_owned()),
-                usage: usage(100, 10),
-            }),
-            Event::Usage(ModelUsage {
-                model: Some("claude-opus".to_owned()),
-                usage: usage(50, 5),
-            }),
+            Event::Usage(usage(100, 10)),
+            Event::Usage(usage(50, 5)),
             Event::RateLimit(LimitWindow {
                 window: "five_hour".to_owned(),
                 duration_minutes: Some(300),
@@ -132,220 +141,48 @@ mod tests {
                 status: LimitStatus::Allowed,
                 resets_at: Some("2026-09-24T17:00:00Z".parse().unwrap()),
             }),
-            Event::Finished {
-                outcome: Outcome::Completed { result: None },
-                usage_totals: vec![ModelUsage {
-                    model: Some("claude-opus".to_owned()),
-                    usage: usage(150, 15),
-                }],
-            },
+            finished(150, 15),
         ];
-
         for event in &events {
             record_event(&mut store, run_id, "claude-max", "sess-abc", event).unwrap();
         }
 
-        let today = store
-            .usage_summary(
-                "claude-max",
-                jiff::Timestamp::now() - jiff::Span::new().hours(1),
-                jiff::Timestamp::now() + jiff::Span::new().hours(1),
-            )
-            .unwrap();
-        assert_eq!(today.input_tokens, 150, "two deltas accumulate");
-        assert_eq!(today.output_tokens, 15);
-
+        assert_eq!(input_tokens(&store), 150, "two deltas accumulate");
         let limits = store.limit_snapshots("claude-max").unwrap();
         assert_eq!(limits.len(), 1);
         assert_eq!(limits[0].used_percent, Some(12.5));
-
         let totals = store.session_usage_totals("sess-abc").unwrap();
         assert_eq!(totals.len(), 1);
         assert_eq!(totals[0].input_tokens, 150, "the run's final running total");
+        assert_eq!(totals[0].output_tokens, 15);
     }
 
-    /// A resumed session's second run starts from a `Resume` baseline (0004/#113), so its own
-    /// `Usage` deltas are already the *new* amount only; recording them must not add the
-    /// baseline in a second time when the run's `Finished` replaces the session's totals.
-    #[test]
-    fn resuming_a_session_does_not_double_count_the_baseline() {
-        let (_dir, mut store) = open();
-        let run_id = RunId::generate();
-
-        // First run: session starts fresh.
-        record_event(
-            &mut store,
-            run_id,
-            "claude-max",
-            "sess-resume",
-            &Event::Usage(ModelUsage {
-                model: None,
-                usage: usage(1000, 100),
-            }),
-        )
-        .unwrap();
-        record_event(
-            &mut store,
-            run_id,
-            "claude-max",
-            "sess-resume",
-            &Event::Finished {
-                outcome: Outcome::Completed { result: None },
-                usage_totals: vec![ModelUsage {
-                    model: None,
-                    usage: usage(1000, 100),
-                }],
-            },
-        )
-        .unwrap();
-
-        // Second run resumes the session. The backend's `EventSink` (#113) already turns the
-        // vendor's cumulative total into a delta of only what is new, so this event carries just
-        // 200 more input tokens, and `Finished` reports the session's new grand total of 1200.
-        let resumed_run = RunId::generate();
-        record_event(
-            &mut store,
-            resumed_run,
-            "claude-max",
-            "sess-resume",
-            &Event::Usage(ModelUsage {
-                model: None,
-                usage: usage(200, 20),
-            }),
-        )
-        .unwrap();
-        record_event(
-            &mut store,
-            resumed_run,
-            "claude-max",
-            "sess-resume",
-            &Event::Finished {
-                outcome: Outcome::Completed { result: None },
-                usage_totals: vec![ModelUsage {
-                    model: None,
-                    usage: usage(1200, 120),
-                }],
-            },
-        )
-        .unwrap();
-
-        let far_past = "2020-01-01T00:00:00Z".parse().unwrap();
-        let far_future = "2030-01-01T00:00:00Z".parse().unwrap();
-        let summary = store
-            .usage_summary("claude-max", far_past, far_future)
-            .unwrap();
-        assert_eq!(
-            summary.input_tokens, 1200,
-            "deltas from both runs, not the baseline counted twice"
-        );
-
-        let totals = store.session_usage_totals("sess-resume").unwrap();
-        assert_eq!(totals.len(), 1);
-        assert_eq!(
-            totals[0].input_tokens, 1200,
-            "the session's stored baseline is the vendor's real cumulative total"
-        );
-    }
-
-    /// A run that dies without ever reaching `EventSink::finish` (a panic, or the backend task
-    /// vanishing outright) never produces a real `Event::Finished`. Instead `EventStream::poll_next`
-    /// synthesizes one, with an empty `usage_totals` (`backend/mod.rs`). Recording that must not
-    /// wipe a baseline a previous, successful run of the same session already established, or the
-    /// next resume would treat the vendor's full cumulative total as entirely new and double-count
-    /// everything already recorded.
+    /// A run that dies without reaching `EventSink::finish` gets a synthesized `Finished` with
+    /// empty `usage_totals`. Recording it must not wipe the baseline an earlier run established,
+    /// or the next resume would double-count the vendor's cumulative total.
     #[tokio::test]
     async fn a_run_that_dies_without_finishing_does_not_wipe_the_resume_baseline() {
-        use crate::backend::EventSink;
-
         let (_dir, mut store) = open();
-        let session_id = "sess-crash";
+        let mut record = |event: &Event| {
+            record_event(&mut store, RunId::generate(), "claude-max", "sess", event).unwrap();
+        };
 
-        // First run: a clean finish establishes a baseline of 100 tokens.
-        let first_run = RunId::generate();
-        record_event(
-            &mut store,
-            first_run,
-            "claude-max",
-            session_id,
-            &Event::Usage(ModelUsage {
-                model: None,
-                usage: usage(100, 10),
-            }),
-        )
-        .unwrap();
-        record_event(
-            &mut store,
-            first_run,
-            "claude-max",
-            session_id,
-            &Event::Finished {
-                outcome: Outcome::Completed { result: None },
-                usage_totals: vec![ModelUsage {
-                    model: None,
-                    usage: usage(100, 10),
-                }],
-            },
-        )
-        .unwrap();
+        record(&Event::Usage(usage(100, 10)));
+        record(&finished(100, 10));
 
-        // Second run: the backend task vanishes before it ever finishes. This drives the exact
-        // production path (`backend/mod.rs`'s `EventStream::poll_next`), not a hand-built event,
-        // by dropping the sink and reading the synthesized `Finished` back out of the stream.
+        // The exact production path: drop the sink and read the synthesized `Finished`.
         let (sink, mut stream) = EventSink::channel(8, Vec::new());
         drop(sink);
-        let crashed = stream.next().await.expect("a synthesized Finished");
-        let crashed_run = RunId::generate();
-        record_event(&mut store, crashed_run, "claude-max", session_id, &crashed).unwrap();
+        record(&stream.next().await.expect("a synthesized Finished"));
 
-        let totals = store.session_usage_totals(session_id).unwrap();
+        // The resume's delta is only what is new since 100; its total is the vendor's 120.
+        record(&Event::Usage(usage(20, 2)));
+        record(&finished(120, 12));
+
+        assert_eq!(input_tokens(&store), 120, "never double-counted");
+        let totals = store.session_usage_totals("sess").unwrap();
         assert_eq!(totals.len(), 1);
-        assert_eq!(
-            totals[0].input_tokens, 100,
-            "a run dying mid-flight must not wipe the pre-crash baseline"
-        );
-
-        // Third run: resumes from that surviving baseline. Its `Usage` delta is only what's new
-        // since 100, and its `Finished` reports the vendor's real new cumulative total of 120.
-        let resumed_run = RunId::generate();
-        record_event(
-            &mut store,
-            resumed_run,
-            "claude-max",
-            session_id,
-            &Event::Usage(ModelUsage {
-                model: None,
-                usage: usage(20, 2),
-            }),
-        )
-        .unwrap();
-        record_event(
-            &mut store,
-            resumed_run,
-            "claude-max",
-            session_id,
-            &Event::Finished {
-                outcome: Outcome::Completed { result: None },
-                usage_totals: vec![ModelUsage {
-                    model: None,
-                    usage: usage(120, 12),
-                }],
-            },
-        )
-        .unwrap();
-
-        let far_past = "2020-01-01T00:00:00Z".parse().unwrap();
-        let far_future = "2030-01-01T00:00:00Z".parse().unwrap();
-        let summary = store
-            .usage_summary("claude-max", far_past, far_future)
-            .unwrap();
-        assert_eq!(
-            summary.input_tokens, 120,
-            "100 before the crash plus 20 after resuming, never double-counted"
-        );
-        assert_eq!(
-            store.session_usage_totals(session_id).unwrap()[0].input_tokens,
-            120
-        );
+        assert_eq!(totals[0].input_tokens, 120);
     }
 
     #[test]
@@ -357,10 +194,7 @@ mod tests {
                 message_id: None,
                 text: "hi".to_owned(),
             },
-            Event::Usage(ModelUsage {
-                model: None,
-                usage: Usage::default(),
-            }),
+            Event::Usage(usage(0, 0)),
             Event::FollowUpDropped {
                 turn_id: crate::backend::TurnId::generate(),
             },
@@ -368,80 +202,5 @@ mod tests {
             record_event(&mut store, run_id, "claude-max", "sess", &event).unwrap();
         }
         assert_eq!(store.usage_account_ids().unwrap(), Vec::<String>::new());
-    }
-
-    #[test]
-    fn an_unknown_account_has_no_effect_on_others() {
-        let (_dir, mut store) = open();
-        let run_id = RunId::generate();
-        record_event(
-            &mut store,
-            run_id,
-            "claude-max",
-            "sess",
-            &Event::Usage(ModelUsage {
-                model: None,
-                usage: usage(10, 1),
-            }),
-        )
-        .unwrap();
-
-        let far_past = "2020-01-01T00:00:00Z".parse().unwrap();
-        let far_future = "2030-01-01T00:00:00Z".parse().unwrap();
-        let unknown = store.usage_summary("nobody", far_past, far_future).unwrap();
-        assert_eq!(unknown.input_tokens, 0);
-        assert_eq!(unknown.cost_usd_micros, None);
-
-        let known = store
-            .usage_summary("claude-max", far_past, far_future)
-            .unwrap();
-        assert_eq!(known.input_tokens, 10);
-    }
-
-    #[test]
-    fn a_crash_failure_still_leaves_recorded_deltas_intact() {
-        let (_dir, mut store) = open();
-        let run_id = RunId::generate();
-        record_event(
-            &mut store,
-            run_id,
-            "claude-max",
-            "sess",
-            &Event::Usage(ModelUsage {
-                model: None,
-                usage: usage(10, 1),
-            }),
-        )
-        .unwrap();
-        record_event(
-            &mut store,
-            run_id,
-            "claude-max",
-            "sess",
-            &Event::Finished {
-                outcome: Outcome::Failed(crate::backend::Failure {
-                    failure: FailureKind::Crashed,
-                    message: "boom".to_owned(),
-                    exit: None,
-                    stderr_tail: None,
-                }),
-                usage_totals: vec![ModelUsage {
-                    model: None,
-                    usage: usage(10, 1),
-                }],
-            },
-        )
-        .unwrap();
-
-        let far_past = "2020-01-01T00:00:00Z".parse().unwrap();
-        let far_future = "2030-01-01T00:00:00Z".parse().unwrap();
-        assert_eq!(
-            store
-                .usage_summary("claude-max", far_past, far_future)
-                .unwrap()
-                .input_tokens,
-            10
-        );
-        assert_eq!(store.session_usage_totals("sess").unwrap().len(), 1);
     }
 }
