@@ -60,10 +60,18 @@ interface SettingsProps {
   listed: { host: Host; view: ThreadsView }[];
   theme: ThemePreference;
   onThemeChange: (theme: ThemePreference) => void;
+  /** The host Source control opens on, as Set up GitHub picks it (PLX-423). */
+  sourceControlHost?: string;
 }
 
 /** The Settings page body. The sidebar's SettingsNav picks the section. */
-export function Settings({ section, listed, theme, onThemeChange }: SettingsProps) {
+export function Settings({
+  section,
+  listed,
+  theme,
+  onThemeChange,
+  sourceControlHost,
+}: SettingsProps) {
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
       <div
@@ -80,7 +88,7 @@ export function Settings({ section, listed, theme, onThemeChange }: SettingsProp
         ) : section === "providers" ? (
           <ProvidersSettings />
         ) : section === "sourceControl" ? (
-          <SourceControlSettings />
+          <SourceControlSettings key={sourceControlHost} hostId={sourceControlHost} />
         ) : section === "storage" ? (
           <StorageSettings />
         ) : (

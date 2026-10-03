@@ -44,6 +44,7 @@ import Markdown, { type Components } from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import remarkGfm from "remark-gfm";
 
+import type { RpcError } from "../preload/bridge";
 import type {
   AgentRun,
   AgentToolStatus,
@@ -66,7 +67,7 @@ import {
 } from "./Approval";
 import { Composer, tabItem, type Unanswered } from "./Composer";
 import { useConnection } from "./ConnectionStatus";
-import { describeError } from "./errors";
+import { describeError, needsGithub } from "./errors";
 import { imageCaps, imageUrl, loadImage } from "./images";
 import { Loader, type LoaderStyle } from "./Loader";
 import { GitHubLogo, LinearLogo } from "./logos";
@@ -93,6 +94,7 @@ import {
   type Item,
   type Work,
 } from "./transcript";
+import { SetUpGithub } from "./ui";
 import { useAgentRun, type SentMessage } from "./useAgentRun";
 
 /** A row: a transcript item, or a message this window sent that hasn't reached the agent yet. */
@@ -140,6 +142,7 @@ export function AgentChat({
   others,
   pullRequests,
   onPrOpened,
+  onSetUpGithub,
   compose,
   onComposed,
 }: {
@@ -176,6 +179,8 @@ export function AgentChat({
   pullRequests?: ReactNode;
   /** Opens the pull request Open PR opened, in place of linking to it. */
   onPrOpened?: (url: string) => void;
+  /** Offered when Open PR fails because `gh` is missing or signed out (PLX-423). */
+  onSetUpGithub?: () => void;
   /**
    * A message from outside the chat, such as the PR view's: sent, or put in the composer to finish.
    * `onComposed` says it's taken, so each one is taken once.
@@ -189,7 +194,7 @@ export function AgentChat({
   // Permission requests (RYA-196): those answered here read as answered at once.
   const { answers, answer, dismiss } = useAnswers(hostId);
   const [resendError, setResendError] = useState<string>();
-  const [prError, setPrError] = useState<string>();
+  const [prError, setPrError] = useState<RpcError>();
   // Dropped follow-ups already sent again, so their Send again goes away (back on failure).
   const [resent, setResent] = useState<ReadonlySet<string>>(new Set());
   const resend = useCallback(
@@ -408,8 +413,11 @@ export function AgentChat({
         />
         {/* A loaded transcript that stopped updating, a failed Send again, or Open PR. */}
         {(error ?? resendError ?? prError) && rows.length > 0 && (
-          <p role="alert" className="px-2 pb-2 text-[12.5px] text-danger">
-            {error ?? resendError ?? prError}
+          <p role="alert" className="flex items-center gap-2 px-2 pb-2 text-[12.5px] text-danger">
+            {error ?? resendError ?? describeError(prError!)}
+            {!error && !resendError && needsGithub(prError) && onSetUpGithub && (
+              <SetUpGithub onClick={onSetUpGithub} />
+            )}
           </p>
         )}
         {notice && (
@@ -1492,7 +1500,7 @@ export function MarkdownText({ text, components }: { text: string; components?: 
 }
 
 /** Copies text to the clipboard. `copied` is true for a moment after, for a Copied check. */
-function useCopy() {
+export function useCopy() {
   const [copied, setCopied] = useState(false);
   const copy = (text: string) =>
     void navigator.clipboard.writeText(text).then(() => {
@@ -1645,7 +1653,7 @@ function OpenPr({
 }: {
   hostId: string;
   run: AgentRun;
-  onError: (error?: string) => void;
+  onError: (error?: RpcError) => void;
   onOpened?: (url: string) => void;
 }) {
   const [url, setUrl] = useState<string>();
@@ -1673,7 +1681,7 @@ function OpenPr({
       title: titleOf(run),
     });
     setOpening(false);
-    if ("error" in answer) onError(describeError(answer.error));
+    if ("error" in answer) onError(answer.error);
     else if (onOpened) onOpened(answer.result.url);
     else setUrl(answer.result.url);
   };

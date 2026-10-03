@@ -114,6 +114,22 @@ export function IconButton({
   );
 }
 
+/**
+ * Set up GitHub, beside a pull request action that failed because `gh` is missing or signed out
+ * on the host (PLX-423). It opens Settings > Source control on that host.
+ */
+export function SetUpGithub({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="shrink-0 rounded-md border border-border px-2 py-0.5 text-[12px] font-medium text-foreground hover:bg-hover"
+    >
+      Set up GitHub
+    </button>
+  );
+}
+
 /** A segmented control's option: a label around a visually hidden radio. */
 export const segment =
   "flex items-center gap-1.5 rounded-md whitespace-nowrap px-2.5 py-1 text-[12.5px] text-muted-foreground hover:text-foreground has-checked:bg-selected has-checked:text-foreground has-focus-visible:outline-2 has-focus-visible:outline-ring [&_svg]:size-3.5";

@@ -202,6 +202,31 @@ test("with onPrOpened, Create PR opens the PR view in place of the browser", asy
   expect(open).not.toHaveBeenCalled();
 });
 
+test("a Create PR that fails for gh offers Set up GitHub, and another failure doesn't", async () => {
+  let kind = "ghUnavailable";
+  fakeBridge(
+    { git: {}, openPr: {} },
+    {
+      "agent/gitStatus": () => ({ result: { ...clean, upstream: null, ahead: 1 } }),
+      "agent/openPr": () => ({
+        error: { code: -32000, message: "GitHub CLI isn't signed in", data: { kind } },
+      }),
+    },
+  );
+  const onSetUpGithub = vi.fn();
+  root ??= createRoot(document.body.appendChild(document.createElement("div")));
+  act(() => root!.render(<GitMenu hostId="local" run={finished} onSetUpGithub={onSetUpGithub} />));
+  await settle();
+  await act(async () => item("Create PR").click());
+  expect(document.querySelector('[role="alert"]')!.textContent).toBe("GitHub CLI isn't signed in");
+  await act(async () => button("Set up GitHub")!.click());
+  expect(onSetUpGithub).toHaveBeenCalledOnce();
+
+  kind = "prFailed";
+  await act(async () => item("Create PR").click());
+  expect(button("Set up GitHub")).toBeUndefined();
+});
+
 test("the status is read again when a turn ends, and every action waits while one runs", async () => {
   const request = fakeBridge(
     { git: {}, openPr: {} },

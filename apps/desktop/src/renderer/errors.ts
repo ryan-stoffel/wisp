@@ -20,3 +20,6 @@ export function describeError(error: RpcError): string {
       return error.message;
   }
 }
+
+/** Whether `error` is plxd's `ghUnavailable`: `gh` is missing or signed out on the host, which Set up GitHub fixes (PLX-423). */
+export const needsGithub = (error?: RpcError) => error?.data?.kind === "ghUnavailable";

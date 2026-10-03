@@ -259,13 +259,18 @@ test("Close asks first, then closes", async () => {
   expect(document.querySelector('[aria-label="Merge options"]')).toBeNull();
 });
 
-test("a pull request that can't be read says why", async () => {
+test("a pull request that can't be read says why, and offers Set up GitHub for gh", async () => {
   request.mockImplementationOnce(async () => ({
     logId: "l",
     error: { code: -32000, message: "gh isn't signed in", data: { kind: "ghUnavailable" } },
   }));
-  await render([url(42)], (prs) => <PullRequestView url={url(42)} prs={prs} onCompose={vi.fn()} />);
+  const onSetUpGithub = vi.fn();
+  await render([url(42)], (prs) => (
+    <PullRequestView url={url(42)} prs={prs} onCompose={vi.fn()} onSetUpGithub={onSetUpGithub} />
+  ));
   expect(document.querySelector('[role="alert"]')!.textContent).toBe("gh isn't signed in");
+  await click(button("Set up GitHub"));
+  expect(onSetUpGithub).toHaveBeenCalledOnce();
 });
 
 test("the side panel opens a pull request's tab, or the list, and hides tabs the thread doesn't link", async () => {

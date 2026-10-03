@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 
+import type { RpcError } from "../preload/bridge";
 import type {
   PrAction,
   PrCheck,
@@ -39,15 +40,15 @@ import type {
 import { MarkdownText } from "./AgentChat";
 import { diffBand, diffLook } from "./Approval";
 import { tabItem } from "./Composer";
-import { describeError } from "./errors";
+import { describeError, needsGithub } from "./errors";
 import { age } from "./Sidebar";
-import { menuItem, menuPanel, moveFocus } from "./ui";
+import { menuItem, menuPanel, moveFocus, SetUpGithub } from "./ui";
 
 /** A linked pull request as last read: GitHub's view of it, when, and why a read or action failed. */
 export interface Linked {
   pr?: PullRequest;
   at?: string;
-  error?: string;
+  error?: RpcError;
 }
 
 /** A thread's linked pull requests (PLX-318), as `usePullRequests` keeps them. */
@@ -57,8 +58,8 @@ export interface PullRequests {
   get: (url: string) => Linked | undefined;
   /** Reads one again. */
   refresh: (url: string) => Promise<void>;
-  /** Runs `action` on one, keeping what GitHub has after it. Resolves to an error message. */
-  act: (url: string, action: PrAction) => Promise<string | undefined>;
+  /** Runs `action` on one, keeping what GitHub has after it. Resolves to its error, if it failed. */
+  act: (url: string, action: PrAction) => Promise<RpcError | undefined>;
   /** Reads one's unified diff, on a plxd with `prDiff` (PLX-328); absent on an older one. */
   diff?: (url: string) => Promise<{ result?: PrDiffResult; error?: string }>;
 }
@@ -86,7 +87,7 @@ export function usePullRequests(
       if (!runId) return;
       const answer = await window.parallax.request(hostId, "pr/view", { runId, url });
       const at = new Date().toISOString();
-      if ("error" in answer) put(url, (prev) => ({ ...prev, error: describeError(answer.error) }));
+      if ("error" in answer) put(url, (prev) => ({ ...prev, error: answer.error }));
       else put(url, () => ({ pr: answer.result, at }));
     },
     [hostId, runId, put],
@@ -110,7 +111,7 @@ export function usePullRequests(
     act: async (url, action) => {
       if (!runId) return;
       const answer = await window.parallax.request(hostId, "pr/act", { runId, url, action });
-      if ("error" in answer) return describeError(answer.error);
+      if ("error" in answer) return answer.error;
       put(url, () => ({ pr: answer.result, at: new Date().toISOString() }));
     },
     diff: diffs && runId ? diff : undefined,
@@ -218,7 +219,9 @@ export function PullRequestList({
                         <span className="shrink-0">{ago(pr.updatedAt)}</span>
                       </>
                     ) : (
-                      <span className={error ? "text-danger" : ""}>{error ?? "Loading…"}</span>
+                      <span className={error ? "text-danger" : ""}>
+                        {error ? describeError(error) : "Loading…"}
+                      </span>
                     )}
                   </span>
                 </span>
@@ -576,17 +579,20 @@ export function PullRequestView({
   url,
   prs,
   onCompose,
+  onSetUpGithub,
 }: {
   url: string;
   prs: PullRequests;
   onCompose: (text: string, send: boolean) => void;
+  /** Offered when a read or action fails because `gh` is missing or signed out (PLX-423). */
+  onSetUpGithub?: () => void;
 }) {
   const id = useId();
   const menu = useRef<HTMLDivElement>(null);
   const mergeMenu = useRef<HTMLDivElement>(null);
   const closeDialog = useRef<HTMLDialogElement>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
+  const [error, setError] = useState<RpcError>();
   const [tab, setTab] = useState<"summary" | "timeline" | "code">("summary");
   const [description, setDescription] = useState(true);
   const [comments, setComments] = useState(true);
@@ -609,7 +615,7 @@ export function PullRequestView({
   }, [tab, readDiff, url, updatedAt, diff?.for]);
 
   // Runs `fn` from the menus, which close first; its error shows over the Summary.
-  const run = async (fn: () => Promise<string | undefined | void>) => {
+  const run = async (fn: () => Promise<RpcError | undefined | void>) => {
     menu.current?.hidePopover();
     mergeMenu.current?.hidePopover();
     setBusy(true);
@@ -627,7 +633,9 @@ export function PullRequestView({
     menu.current?.hidePopover();
     void navigator.clipboard.writeText(text);
   };
-  const failure = error ?? linked?.error;
+  const failed = error ?? linked?.error;
+  const failure = failed && describeError(failed);
+  const setUp = needsGithub(failed) && onSetUpGithub && <SetUpGithub onClick={onSetUpGithub} />;
 
   if (!pr)
     return (
@@ -637,6 +645,7 @@ export function PullRequestView({
             <p role="alert" className="text-danger">
               {failure}
             </p>
+            {setUp}
             <button
               type="button"
               disabled={busy}
@@ -899,8 +908,9 @@ export function PullRequestView({
       </div>
 
       {failure && (
-        <p role="alert" className="mx-4 mt-3 text-[12.5px] text-danger">
+        <p role="alert" className="mx-4 mt-3 flex items-center gap-2 text-[12.5px] text-danger">
           {failure}
+          {setUp}
         </p>
       )}
 

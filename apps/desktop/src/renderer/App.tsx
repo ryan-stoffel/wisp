@@ -77,7 +77,12 @@ export function App() {
   // check below drops a Project selection the open host's list doesn't have.
   const [opening, setOpening] = useState<{ hostId: string; projectId: string }>();
   const [settings, setSettings] = useState<SettingsSection | null>(null);
-  const openSettings = (section: SettingsSection) => setSettings(section);
+  // The host Set up GitHub opened Source control on (PLX-423).
+  const [settingsHost, setSettingsHost] = useState<string>();
+  const openSettings = (section: SettingsSection, hostId?: string) => {
+    setSettings(section);
+    setSettingsHost(hostId);
+  };
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [panelOpen, setPanelOpen] = useState(false);
   const [panelExpanded, setPanelExpanded] = useState(false);
@@ -156,6 +161,11 @@ export function App() {
     (linksPrs && threadRun?.pullRequests) || [],
     connected && "prDiff" in connection.capabilities,
   );
+  // A PR action that fails for a missing or signed-out gh offers this, on a plxd that sets it up.
+  const setUpGithub =
+    connected && "githubSetup" in connection.capabilities
+      ? () => openSettings("sourceControl", host.id)
+      : undefined;
   const openPr = (url?: string) => {
     setPanelOpen(true);
     setShowPr({ url });
@@ -384,7 +394,13 @@ export function App() {
               {showSidebar}
               <Breadcrumb items={[{ label: "Settings" }, { label: settingsNames[settings] }]} />
             </TopBar>
-            <Settings section={settings} listed={listed} theme={theme} onThemeChange={setTheme} />
+            <Settings
+              section={settings}
+              listed={listed}
+              theme={theme}
+              onThemeChange={setTheme}
+              sourceControlHost={settingsHost}
+            />
           </>
         ) : selection.kind === "usage" ? (
           <UsagePage hosts={hosts} leading={showSidebar} topBarClassName={topBarInset} />
@@ -414,6 +430,7 @@ export function App() {
                     hostId={host.id}
                     run={threads.state.runs[selection.threadId]}
                     onPrOpened={linksPrs ? openPr : undefined}
+                    onSetUpGithub={setUpGithub}
                   />
                 )}
                 {folder && (
@@ -454,6 +471,7 @@ export function App() {
                 noRepo={group.id === noRepo}
                 pullRequests={prs.urls.length > 0 && <PullRequestChip prs={prs} onOpen={openPr} />}
                 onPrOpened={linksPrs ? openPr : undefined}
+                onSetUpGithub={setUpGithub}
                 compose={compose}
                 onComposed={composed}
               />
@@ -530,6 +548,7 @@ export function App() {
                     key={`${host.id}/${threadRun.id}`}
                     url={url}
                     prs={prs}
+                    onSetUpGithub={setUpGithub}
                     onCompose={(text, send) => {
                       // The chat is under an expanded panel.
                       setPanelExpanded(false);
