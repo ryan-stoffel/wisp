@@ -58,8 +58,8 @@ use super::worker::{sandbox_path, worker_prompt, worker_unavailable};
 use super::{Place, Prepared, RunOptions, prepare, store, store_error};
 use crate::backend::{
     AccountRef, Answer, AnswerError, Backend, CoordinatorTools, Credential, Decision, Event,
-    EventStream, FollowUp, ModelUsage, Outcome, Resume, Run, RunRequest, SendError, Usage,
-    WorkerSandbox,
+    EventStream, FollowUp, ModelUsage, Outcome, Resume, Run, RunRequest, SendError, ThreadTools,
+    Usage, WorkerSandbox,
     run_temp::{self, RunTemp},
 };
 use crate::routing;
@@ -90,10 +90,20 @@ pub(super) enum Command {
         options: RunOptions,
         /// A new account for the run, perhaps on another backend.
         account: Option<AccountChoice>,
+        /// The thread that sent it through its Parallax tools (0041).
+        from: Option<RunId>,
         reply: oneshot::Sender<Result<AgentRun, ErrorObject>>,
     },
     /// `agent/cancel`.
     Cancel {
+        /// The thread that stopped the run through its Parallax tools (0041).
+        from: Option<RunId>,
+        reply: oneshot::Sender<Result<AgentRun, ErrorObject>>,
+    },
+    /// `pr/link` or `pr/unlink` (0041), with a checked URL.
+    LinkPr {
+        url: String,
+        linked: bool,
         reply: oneshot::Sender<Result<AgentRun, ErrorObject>>,
     },
     /// `agent/approve` (RYA-222), with its params checked.
@@ -141,7 +151,8 @@ impl Command {
     fn refuse(self, error: ErrorObject) {
         match self {
             Self::Send { reply, .. }
-            | Self::Cancel { reply }
+            | Self::Cancel { reply, .. }
+            | Self::LinkPr { reply, .. }
             | Self::ResumeNow { reply }
             | Self::AutoResume { reply, .. } => {
                 let _ = reply.send(Err(error));
@@ -185,12 +196,19 @@ struct Live {
     temp: Option<RunTemp>,
 }
 
+/// plxd's own executable, which serves `plxd mcp` to a run's CLI.
+fn plxd_program() -> Result<PathBuf, String> {
+    std::env::current_exe()
+        .map_err(|error| format!("could not find plxd's own executable: {error}"))
+}
+
 /// What a run's CLI starts with besides its account and prompt, from [`Actor::launch`].
 struct Setup {
     cwd: PathBuf,
     sandbox: Option<WorkerSandbox>,
     temp: Option<RunTemp>,
     tools: Option<CoordinatorTools>,
+    thread_tools: Option<ThreadTools>,
     thread: bool,
 }
 
@@ -236,6 +254,9 @@ pub(super) struct Actor {
     /// The tool calls running `gh pr create`, by call id, until their results link the pull
     /// requests they print (PLX-318).
     pr_calls: HashSet<String>,
+    /// The threads that sent messages through their Parallax tools, by turn id, until the
+    /// messages' `TurnStarted` names them (0041). Not stored: a restart drops waiting messages.
+    senders: HashMap<TurnId, RunId>,
 }
 
 impl Actor {
@@ -273,6 +294,7 @@ impl Actor {
             resumes: Resumes::default(),
             approvals: Approvals::default(),
             pr_calls: HashSet::new(),
+            senders: HashMap::new(),
         }
     }
 
@@ -365,19 +387,29 @@ impl Actor {
                 threads,
                 options,
                 account,
+                from,
                 reply,
             } => {
+                if let Some(from) = from {
+                    self.senders.insert(turn_id, from);
+                }
                 let answer = self
                     .send(turn_id, text, images, threads, options, account)
                     .await;
+                if answer.is_err() && from.is_some() {
+                    self.senders.remove(&turn_id);
+                }
                 if answer.is_ok() && self.wakes.attended() {
                     self.save_wakes().await;
                 }
                 let _ = reply.send(answer);
             }
-            Command::Cancel { reply } => {
+            Command::Cancel { from, reply } => {
                 if self.live.is_some() {
-                    info!(run = %self.id, "cancelling an agent run");
+                    info!(run = %self.id, ?from, "cancelling an agent run");
+                    if let Some(from) = from {
+                        self.push(AgentOutputItem::Interrupted { from }).await;
+                    }
                     self.stop_approvals(AgentApprovalBy::Cancel).await;
                 }
                 // Stop means stop: what waited for this turn to end doesn't start another, and a
@@ -412,6 +444,14 @@ impl Actor {
                     self.link_pr(url.clone()).await;
                 }
                 let _ = reply.send(answer);
+            }
+            Command::LinkPr { url, linked, reply } => {
+                if linked {
+                    self.link_pr(url).await;
+                } else {
+                    self.unlink_pr(&url).await;
+                }
+                let _ = reply.send(self.snapshot());
             }
             Command::Git { action, reply } => {
                 let answer = self.git(action).await;
@@ -740,6 +780,17 @@ impl Actor {
         info!(run = %self.id, %url, "linked a pull request to an agent run");
         self.row.state.pull_requests.push(url);
         self.save().await;
+    }
+
+    /// Removes pull request `url` from the run's links, if it is there, and reports it as
+    /// `agent.updated` (0041).
+    async fn unlink_pr(&mut self, url: &str) {
+        let before = self.row.state.pull_requests.len();
+        self.row.state.pull_requests.retain(|linked| linked != url);
+        if self.row.state.pull_requests.len() != before {
+            info!(run = %self.id, %url, "unlinked a pull request from an agent run");
+            self.save().await;
+        }
     }
 
     /// The pull requests a finished `gh pr create` tool call printed, whatever the backend: its
@@ -1424,6 +1475,7 @@ impl Actor {
             sandbox,
             temp,
             tools,
+            thread_tools,
             thread,
         } = match setup {
             Ok(setup) => setup,
@@ -1452,6 +1504,7 @@ impl Actor {
             context_window: self.row.fields.context_window,
             fast: self.row.fields.fast,
             coordinator_tools: tools,
+            thread_tools,
             approvals: self.row.fields.approvals,
             thread,
         };
@@ -1494,11 +1547,22 @@ impl Actor {
         let (temp, temp_path) = self.run_temp().map_err(|error| error.message)?;
         let sandbox =
             WorkerSandbox::for_worktree(home, data_dir, &cwd, &git_common_dir, context, &temp_path);
+        // A thread's own host-wide tools, bound to its run (0041).
+        let thread_tools = if thread {
+            Some(ThreadTools {
+                program: plxd_program()?,
+                data_dir: self.daemon.data_dir.root().to_owned(),
+                run: self.id,
+            })
+        } else {
+            None
+        };
         Ok(Setup {
             cwd,
             sandbox: Some(sandbox),
             temp: Some(temp),
             tools: None,
+            thread_tools,
             thread,
         })
     }
@@ -1506,8 +1570,7 @@ impl Actor {
     /// A coordinator runs in the project's repository (0027), with its Parallax tools, bound to its
     /// project and to its own thread (0019).
     fn coordinator_setup(&mut self, repo: PathBuf) -> Result<Setup, String> {
-        let program = std::env::current_exe()
-            .map_err(|error| format!("could not find plxd's own executable: {error}"))?;
+        let program = plxd_program()?;
         let thread = self
             .row
             .fields
@@ -1525,6 +1588,7 @@ impl Actor {
             sandbox: None,
             temp: None,
             tools: Some(tools),
+            thread_tools: None,
             thread: false,
         })
     }
@@ -1665,6 +1729,7 @@ impl Actor {
                         turn_id,
                         text,
                         wake,
+                        from,
                         images,
                         threads,
                     } = &mut item
@@ -1675,6 +1740,7 @@ impl Actor {
                             // A coordinator's wake-up or a usage limit's resume: plxd's own turn.
                             *wake =
                                 self.wakes.was_sent(*turn_id) || self.resumes.was_sent(*turn_id);
+                            *from = self.senders.remove(turn_id);
                             *text = self
                                 .turns
                                 .get(turn_id)
@@ -1932,9 +1998,14 @@ pub(super) fn conversation(events: &[ParallaxEvent], cap: usize) -> String {
                         AgentOutputItem::TurnStarted {
                             text: Some(text),
                             wake,
+                            from,
                             ..
                         } => {
-                            let who = if *wake { "Parallax" } else { "User" };
+                            let who = match from {
+                                _ if *wake => "Parallax".to_owned(),
+                                Some(from) => format!("Thread {from}"),
+                                None => "User".to_owned(),
+                            };
                             said.push(format!("{who}:\n{}", text.trim()));
                         }
                         AgentOutputItem::Text { text, .. } if !text.trim().is_empty() => {
@@ -2225,7 +2296,7 @@ mod tests {
         let (commands, receiver) = mpsc::channel(4);
         let (reply, answer) = oneshot::channel();
         commands
-            .send(Command::Cancel { reply })
+            .send(Command::Cancel { from: None, reply })
             .await
             .expect("the actor's command channel is open");
 
@@ -2333,6 +2404,7 @@ mod tests {
             turn_id: Some(TurnId::generate()),
             text: Some(text.to_owned()),
             wake,
+            from: None,
             images: Vec::new(),
             threads: Vec::new(),
         };
@@ -2350,6 +2422,7 @@ mod tests {
                     turn_id: None,
                     text: None,
                     wake: false,
+                    from: None,
                     images: Vec::new(),
                     threads: Vec::new(),
                 },
@@ -2482,7 +2555,9 @@ mod tests {
         assert_eq!(waiting, [first, second]);
 
         let (reply, answer) = oneshot::channel();
-        actor.on_command(Command::Cancel { reply }).await;
+        actor
+            .on_command(Command::Cancel { from: None, reply })
+            .await;
         answer.await.unwrap().unwrap();
         assert!(actor.queued.is_empty());
         actor.flush().await;

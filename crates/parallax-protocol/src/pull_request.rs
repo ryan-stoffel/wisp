@@ -4,7 +4,8 @@
 //! opens one itself with `gh pr create`; `AgentRun.pullRequests` lists them. `pr/view` reads one
 //! from GitHub and `pr/act` merges, drafts, or closes it, each with `gh` on the host, as the user.
 //! Behind the `prDiff` capability (PLX-328), `pr/diff` reads its unified diff. Each takes only a
-//! URL linked to the run.
+//! URL linked to the run. Behind `threadTools` (0041), `pr/link` and `pr/unlink` add or remove a
+//! GitHub pull request URL from a run's list, as a thread's Parallax tools do.
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -12,7 +13,7 @@ use ts_rs::TS;
 
 use crate::RunId;
 
-/// Params of `pr/view`, and of `pr/diff`.
+/// Params of `pr/view`, of `pr/diff`, and of `pr/link` and `pr/unlink`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct PrViewParams {

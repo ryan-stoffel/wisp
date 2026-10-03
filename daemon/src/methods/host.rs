@@ -131,6 +131,9 @@ pub(crate) fn initialize(
 /// `autoResume` (PLX-371, 0049): `agent/resumeNow`, `agent/autoResume`, `host/settings/get` and
 /// `host/settings/set`, the `waiting` status, and `resumeAt` and `autoResume` on `AgentRun` and
 /// `agent.updated`.
+/// `threadTools` (PLX-373, 0041): `agent/send`'s and `agent/cancel`'s `from`, `turnStarted`'s
+/// `from` and the `interrupted` item, and `pr/link` and `pr/unlink`, which a thread's Parallax
+/// tools use.
 fn capabilities_advertised() -> Capabilities {
     let prompt_images = serde_json::Map::from_iter([
         ("maxImages".to_owned(), images::MAX_IMAGES.into()),
@@ -175,6 +178,7 @@ fn capabilities_advertised() -> Capabilities {
             ]),
         ),
         ("threadLineage".to_owned(), serde_json::Map::new()),
+        ("threadTools".to_owned(), serde_json::Map::new()),
         ("threads".to_owned(), serde_json::Map::new()),
     ]))
 }

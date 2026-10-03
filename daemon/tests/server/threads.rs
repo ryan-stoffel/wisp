@@ -182,6 +182,7 @@ fn message(run_id: RunId, text: &str) -> AgentSendParams {
         account: None,
         images: Vec::new(),
         threads: Vec::new(),
+        from: None,
     }
 }
 
@@ -1707,6 +1708,7 @@ async fn stopping_a_running_thread_drops_the_messages_waiting_for_it() {
     client
         .call::<AgentCancel>(AgentCancelParams {
             run_id: params.run_id,
+            from: None,
         })
         .await
         .unwrap();
