@@ -1,18 +1,25 @@
 //! A Project's inbox end to end (PLX-401, decision 0043): each source adds its item and appends
 //! `inbox.added`, and `inbox/list` and `inbox/seen` read and mark them.
 
-use parallax_protocol::methods::{AgentCancel, AgentStart, InboxList, InboxSeen, ProjectStart};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use parallax_protocol::methods::{
+    AgentCancel, AgentSend, AgentStart, InboxList, InboxSeen, ProjectStart,
+};
 use parallax_protocol::{
     AccountChoice, AgentCancelParams, AgentStartParams, AgentStatus, CoordinatorThreadId,
     ErrorKind, InboxItem, InboxKind, InboxListParams, InboxSeenParams, ParallaxEvent, ProjectId,
-    ProjectStartParams, RunId,
+    ProjectStartParams, Provider, RunId, TurnId,
 };
-use plxd::backend::fake::{AskedApproval, Step};
+use plxd::backend::fake::{AskedApproval, FakeBackend, Step};
+use plxd::backend::{Backend, Capabilities, RunRequest, StartError, Started};
+use plxd::routing::BackendRegistry;
 use serde_json::json;
 
 use crate::agents::{
-    Conn, Host, create, end_turn, fake, init, project_params, start_params, subscribe, until,
-    updated_to,
+    Conn, Host, create, end_turn, fake, fake_backend, init, project_params, send_params,
+    start_params, subscribe, until, updated_to,
 };
 use crate::support::{kind, temp_dir};
 
@@ -180,14 +187,45 @@ async fn a_childs_permission_request_adds_needs_you() {
     host.server.stop().await;
 }
 
-/// The coordinator's wake-ups pausing (0025), here because the user stopped it, adds `needsYou`
-/// about the coordinator.
+/// The fake CLI for its first `starts` launches, then a backend that can't start one, as when a
+/// wake-up's resume fails.
+struct FailingAfter {
+    fake: FakeBackend,
+    starts: AtomicUsize,
+}
+
+impl Backend for FailingAfter {
+    fn name(&self) -> &'static str {
+        self.fake.name()
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        self.fake.capabilities()
+    }
+
+    fn start(&self, request: RunRequest) -> Result<Started, StartError> {
+        if self.starts.fetch_sub(1, Ordering::SeqCst) == 0 {
+            self.starts.store(0, Ordering::SeqCst);
+            return Err(StartError::Unsupported("refused".to_owned()));
+        }
+        self.fake.start(request)
+    }
+}
+
+/// The user's Stop pauses the coordinator's wake-ups (0025) and adds nothing. A wake-up that
+/// can't resume it pauses them too, and that adds `needsYou` about the coordinator.
 #[tokio::test]
-async fn paused_wake_ups_add_needs_you_about_the_coordinator() {
-    let host = Host::start(
-        temp_dir(),
-        fake(vec![init("coordinator-1"), end_turn("Planned.")]),
+async fn a_failed_wake_up_adds_needs_you_and_stop_adds_nothing() {
+    let mut backends = BackendRegistry::new();
+    backends.register(
+        Provider::Anthropic,
+        Arc::new(FailingAfter {
+            fake: fake_backend(vec![init("session-1"), end_turn("Done.")]),
+            // The coordinator's turn, the user's message after Stop, and the child.
+            starts: AtomicUsize::new(3),
+        }),
     );
+    let host = Host::start(temp_dir(), backends);
     let mut client = host.client().await;
     let project = create(&mut client, project_params(host.dir.path())).await;
     subscribe(&mut client, project.id, 0).await;
@@ -207,18 +245,48 @@ async fn paused_wake_ups_add_needs_you_about_the_coordinator() {
         })
         .await
         .unwrap()
-        .run
-        .id;
+        .run;
     until(&mut client, updated_to(AgentStatus::Completed)).await;
     client
         .call::<AgentCancel>(AgentCancelParams {
-            run_id: coordinator,
+            run_id: coordinator.id,
         })
         .await
         .unwrap();
-    let item = added(&mut client, project.id).await;
-    assert_eq!(item.kind, InboxKind::NeedsYou);
-    assert_eq!(item.run, coordinator);
-    assert!(item.text.starts_with("Wake-ups paused."), "{}", item.text);
+    until(&mut client, |event| {
+        matches!(event.event, ParallaxEvent::AgentWakeupsPaused { .. })
+    })
+    .await;
+    // The user's message lets wake-ups through again.
+    client
+        .call::<AgentSend>(send_params(coordinator.id, TurnId::generate(), "Go on."))
+        .await
+        .unwrap();
+    until(&mut client, updated_to(AgentStatus::Completed)).await;
+
+    let child = client
+        .call::<AgentStart>(AgentStartParams {
+            coordinator_thread: coordinator.coordinator_thread,
+            ..start_params(project.id, "Add a README.")
+        })
+        .await
+        .unwrap()
+        .run
+        .id;
+    let done = added(&mut client, project.id).await;
+    assert_eq!((done.kind, done.run), (InboxKind::Done, child));
+    let paused = added(&mut client, project.id).await;
+    assert_eq!(paused.kind, InboxKind::NeedsYou);
+    assert_eq!(paused.run, coordinator.id);
+    assert!(
+        paused.text.starts_with("Wake-ups paused."),
+        "{}",
+        paused.text
+    );
+    assert_eq!(
+        list(&mut client, project.id).await,
+        [done, paused],
+        "Stop added nothing"
+    );
     host.server.stop().await;
 }

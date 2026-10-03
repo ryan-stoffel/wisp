@@ -448,7 +448,7 @@ impl Actor {
                 // Stop means stop: a run finishing a moment later doesn't start the coordinator
                 // again before the user writes.
                 if self.is_coordinator() {
-                    self.pause_wakes().await;
+                    self.pause_wakes(false).await;
                 }
                 let _ = reply.send(self.snapshot());
             }
@@ -515,12 +515,12 @@ impl Actor {
             }
             Err(error) => {
                 warn!(run = %self.id, error = %error.message, "could not check a coordinator before waking it");
-                self.pause_wakes().await;
+                self.pause_wakes(true).await;
                 return;
             }
         }
         let Some((turn_id, text)) = self.wakes.next() else {
-            self.pause_wakes().await;
+            self.pause_wakes(true).await;
             return;
         };
         info!(run = %self.id, "waking a coordinator: runs it started finished");
@@ -539,23 +539,27 @@ impl Actor {
                 self.wakes.delivered();
                 self.save_wakes().await;
             }
-            Ok(_) => self.pause_wakes().await,
+            Ok(_) => self.pause_wakes(true).await,
             Err(error) => {
                 warn!(run = %self.id, error = %error.message, "could not wake a coordinator");
-                self.pause_wakes().await;
+                self.pause_wakes(true).await;
             }
         }
     }
 
-    /// Stops waking the coordinator until the user writes, and says so once (RYA-42).
-    async fn pause_wakes(&mut self) {
+    /// Stops waking the coordinator until the user writes, and says so once (RYA-42). A pause
+    /// plxd makes on its own, `notify`, also adds a `needsYou` inbox item (PLX-401); the user's
+    /// own Stop doesn't.
+    async fn pause_wakes(&mut self, notify: bool) {
         if self.wakes.pause() {
             info!(run = %self.id, "pausing a coordinator's wake-ups until the user writes");
             self.save_wakes().await;
             self.append(ParallaxEvent::AgentWakeupsPaused { run_id: self.id })
                 .await;
-            self.inbox(InboxKind::NeedsYou, WAKEUPS_PAUSED.to_owned())
-                .await;
+            if notify {
+                self.inbox(InboxKind::NeedsYou, WAKEUPS_PAUSED.to_owned())
+                    .await;
+            }
         }
     }
 
@@ -571,7 +575,7 @@ impl Actor {
             Ok(state) => self.wakes.restore(state),
             Err(error) => {
                 warn!(run = %self.id, error = %error.message, "could not read a coordinator's wake-ups");
-                self.pause_wakes().await;
+                self.pause_wakes(true).await;
             }
         }
     }
