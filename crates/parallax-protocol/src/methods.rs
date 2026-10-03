@@ -38,14 +38,15 @@ use crate::{
     AgentResumeNowParams, AgentRunResult, AgentSendParams, AgentStartParams, ContextListParams,
     ContextListResult, ContextReadParams, ContextReadResult, ContextWriteParams,
     ContextWriteResult, EventsEventParams, EventsSubscribeParams, EventsSubscribeResult,
-    EventsUnsubscribeParams, EventsUnsubscribeResult, GitStatus, GithubStatus, GithubStatusParams,
-    HostHealthParams, HostHealthResult, HostSettings, HostSettingsGetParams, HostSettingsSetParams,
-    HostVersionParams, HostVersionResult, InitializeParams, InitializeResult, PrActParams,
-    PrDiffResult, PrViewParams, ProjectCreateParams, ProjectCreateResult, ProjectDeleteParams,
-    ProjectDeleteResult, ProjectListParams, ProjectListResult, ProjectStartParams,
-    ProjectUpdateParams, ProjectUpdateResult, PromptImage, PullRequest, RepoAddParams,
-    RepoAddResult, RepoFilesParams, RepoFilesResult, RepoRefsParams, RepoRefsResult,
-    RepoUpdateParams, RepoUpdateResult, ThreadArchiveParams, ThreadArchiveResult,
+    EventsUnsubscribeParams, EventsUnsubscribeResult, GitStatus, GithubInstallParams, GithubSignIn,
+    GithubSignInCancelParams, GithubSignInCancelResult, GithubSignInParams, GithubStatus,
+    GithubStatusParams, HostHealthParams, HostHealthResult, HostSettings, HostSettingsGetParams,
+    HostSettingsSetParams, HostVersionParams, HostVersionResult, InitializeParams,
+    InitializeResult, PrActParams, PrDiffResult, PrViewParams, ProjectCreateParams,
+    ProjectCreateResult, ProjectDeleteParams, ProjectDeleteResult, ProjectListParams,
+    ProjectListResult, ProjectStartParams, ProjectUpdateParams, ProjectUpdateResult, PromptImage,
+    PullRequest, RepoAddParams, RepoAddResult, RepoFilesParams, RepoFilesResult, RepoRefsParams,
+    RepoRefsResult, RepoUpdateParams, RepoUpdateResult, ThreadArchiveParams, ThreadArchiveResult,
     ThreadDeleteParams, ThreadDeleteResult, ThreadListParams, ThreadListResult, ThreadSearchParams,
     ThreadSearchResult, ThreadStartParams, ThreadStartResult, ThreadUpdateParams,
     ThreadUpdateResult, UsageDailyParams, UsageDailyResult, UsageGetParams, UsageGetResult,
@@ -301,6 +302,16 @@ method_table! {
         HostSettingsGet = "host/settings/get": HostSettingsGetParams => HostSettings;
         /// `host/settings/set`: changes this host's settings and returns them.
         HostSettingsSet = "host/settings/set": HostSettingsSetParams => HostSettings;
+        /// `github/install`: starts installing `gh` into plxd's data folder, from the latest
+        /// GitHub release, and answers at once with `installing` set (PLX-423, 0050). Refused
+        /// with `githubSetupFailed` while a `gh` is found. Gated on the `githubSetup` capability,
+        /// like `github/signIn` and `github/signInCancel`.
+        GithubInstall = "github/install": GithubInstallParams => GithubStatus;
+        /// `github/signIn`: starts `gh auth login --web` and answers with its one-time code, or
+        /// the pending sign-in's. `github/status` reports it until it ends.
+        GithubSignInStart = "github/signIn": GithubSignInParams => GithubSignIn;
+        /// `github/signInCancel`: stops a pending sign-in, if there is one.
+        GithubSignInCancel = "github/signInCancel": GithubSignInCancelParams => GithubSignInCancelResult;
     }
     notifications {
         /// `$/cancelRequest`: cancels a request, which still gets exactly one response. Either
@@ -397,6 +408,9 @@ mod tests {
                 "agent/autoResume",
                 "host/settings/get",
                 "host/settings/set",
+                "github/install",
+                "github/signIn",
+                "github/signInCancel",
                 "$/cancelRequest",
                 "events/event",
             ]

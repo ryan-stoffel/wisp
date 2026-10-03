@@ -254,6 +254,10 @@ pub struct ProcessSpec {
     pub inject: Environment,
     /// What stdin is.
     pub stdin: StdinMode,
+    /// Whether stderr's lines also come as [`Output::Line`]s while the process runs, mixed in
+    /// with stdout's, for a CLI that prints what plxd reads there, such as `gh auth login`'s
+    /// one-time code. They still go into [`Exit::stderr_tail`] too.
+    pub stderr_lines: bool,
     /// Output limits.
     pub limits: OutputLimits,
 }
@@ -268,6 +272,7 @@ impl ProcessSpec {
             scrub: Vec::new(),
             inject: Environment::empty(),
             stdin: StdinMode::Null,
+            stderr_lines: false,
             limits: OutputLimits::default(),
         }
     }
@@ -388,8 +393,11 @@ impl Launcher {
         } = start(spec, &program, &env)?;
 
         let tail = Arc::new(Mutex::new(Tail::new(spec.limits.stderr_tail_bytes)));
-        let stderr_task = tokio::spawn(read_stderr(stderr, Arc::clone(&tail)));
         let (output_tx, output) = mpsc::channel(64);
+        let lines = spec
+            .stderr_lines
+            .then(|| (output_tx.clone(), spec.limits.max_line_bytes));
+        let stderr_task = tokio::spawn(read_stderr(stderr, Arc::clone(&tail), lines));
         tokio::spawn(pump(
             LineReader::new(stdout, spec.limits.max_line_bytes),
             exited,
@@ -978,16 +986,46 @@ async fn pump<R: AsyncRead + Unpin>(
         .await;
 }
 
-async fn read_stderr<R: AsyncRead + Unpin>(mut stderr: R, tail: Arc<Mutex<Tail>>) {
+/// Keeps stderr's tail, and with `lines` also sends each line of it up to the size limit, without
+/// its newline. [`pump`] waits for this before it sends the exit, so the lines come first.
+async fn read_stderr<R: AsyncRead + Unpin>(
+    mut stderr: R,
+    tail: Arc<Mutex<Tail>>,
+    lines: Option<(mpsc::Sender<Output>, usize)>,
+) {
     let mut chunk = vec![0; 8192];
+    let mut line = Vec::new();
     loop {
-        match stderr.read(&mut chunk).await {
-            Ok(0) | Err(_) => return,
-            Ok(n) => tail
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(&chunk[..n]),
+        let n = match stderr.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        tail.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(&chunk[..n]);
+        let Some((output, max)) = &lines else {
+            continue;
+        };
+        line.extend_from_slice(&chunk[..n]);
+        while let Some(end) = line.iter().position(|&b| b == b'\n') {
+            let rest = line.split_off(end + 1);
+            let mut done = std::mem::replace(&mut line, rest);
+            done.pop();
+            if done.last() == Some(&b'\r') {
+                done.pop();
+            }
+            if done.len() <= *max && output.send(Output::Line(done)).await.is_err() {
+                return;
+            }
         }
+        if line.len() > *max {
+            line.clear();
+        }
+    }
+    if let Some((output, _)) = lines
+        && !line.is_empty()
+    {
+        let _ = output.send(Output::Line(line)).await;
     }
 }
 
@@ -1366,6 +1404,23 @@ mod tests {
                 .take_stdin()
                 .is_none()
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stderr_lines_come_as_lines_when_asked_for() {
+        let mut spec = sh("printf 'code\\r\\n' >&2; printf 'last' >&2");
+        spec.stderr_lines = true;
+        let mut process = launcher(base()).spawn(&spec).unwrap();
+        let (lines, exit) = collect(&mut process).await;
+        assert_eq!(
+            lines,
+            [
+                Output::Line(b"code".to_vec()),
+                Output::Line(b"last".to_vec())
+            ]
+        );
+        assert_eq!(exit.stderr_tail, "code\r\nlast");
     }
 
     #[cfg(unix)]

@@ -10,10 +10,10 @@ import { useCallback, useEffect, useId, useRef, useState, type ToggleEvent } fro
 import type { RpcError } from "../preload/bridge";
 import type { AgentRun, GitStatus } from "../protocol/generated/protocol";
 import { useConnection } from "./ConnectionStatus";
-import { describeError } from "./errors";
+import { describeError, githubProblem } from "./errors";
 import { titleOf } from "./threads";
 import { isRunning } from "./transcript";
-import { menuButton, menuItem, menuPanel, moveFocus } from "./ui";
+import { menuButton, menuItem, menuPanel, moveFocus, SetUpGithub } from "./ui";
 
 export type GitAction = "commit" | "push" | "pr";
 
@@ -59,16 +59,19 @@ export function gitActions(
  * asks for a message, prefilled with the thread's title. Create PR pushes and opens the pull
  * request through `agent/openPr`, in the browser, or with `onPrOpened`, in the PR view. The status
  * is read again after each action and whenever the run's status or commit changes, as when a turn
- * ends. Absent until the host's plxd has the `git` capability.
+ * ends. A Create PR that fails for `gh` offers `onSetUpGithub` (PLX-423). Absent until the host's
+ * plxd has the `git` capability.
  */
 export function GitMenu({
   hostId,
   run,
   onPrOpened,
+  onSetUpGithub,
 }: {
   hostId: string;
   run?: AgentRun;
   onPrOpened?: (url: string) => void;
+  onSetUpGithub?: () => void;
 }) {
   const id = useId();
   const menu = useRef<HTMLDivElement>(null);
@@ -78,6 +81,8 @@ export function GitMenu({
   const able = !!capabilities && "git" in capabilities;
   const [status, setStatus] = useState<GitStatus>();
   const [error, setError] = useState<string>();
+  // Whether that error is `gh` missing or signed out, shown as a short line by Set up GitHub.
+  const [github, setGithub] = useState(false);
   const [busy, setBusy] = useState<GitAction>();
   const [message, setMessage] = useState("");
   const runId = run?.id;
@@ -87,8 +92,10 @@ export function GitMenu({
       if (!runId) return;
       const answer = await window.parallax.request(hostId, "agent/gitStatus", { runId });
       if (!live()) return;
-      if ("error" in answer) setError(describeError(answer.error));
-      else setStatus(answer.result);
+      if ("error" in answer) {
+        setError(describeError(answer.error));
+        setGithub(false);
+      } else setStatus(answer.result);
     },
     [hostId, runId],
   );
@@ -132,7 +139,9 @@ export function GitMenu({
       else setStatus(answer.result);
     }
     setBusy(undefined);
-    if (failed) setError(describeError(failed));
+    const short = onSetUpGithub && githubProblem(failed);
+    if (failed) setError(short || describeError(failed));
+    setGithub(!!short);
     if (action === "commit" && !failed) dialog.current?.close();
     if (action !== "commit" && failed) menu.current?.showPopover();
   };
@@ -201,6 +210,16 @@ export function GitMenu({
           <p role="alert" className="px-2 pt-1 pb-1.5 text-[12px] text-danger">
             {error}
           </p>
+        )}
+        {error && github && onSetUpGithub && (
+          <div className="px-2 pb-1.5">
+            <SetUpGithub
+              onClick={() => {
+                menu.current?.hidePopover();
+                onSetUpGithub();
+              }}
+            />
+          </div>
         )}
       </div>
       <dialog

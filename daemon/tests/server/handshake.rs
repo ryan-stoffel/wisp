@@ -41,6 +41,7 @@ async fn the_handshake_agrees_on_a_version_and_reports_the_host() {
                 "iconImages".to_owned(),
                 serde_json::from_value(json!({"maxBytes": 64 * 1024})).unwrap()
             ),
+            ("githubSetup".to_owned(), serde_json::Map::new()),
             ("githubStatus".to_owned(), serde_json::Map::new()),
             ("openPr".to_owned(), serde_json::Map::new()),
             ("projectDelete".to_owned(), serde_json::Map::new()),

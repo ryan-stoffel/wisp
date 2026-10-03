@@ -131,6 +131,9 @@ pub(crate) fn initialize(
 /// `autoResume` (PLX-371, 0049): `agent/resumeNow`, `agent/autoResume`, `host/settings/get` and
 /// `host/settings/set`, the `waiting` status, and `resumeAt` and `autoResume` on `AgentRun` and
 /// `agent.updated`.
+/// `githubSetup` (PLX-423, 0050): `github/install`, `github/signIn`, and `github/signInCancel`,
+/// and `managed`, `installing`, `signingIn`, and `setupNote` on `github/status`, which an older
+/// plxd never fills.
 fn capabilities_advertised() -> Capabilities {
     let prompt_images = serde_json::Map::from_iter([
         ("maxImages".to_owned(), images::MAX_IMAGES.into()),
@@ -154,6 +157,7 @@ fn capabilities_advertised() -> Capabilities {
             "iconImages".to_owned(),
             serde_json::Map::from_iter([("maxBytes".to_owned(), images::MAX_ICON_BYTES.into())]),
         ),
+        ("githubSetup".to_owned(), serde_json::Map::new()),
         ("githubStatus".to_owned(), serde_json::Map::new()),
         ("openPr".to_owned(), serde_json::Map::new()),
         ("prDiff".to_owned(), serde_json::Map::new()),

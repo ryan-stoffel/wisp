@@ -1,6 +1,6 @@
 # 0004: Subscriptions run through each vendor's official CLI
 
-- Status: accepted; Cursor runs threads without waiting for its written OK since [0036](0036-cursor-threads.md); where API keys are kept on Linux and Windows is in [0023](0023-cross-platform.md), and the no-write run's `--settings` deny of reads under Claude Code's shared temp folder is in [0024](0024-coordinator-chat.md); the coordinator runs as full Claude Code in its permission mode instead of the no-write flags since [0027](0027-claude-permission-modes.md); any provider can run the coordinator since [0042](0042-project-children-are-threads.md)
+- Status: accepted; Cursor runs threads without waiting for its written OK since [0036](0036-cursor-threads.md); where API keys are kept on Linux and Windows is in [0023](0023-cross-platform.md), and the no-write run's `--settings` deny of reads under Claude Code's shared temp folder is in [0024](0024-coordinator-chat.md); the coordinator runs as full Claude Code in its permission mode instead of the no-write flags since [0027](0027-claude-permission-modes.md); any provider can run the coordinator since [0042](0042-project-children-are-threads.md); plxd installs `gh` and starts its sign-in, the one exception to never starting a sign-in, since [0050](0050-github-setup.md)
 - Date: 2026-09-23
 - Issue: #15
 

@@ -20,3 +20,15 @@ export function describeError(error: RpcError): string {
       return error.message;
   }
 }
+
+/**
+ * The short line shown beside Set up GitHub when `error` is plxd's `ghUnavailable`, `gh` missing
+ * or signed out on the host (PLX-423). Undefined for any other error.
+ */
+export function githubProblem(error?: RpcError): string | undefined {
+  if (error?.data?.kind !== "ghUnavailable") return undefined;
+  // ponytail: reads plxd's wording; give the error's data a reason if that wording changes.
+  return error.message.includes("isn't installed")
+    ? "GitHub isn't installed on this host."
+    : "GitHub isn't signed in on this host.";
+}

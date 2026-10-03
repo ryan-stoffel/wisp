@@ -317,6 +317,22 @@ export type ParallaxRequests = {
 	 * `host/settings/set`: changes this host's settings and returns them.
 	 */
 	"host/settings/set": { params: HostSettingsSetParams, result: HostSettings },
+	/**
+	 * `github/install`: starts installing `gh` into plxd's data folder, from the latest
+	 * GitHub release, and answers at once with `installing` set (PLX-423, 0050). Refused
+	 * with `githubSetupFailed` while a `gh` is found. Gated on the `githubSetup` capability,
+	 * like `github/signIn` and `github/signInCancel`.
+	 */
+	"github/install": { params: GithubInstallParams, result: GithubStatus },
+	/**
+	 * `github/signIn`: starts `gh auth login --web` and answers with its one-time code, or
+	 * the pending sign-in's. `github/status` reports it until it ends.
+	 */
+	"github/signIn": { params: GithubSignInParams, result: GithubSignIn },
+	/**
+	 * `github/signInCancel`: stops a pending sign-in, if there is one.
+	 */
+	"github/signInCancel": { params: GithubSignInCancelParams, result: GithubSignInCancelResult },
 };
 
 /** Notifications, which get no response, by method. */
@@ -3705,9 +3721,47 @@ export type GithubStatus = {
 	 */
 	note?: string,
 	/**
+	 * Whether the `gh` in use is the copy `github/install` put in plxd's data folder, rather than
+	 * one the user installed (PLX-423).
+	 */
+	managed?: boolean,
+	/**
+	 * Whether `github/install` is downloading and unpacking `gh` now.
+	 */
+	installing?: boolean,
+	/**
+	 * The sign-in `github/signIn` started, until `gh auth login` exits and `gh auth setup-git`
+	 * has run after it.
+	 */
+	signingIn?: GithubSignIn,
+	/**
+	 * What went wrong with the last install or sign-in plxd ran: why it failed, or why `gh auth
+	 * setup-git` failed after a sign-in that worked. Cleared when the next one starts.
+	 */
+	setupNote?: string,
+	/**
 	 * When plxd read this.
 	 */
 	checkedAt: string,
+};
+
+/**
+ * A pending `gh auth login`: the one-time code to enter on GitHub's device page. The result of
+ * `github/signIn`.
+ */
+export type GithubSignIn = {
+	/**
+	 * The one-time code, such as `AA17-58F5`.
+	 */
+	code: string,
+	/**
+	 * The page to enter it on, `https://github.com/login/device`.
+	 */
+	url: string,
+	/**
+	 * When plxd stops waiting: GitHub's device codes last 15 minutes.
+	 */
+	expiresAt: string,
 };
 
 /**
@@ -3795,6 +3849,26 @@ export type HostSettingsSetParams = {
 };
 
 /**
+ * Params of `github/install`.
+ */
+export type GithubInstallParams = Record<symbol, never>;
+
+/**
+ * Params of `github/signIn`.
+ */
+export type GithubSignInParams = Record<symbol, never>;
+
+/**
+ * Params of `github/signInCancel`.
+ */
+export type GithubSignInCancelParams = Record<symbol, never>;
+
+/**
+ * Result of `github/signInCancel`.
+ */
+export type GithubSignInCancelResult = Record<symbol, never>;
+
+/**
  * Params of `$/cancelRequest`.
  */
 export type CancelRequestParams = {
@@ -3856,7 +3930,7 @@ export type ErrorData = {
  * A newer plxd may send kinds that are not listed here. Treat those as unknown errors, so a
  * `switch` over this type must not end in an exhaustiveness assertion.
  */
-export type ErrorKind = "notInitialized" | "incompatibleProtocol" | "resyncRequired" | "projectNotFound" | "accountNotFound" | "keychainUnavailable" | "idConflict" | "contextNotFound" | "contextTooLarge" | "notARepository" | "runNotFound" | "runNotResumable" | "workerUnavailable" | "worktreeFailed" | "runAccepted" | "mergeRefused" | "mergeConflict" | "repoNotFound" | "threadNotFound" | "noDefaultAccount" | "unsupportedOption" | "prRefused" | "pushFailed" | "ghUnavailable" | "prFailed" | "imageTooLarge" | "imageNotFound" | "approvalNotFound" | "gitRefused" | "commitFailed";
+export type ErrorKind = "notInitialized" | "incompatibleProtocol" | "resyncRequired" | "projectNotFound" | "accountNotFound" | "keychainUnavailable" | "idConflict" | "contextNotFound" | "contextTooLarge" | "notARepository" | "runNotFound" | "runNotResumable" | "workerUnavailable" | "worktreeFailed" | "runAccepted" | "mergeRefused" | "mergeConflict" | "repoNotFound" | "threadNotFound" | "noDefaultAccount" | "unsupportedOption" | "prRefused" | "pushFailed" | "ghUnavailable" | "prFailed" | "imageTooLarge" | "imageNotFound" | "approvalNotFound" | "gitRefused" | "commitFailed" | "githubSetupFailed";
 
 /**
  * The `detail` of `incompatibleProtocol`. Its shape never changes, so every client can read it

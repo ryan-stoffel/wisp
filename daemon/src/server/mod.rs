@@ -40,6 +40,7 @@ use crate::backend::run_temp;
 use crate::context::ContextIndex;
 use crate::detect::CliDetector;
 use crate::event_log::EventLog;
+use crate::github::{self, Github};
 use crate::keystore::{self, KeyStore};
 use crate::methods;
 use crate::paths::DataDir;
@@ -223,6 +224,8 @@ pub(crate) struct Daemon {
     /// Detects the vendor CLIs for `accounts/list` and `accounts/refresh` (#114), and `gh` for
     /// `github/status` (PLX-336).
     pub cli_detector: CliDetector,
+    /// Installing `gh` and signing it in (PLX-423).
+    pub github: Github,
     /// Where key accounts' API keys live (#117): the OS's real store, except in tests.
     pub keys: Arc<dyn KeyStore>,
     /// plxd's data folder, so `context/*` (#155) and the runner (#156) can find a project's
@@ -310,6 +313,7 @@ impl Server {
             .agent_environment
             .clone()
             .unwrap_or_else(agents::worker::agent_environment);
+        let environment = github::with_tools_on_path(environment, data_dir);
         let launcher = Launcher::new(data_dir.clone(), environment);
         let fake = FakeBackend::from_env(&launcher)
             .map_err(|error| StartError::io("setting up the fake backend", error))?;
@@ -342,6 +346,7 @@ impl Server {
             )),
             store,
             os: methods::os_version(),
+            github: Github::new(launcher.clone(), github::RELEASE_URL),
             cli_detector: CliDetector::new(launcher, crate::detect::PROBE_TIMEOUT),
             limits: Limits {
                 idle_timeout: config.idle_timeout,
@@ -615,6 +620,7 @@ impl Daemon {
             )),
             store,
             os: "test".to_owned(),
+            github: Github::new(launcher.clone(), github::RELEASE_URL),
             cli_detector: CliDetector::new(launcher, crate::detect::PROBE_TIMEOUT),
             limits: Limits {
                 idle_timeout,

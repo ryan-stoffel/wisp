@@ -14,6 +14,8 @@
 //! - `tmp/`: files plxd writes for a run and deletes when it ends, such as a Claude worker's
 //!   `CLAUDE_ENV_FILE` (RYA-126) and a Codex worker's `ZDOTDIR` (RYA-141). See
 //!   [`DataDir::temp_dir`].
+//! - `tools/`: CLIs plxd installs itself, which is only `gh` (`tools/gh/`, PLX-423). See
+//!   [`DataDir::tools_dir`].
 //! - `logs/plxd.log`: the log.
 //!
 //! One folder is outside it: `/tmp/parallax-<hash>/`, which holds each worker run's own temp folder
@@ -182,6 +184,14 @@ impl DataDir {
         }
         roots.dedup();
         roots
+    }
+
+    /// `tools/`: CLIs plxd installs itself, each in a folder of its own, such as `gh/` with
+    /// `bin/gh` (PLX-423, 0050). Installs unpack into a temp folder inside it and are renamed into
+    /// place.
+    #[must_use]
+    pub fn tools_dir(&self) -> PathBuf {
+        self.root.join("tools")
     }
 
     /// The folder holding every project's shared context (0005, #155): `context/` in the data

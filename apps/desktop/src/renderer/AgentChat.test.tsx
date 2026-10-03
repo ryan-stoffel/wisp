@@ -621,8 +621,8 @@ const sampleRun = (logged[0]!.event as { run: AgentRun }).run;
  * `agent/list` answers `listSeq`, and a subscribe from before it resyncs, as plxd does
  * when it can't replay that far back. The first `resyncs` subscribes resync anyway.
  * plxd advertises `capabilities`, `agent/send` answers the run as `sent` leaves it (running by
- * default), `agent/openPr` answers `prUrl`, and `agent/image` a tiny PNG. `connect` changes the
- * connection's state.
+ * default), `agent/openPr` answers `prUrl`, or fails with `prError`, and `agent/image` a tiny PNG.
+ * `connect` changes the connection's state.
  */
 function fakeBridge(
   seq: number,
@@ -633,6 +633,7 @@ function fakeBridge(
     capabilities = {},
     sent = {} as Partial<AgentRun>,
     prUrl = "",
+    prError = undefined as object | undefined,
   } = {},
 ) {
   let listener: (m: SubscriptionMessage) => void = () => {};
@@ -643,7 +644,8 @@ function fakeBridge(
       return { error: { code: -32000, message: cancelError } };
     if (method === "agent/send")
       return { result: { run: { ...sampleRun, status: "running", ...sent } }, logId: "log-1" };
-    if (method === "agent/openPr") return { result: { url: prUrl }, logId: "log-1" };
+    if (method === "agent/openPr")
+      return prError ? { error: prError } : { result: { url: prUrl }, logId: "log-1" };
     if (method === "agent/image")
       return { result: { mediaType: "image/png", data: "AAAA" }, logId: "log-1" };
     if (method !== "agent/events") return { result: {}, logId: "log-1" };
@@ -989,6 +991,34 @@ test("a finished run opens a pull request titled like its thread, then links to 
   expect(link.textContent).toBe("PR #42");
   expect(link.target).toBe("_blank");
   expect(openPr()).toBeUndefined();
+});
+
+test("an Open PR that fails for gh says so in one line by Set up GitHub", async () => {
+  fakeBridge(8, {
+    capabilities: { openPr: {} },
+    prError: {
+      code: -32000,
+      message: "GitHub CLI isn't installed on the host: gh was not found; looked in /usr/bin",
+      data: { kind: "ghUnavailable" },
+    },
+  });
+  const onSetUpGithub = vi.fn();
+  const root = createRoot(document.body.appendChild(document.createElement("div")));
+  unmount = () => {
+    root.unmount();
+    document.body.innerHTML = "";
+    unmount = () => {};
+  };
+  act(() => root.render(<AgentChat hostId="local" runId={runId} onSetUpGithub={onSetUpGithub} />));
+  await settle();
+  const button = (name: string) =>
+    [...document.querySelectorAll("button")].find((b) => b.textContent === name);
+  await act(async () => button("Open PR")!.click());
+  expect(document.querySelector('[role="alert"]')!.textContent).toBe(
+    "GitHub isn't installed on this host.Set up GitHub",
+  );
+  await act(async () => button("Set up GitHub")!.click());
+  expect(onSetUpGithub).toHaveBeenCalledOnce();
 });
 
 test("with the PR view, Open PR opens it, a linked one's chip takes its place, and the view's messages reach the chat", async () => {

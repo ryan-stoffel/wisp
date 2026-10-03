@@ -202,6 +202,39 @@ test("with onPrOpened, Create PR opens the PR view in place of the browser", asy
   expect(open).not.toHaveBeenCalled();
 });
 
+test("a Create PR that fails for gh says so in one line by Set up GitHub, and another failure keeps its text", async () => {
+  let kind = "ghUnavailable";
+  let message = "GitHub CLI isn't signed in on the host; run `gh auth login` there: not logged in";
+  fakeBridge(
+    { git: {}, openPr: {} },
+    {
+      "agent/gitStatus": () => ({ result: { ...clean, upstream: null, ahead: 1 } }),
+      "agent/openPr": () => ({
+        error: { code: -32000, message, data: { kind } },
+      }),
+    },
+  );
+  const onSetUpGithub = vi.fn();
+  root ??= createRoot(document.body.appendChild(document.createElement("div")));
+  act(() => root!.render(<GitMenu hostId="local" run={finished} onSetUpGithub={onSetUpGithub} />));
+  await settle();
+  await act(async () => item("Create PR").click());
+  const alert = () => document.querySelector('[role="alert"]')!.textContent;
+  expect(alert()).toBe("GitHub isn't signed in on this host.");
+  await act(async () => button("Set up GitHub")!.click());
+  expect(onSetUpGithub).toHaveBeenCalledOnce();
+
+  message = "GitHub CLI isn't installed on the host: gh was not found; looked in /usr/bin";
+  await act(async () => item("Create PR").click());
+  expect(alert()).toBe("GitHub isn't installed on this host.");
+
+  kind = "prFailed";
+  message = "gh pr create failed: no commits between main and readme";
+  await act(async () => item("Create PR").click());
+  expect(alert()).toBe(message);
+  expect(button("Set up GitHub")).toBeUndefined();
+});
+
 test("the status is read again when a turn ends, and every action waits while one runs", async () => {
   const request = fakeBridge(
     { git: {}, openPr: {} },

@@ -105,6 +105,9 @@ pub enum ErrorKind {
     /// `agent/commit`'s git failed, such as for a missing `user.name`. The message carries git's
     /// stderr.
     CommitFailed,
+    /// `github/install` refused because a `gh` is already on the host, or `github/signIn` could
+    /// not start `gh auth login` or read its one-time code (PLX-423). The message says why.
+    GithubSetupFailed,
     /// A kind this version does not know yet.
     #[serde(other)]
     #[ts(skip)]
@@ -217,6 +220,7 @@ mod tests {
             (ErrorKind::PrFailed, "prFailed"),
             (ErrorKind::GitRefused, "gitRefused"),
             (ErrorKind::CommitFailed, "commitFailed"),
+            (ErrorKind::GithubSetupFailed, "githubSetupFailed"),
         ] {
             assert_eq!(serde_json::to_value(kind).unwrap(), json!(name));
             assert_eq!(

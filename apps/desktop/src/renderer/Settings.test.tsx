@@ -434,6 +434,131 @@ test("Source control shows the host's GitHub CLI and its account", async () => {
   states["local"] = { status: "connected", plxd: "0.1.0", protocol: 1, capabilities: {} };
 });
 
+test("Source control on a plxd without githubSetup links to gh's install page", async () => {
+  states["local"] = {
+    status: "connected",
+    plxd: "0.1.0",
+    protocol: 1,
+    capabilities: { githubStatus: {} },
+  };
+  answers["github/status"] = () => ({ result: { installed: false, checkedAt: "" } });
+  await renderSettings("sourceControl");
+  expect(rows("Hosting")).toEqual([
+    "GitHubNot installed. Install the GitHub CLI on this host to open pull requests.Install",
+  ]);
+  expect(section("Hosting").querySelector("a")!.href).toBe("https://cli.github.com/");
+  states["local"] = { status: "connected", plxd: "0.1.0", protocol: 1, capabilities: {} };
+});
+
+test("Source control installs gh, signs it in with a code, and follows the browser's approval", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  states["local"] = {
+    status: "connected",
+    plxd: "0.1.0",
+    protocol: 1,
+    capabilities: { githubStatus: {}, githubSetup: {} },
+  };
+  const signIn = { code: "AB12-CD34", url: "https://github.com/login/device", expiresAt: "" };
+  let status: Record<string, unknown> = { installed: false, checkedAt: "" };
+  answers["github/status"] = () => ({ result: status });
+  answers["github/install"] = () => {
+    status = { installed: false, installing: true, checkedAt: "" };
+    return { result: status };
+  };
+  answers["github/signIn"] = () => {
+    status = { ...status, signingIn: signIn };
+    return { result: signIn };
+  };
+  answers["github/signInCancel"] = () => {
+    status = { ...status, signingIn: undefined };
+    return { result: {} };
+  };
+  const open = vi.fn();
+  window.open = open;
+  const writeText = vi.fn(async () => {});
+  vi.stubGlobal("navigator", { clipboard: { writeText } });
+  const poll = async () => {
+    await act(() => vi.advanceTimersByTimeAsync(2000));
+    await settle();
+  };
+
+  await renderSettings("sourceControl");
+  expect(rows("Hosting")).toEqual([
+    "GitHubNot installed. Parallax can install the GitHub CLI on this host.Install",
+  ]);
+  await click(button(section("Hosting"), "Install"));
+  expect(rows("Hosting")).toEqual(["GitHubInstalling the GitHub CLI…Installing"]);
+
+  status = { installed: true, version: "2.102.0", managed: true, signedIn: false, checkedAt: "" };
+  await poll();
+  expect(rows("Hosting")).toEqual([
+    "GitHubgh 2.102.0 · installed by ParallaxNot signed in.Sign in",
+  ]);
+
+  await click(button(section("Hosting"), "Sign in"));
+  expect(open).toHaveBeenCalledWith("https://github.com/login/device", "_blank");
+  const [row, code] = rows("Hosting");
+  expect(row).toBe(
+    "GitHubgh 2.102.0 · installed by ParallaxWaiting for you to approve the code on GitHub…Cancel",
+  );
+  expect(code).toContain("Enter this code at github.com/login/device.");
+  expect(section("Hosting").querySelector('[aria-label="One-time code"]')!.textContent).toBe(
+    "AB12-CD34",
+  );
+  await click(button(section("Hosting"), "Copy"));
+  expect(writeText).toHaveBeenCalledWith("AB12-CD34");
+
+  // Cancel goes back to Sign in.
+  await click(button(section("Hosting"), "Cancel"));
+  expect(calls("github/signInCancel")).toHaveLength(1);
+  expect(rows("Hosting")).toEqual([
+    "GitHubgh 2.102.0 · installed by ParallaxNot signed in.Sign in",
+  ]);
+
+  // Approving in the browser shows on the next read, with setup-git's note.
+  await click(button(section("Hosting"), "Sign in"));
+  status = {
+    installed: true,
+    version: "2.102.0",
+    managed: true,
+    signedIn: true,
+    account: "ryan",
+    setupNote: "Signed in, but `gh auth setup-git` failed.",
+    checkedAt: "",
+  };
+  await poll();
+  expect(rows("Hosting")).toEqual([
+    "GitHubgh 2.102.0 · installed by ParallaxSigned in as @ryanSigned in, but `gh auth setup-git` failed.",
+  ]);
+  // Nothing is pending, so polling stops.
+  const reads = calls("github/status").length;
+  await poll();
+  expect(calls("github/status")).toHaveLength(reads);
+  vi.unstubAllGlobals();
+  states["local"] = { status: "connected", plxd: "0.1.0", protocol: 1, capabilities: {} };
+});
+
+test("Source control shows why an install failed, and offers Install again", async () => {
+  states["local"] = {
+    status: "connected",
+    plxd: "0.1.0",
+    protocol: 1,
+    capabilities: { githubStatus: {}, githubSetup: {} },
+  };
+  answers["github/status"] = () => ({
+    result: {
+      installed: false,
+      setupNote: "The downloaded gh_2.102.0_macOS_arm64.zip doesn't match gh's checksum.",
+      checkedAt: "",
+    },
+  });
+  await renderSettings("sourceControl");
+  expect(rows("Hosting")).toEqual([
+    "GitHubNot installed. Parallax can install the GitHub CLI on this host.The downloaded gh_2.102.0_macOS_arm64.zip doesn't match gh's checksum.Install",
+  ]);
+  states["local"] = { status: "connected", plxd: "0.1.0", protocol: 1, capabilities: {} };
+});
+
 test("Storage deletes only a host's archived threads, after asking", async () => {
   window.parallax.storage = async () => [];
   answers["thread/list"] = () => ({
