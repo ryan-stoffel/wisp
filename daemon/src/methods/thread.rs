@@ -1,8 +1,8 @@
 //! `thread/list`, `repo/add`, `thread/start`, `thread/archive`, and `thread/delete` (#110),
-//! behind the `threads` capability, `thread/update` and `repo/update` (0033), behind
-//! `threadAttention` (and `threadLineage` for its title and settled flag, 0041), `repo/refs`,
-//! behind `repoRefs`, and `thread/search` (PLX-372), behind `threadContext`. The logic is
-//! [`crate::threads`].
+//! behind the `threads` capability, `thread/fork` (0050), behind `threadFork`, `thread/update`
+//! and `repo/update` (0033), behind `threadAttention` (and `threadLineage` for its title and
+//! settled flag, 0041), `repo/refs`, behind `repoRefs`, and `thread/search` (PLX-372), behind
+//! `threadContext`. The logic is [`crate::threads`].
 //! `repo/files` is `composer.rs`'s, behind `composerMenus`.
 
 use std::sync::Arc;
@@ -10,13 +10,14 @@ use std::sync::Arc;
 use parallax_protocol::jsonrpc::{ErrorObject, Request};
 use parallax_protocol::methods::{
     RepoAdd, RepoFiles, RepoRefs, RepoUpdate, RequestMethod, ThreadArchive, ThreadDelete,
-    ThreadList, ThreadSearch, ThreadStart, ThreadUpdate,
+    ThreadFork, ThreadList, ThreadSearch, ThreadStart, ThreadUpdate,
 };
 use parallax_protocol::{
     RepoAddParams, RepoAddResult, RepoRefsParams, RepoRefsResult, RepoUpdateParams,
     RepoUpdateResult, ThreadArchiveParams, ThreadArchiveResult, ThreadDeleteParams,
-    ThreadDeleteResult, ThreadListParams, ThreadListResult, ThreadSearchParams, ThreadSearchResult,
-    ThreadStartParams, ThreadStartResult, ThreadUpdateParams, ThreadUpdateResult,
+    ThreadDeleteResult, ThreadForkParams, ThreadListParams, ThreadListResult, ThreadSearchParams,
+    ThreadSearchResult, ThreadStartParams, ThreadStartResult, ThreadUpdateParams,
+    ThreadUpdateResult,
 };
 use serde_json::Value;
 
@@ -34,6 +35,7 @@ pub(crate) async fn dispatch(context: &Context, request: &Request) -> Result<Val
         ThreadList::NAME => handle::<ThreadList, _, _>(request, |p| list(context, p)).await,
         RepoAdd::NAME => handle::<RepoAdd, _, _>(request, |p| add_repo(context, p)).await,
         ThreadStart::NAME => handle::<ThreadStart, _, _>(request, |p| start(context, p)).await,
+        ThreadFork::NAME => handle::<ThreadFork, _, _>(request, |p| fork(context, p)).await,
         ThreadArchive::NAME => {
             handle::<ThreadArchive, _, _>(request, |p| archive(context, p)).await
         }
@@ -71,6 +73,18 @@ async fn start(
         .daemon
         .agents
         .detached(threads::start(daemon, params))
+        .await
+}
+
+async fn fork(
+    context: &Context,
+    params: ThreadForkParams,
+) -> Result<ThreadStartResult, ErrorObject> {
+    let daemon = Arc::clone(&context.daemon);
+    context
+        .daemon
+        .agents
+        .detached(threads::fork(daemon, params))
         .await
 }
 

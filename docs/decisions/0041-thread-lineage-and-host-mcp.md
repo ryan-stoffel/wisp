@@ -1,6 +1,6 @@
 # 0041: Threads have lineage, and every thread gets the host-wide Parallax MCP
 
-- Status: accepted; the store and protocol are PLX-369's, the MCP tools' schemas are PLX-373's, and they replace [0019](0019-coordinator-mcp-tools.md)'s eight tools when PLX-373 lands
+- Status: accepted; the store and protocol are PLX-369's, the MCP tools' schemas are PLX-373's, and they replace [0019](0019-coordinator-mcp-tools.md)'s eight tools when PLX-373 lands; fork, which sets `forkedFrom`, is [0050](0050-fork-a-thread.md)
 - Date: 2026-10-03
 - Issue: PLX-368, PLX-369
 

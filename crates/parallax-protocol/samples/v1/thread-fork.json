@@ -1,0 +1,41 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "thread/fork",
+    "params": {
+      "runId": "01a0d5c2-2a3b-7c4d-8e5f-6a7b8c9d0e03",
+      "newRunId": "01a0f8a0-1b2c-7d3e-8f4a-5b6c7d8e9f01",
+      "turnId": "01a0d5c3-3b4c-7d5e-8f6a-7b8c9d0e1f04"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "thread": {
+        "id": "01a0f8a0-1b2c-7d3e-8f4a-5b6c7d8e9f01",
+        "repo": "01a0d5c1-1a2b-7c3d-8e4f-5a6b7c8d9e02",
+        "createdAt": "2026-10-03T19:00:00Z",
+        "lastPromptAt": "2026-10-03T19:00:00Z",
+        "forkedFrom": {
+          "run": "01a0d5c2-2a3b-7c4d-8e5f-6a7b8c9d0e03",
+          "turn": "01a0d5c3-3b4c-7d5e-8f6a-7b8c9d0e1f04"
+        }
+      },
+      "run": {
+        "id": "01a0f8a0-1b2c-7d3e-8f4a-5b6c7d8e9f01",
+        "project": "01a0d5c1-1a2b-7c3d-8e4f-5a6b7c8d9e02",
+        "prompt": "Fix the flaky attach test.",
+        "policy": "workspaceWrite",
+        "status": "completed",
+        "backend": "claude",
+        "accountId": "claude",
+        "branch": "parallax/1b2c3d4e",
+        "worktreePath": "/Users/me/Library/Application Support/parallax/worktrees/parallax-5e6f7a8b/01a0f8a0-1b2c-7d3e-8f4a-5b6c7d8e9f01",
+        "createdAt": "2026-10-03T19:00:00Z",
+        "updatedAt": "2026-10-03T19:00:00Z"
+      }
+    }
+  }
+]

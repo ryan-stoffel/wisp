@@ -180,6 +180,11 @@ pub fn arguments(
             "plxd runs only workers on Codex so far; its coordinator is RYA-39".into(),
         ));
     };
+    if request.resume.as_ref().is_some_and(|resume| resume.fork) {
+        return Err(StartError::Unsupported(
+            "codex exec can't fork a session; only a thread's app-server can".into(),
+        ));
+    }
     let mut args: Vec<OsString> = vec!["exec".into()];
     if request.resume.is_some() {
         args.push("resume".into());
@@ -441,6 +446,8 @@ impl Backend for CodexBackend {
             // Off everywhere until RYA-145: a worker's commands still write the shared temp
             // folders on macOS (RYA-153).
             worker_sandbox: false,
+            // A thread's `thread/fork` (`app_server`); `codex exec` refuses one.
+            fork: true,
         }
     }
 

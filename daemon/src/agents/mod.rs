@@ -50,10 +50,10 @@ use std::time::Duration;
 use parallax_protocol::jsonrpc::ErrorObject;
 use parallax_protocol::{
     AccountChoice, AgentAcceptParams, AgentAcceptResult, AgentApproveParams, AgentApproveResult,
-    AgentEffort, AgentImageParams, AgentOpenPrResult, AgentOutcome, AgentPermission, AgentRun,
-    AgentRunState, AgentSendParams, AgentStartParams, ApprovalId, CoordinatorThreadId, ErrorKind,
-    GitStatus, ImageMediaType, ParallaxEvent, PrActParams, PrDiffResult, PrViewParams, ProjectId,
-    PromptImage, PullRequest, Role, RunId, TurnId,
+    AgentEffort, AgentImageParams, AgentOpenPrResult, AgentOutcome, AgentOutputItem,
+    AgentPermission, AgentRun, AgentRunState, AgentSendParams, AgentStartParams, ApprovalId,
+    CoordinatorThreadId, ErrorKind, GitStatus, ImageMediaType, ParallaxEvent, PrActParams,
+    PrDiffResult, PrViewParams, ProjectId, PromptImage, PullRequest, Role, RunId, TurnId,
 };
 use parallax_store::{RunFields, RunState, StoreError, ThreadFields, WorktreeFields};
 use tokio::sync::{mpsc, oneshot};
@@ -64,9 +64,12 @@ use uuid::Uuid;
 
 pub(crate) use self::actor::GitAction;
 use self::actor::{Actor, Command};
+pub(crate) use self::actor::{logged_events, session_account};
 pub(crate) use self::approvals::APPROVAL_TIMEOUT;
 pub(crate) use self::convert::agent_run as snapshot;
-use self::convert::{RUNNING, STARTING, WORKSPACE_WRITE, agent_run, option_name, option_value};
+use self::convert::{
+    COMPLETED, RUNNING, STARTING, WORKSPACE_WRITE, agent_run, option_name, option_value,
+};
 pub(crate) use self::resume::Timing as ResumeTiming;
 use self::worker::{StoredKeyAccounts, sandbox_path, worker_unavailable};
 use crate::backend::{Backend, ToolPolicy, check_argument, codex, cursor};
@@ -501,6 +504,31 @@ impl RunOptions {
         }
         Ok(())
     }
+
+    /// For a fork onto `backend` when its parent ran on another (0050): drops the effort,
+    /// permission, context window, and fast mode `backend` doesn't map, and the parent's model
+    /// unless `thread/fork` named one, here and in `fields`.
+    fn fork_onto(&mut self, fork: Option<&NewFork>, backend: &dyn Backend, fields: &mut RunFields) {
+        let Some(fork) = fork.filter(|fork| backend.name() != fork.parent_backend) else {
+            return;
+        };
+        if !fork.model_given {
+            self.model = None;
+        }
+        self.effort = self.effort.filter(|e| backend.efforts().contains(e));
+        self.permission = self
+            .permission
+            .filter(|p| backend.permissions().contains(p));
+        self.context_window = self
+            .context_window
+            .filter(|w| backend.context_windows().contains(w));
+        self.fast = self.fast.filter(|_| backend.fast_mode());
+        fields.model.clone_from(&self.model);
+        fields.effort = self.effort.and_then(option_name);
+        fields.permission = self.permission.and_then(option_name);
+        fields.context_window = self.context_window;
+        fields.fast = self.fast;
+    }
 }
 
 fn routing_error(error: &RoutingError) -> ErrorObject {
@@ -861,6 +889,18 @@ pub(crate) struct NewThread {
     pub parent: Option<RunId>,
     /// Its fork origin and title (0041), already checked.
     pub fields: ThreadFields,
+    /// Set for a fork (0050): no CLI starts, and its log begins with the parent's transcript.
+    pub fork: Option<NewFork>,
+}
+
+/// What a fork (0050) adds to a new thread.
+pub(crate) struct NewFork {
+    /// The parent's backend: its model carries over only to the same one.
+    pub parent_backend: String,
+    /// Whether `thread/fork` named the model.
+    pub model_given: bool,
+    /// The parent's `agent.output` items up to the fork point, one list per event, oldest first.
+    pub transcript: Vec<Vec<AgentOutputItem>>,
 }
 
 /// A created run, and its thread row for a normal thread.
@@ -878,7 +918,32 @@ fn parent(thread: Option<&NewThread>, coordinator: Option<CoordinatorThreadId>) 
         .or(coordinator.map(Uuid::from))
 }
 
-/// Creates and starts a run: see the module documentation. Idempotent on the run id.
+/// A new fork's run, recorded with no CLI (0050): logs the parent's transcript up to the fork
+/// point as the fork's own, after its `agent.started`. Its first `agent/send` starts a CLI.
+async fn fork_created(
+    daemon: &Daemon,
+    project: ProjectId,
+    run_id: RunId,
+    fork: NewFork,
+    row: &parallax_store::Run,
+    worktree: Option<parallax_store::Worktree>,
+    thread: Option<parallax_store::Thread>,
+) -> Result<CreatedRun, ErrorObject> {
+    for items in fork.transcript {
+        let event = ParallaxEvent::AgentOutput { run_id, items };
+        daemon
+            .log
+            .append(row.created_at, Some(project), event)
+            .await;
+    }
+    Ok(CreatedRun {
+        run: agent_run(row, worktree.as_ref())?,
+        thread,
+    })
+}
+
+/// Creates and starts a run: see the module documentation. Idempotent on the run id. A fork
+/// (`NewThread::fork`) is created with no CLI, at rest where its parent's turn ended.
 #[expect(
     clippy::too_many_lines,
     reason = "one sequence of steps, each of which must happen before the next"
@@ -895,8 +960,9 @@ pub(crate) async fn create(daemon: Arc<Daemon>, new: NewRun) -> Result<CreatedRu
         coordinator_thread,
         mut options,
         mut approvals,
-        thread,
+        mut thread,
     } = new;
+    let fork = thread.as_mut().and_then(|thread| thread.fork.take());
     let _starting = agents.start_guard(run_id).await;
     let inherited = inherit(&daemon, coordinator_thread, &mut options, &mut approvals).await?;
     // What the request asks for, as the runs table stores it. Routing fills in the backend below.
@@ -939,6 +1005,7 @@ pub(crate) async fn create(daemon: Arc<Daemon>, new: NewRun) -> Result<CreatedRu
     if inherited.is_some_and(|mode| !prepared.resolved.backend().permissions().contains(&mode)) {
         (options.permission, fields.permission) = (None, None);
     }
+    options.fork_onto(fork.as_ref(), prepared.resolved.backend(), &mut fields);
     options.check(prepared.resolved.backend())?;
     let repo_path = match thread.as_ref().and_then(|thread| thread.scratch.clone()) {
         Some(scratch) => scratch.to_string_lossy().into_owned(),
@@ -957,7 +1024,7 @@ pub(crate) async fn create(daemon: Arc<Daemon>, new: NewRun) -> Result<CreatedRu
 
     fields.backend = prepared.resolved.backend().name().into();
     let state = RunState {
-        status: STARTING.to_owned(),
+        status: if fork.is_some() { COMPLETED } else { STARTING }.to_owned(),
         account_id: prepared.resolved.account_id(),
         ..RunState::default()
     };
@@ -976,6 +1043,9 @@ pub(crate) async fn create(daemon: Arc<Daemon>, new: NewRun) -> Result<CreatedRu
         crate::threads::log_started(&daemon, thread).await;
     }
     info!(run = %run_id, project = %project, backend = %row.fields.backend, thread = is_thread, checkout = row.fields.checkout, "created an agent run");
+    if let Some(fork) = fork {
+        return fork_created(&daemon, project, run_id, fork, &row, worktree, thread_row).await;
+    }
 
     // A run just created here has no sent turns yet.
     let mut actor = Actor::new(Arc::clone(&daemon), row, worktree, HashMap::new());

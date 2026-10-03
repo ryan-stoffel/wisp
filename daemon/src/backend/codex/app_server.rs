@@ -6,10 +6,10 @@
 //! It loads the user's `config.toml`, rules, `AGENTS.md` files, skills, hooks, plugins, and MCP
 //! servers, as `codex` in a terminal does: no `--ignore-user-config`, `--ignore-rules`, or
 //! permission profile, unlike a worker's `codex exec`. The driver sends `initialize` and
-//! `initialized`, then `thread/start`, or `thread/resume` with the earlier run's thread id, with
-//! the model, the context window as `model_context_window`, fast mode as the `priority` service
-//! tier, and the mode's approval policy and sandbox ([`mode`]). The prompt is the first
-//! `turn/start`, as written, with its images as `localImage` files ([`write_images`]) and the
+//! `initialized`, then `thread/start`, or `thread/resume` with the earlier run's thread id
+//! (`thread/fork` for a fork's first run, 0050), with the model, the context window as
+//! `model_context_window`, fast mode as the `priority` service tier, and the mode's approval
+//! policy and sandbox ([`mode`]). The prompt is the first `turn/start`, as written, with its images as `localImage` files ([`write_images`]) and the
 //! effort. Each follow-up is a later `turn/start` in the same process, sent once the turn before
 //! it has completed. Once no turn and no approval request is outstanding, stdin closes and
 //! app-server exits, which ends the run; `agent/send` then resumes the thread in a new run.
@@ -196,7 +196,8 @@ pub(super) fn initialize_params() -> Value {
     json!({"clientInfo": client, "capabilities": null})
 }
 
-/// `thread/start`, or `thread/resume` for a run that resumes a thread, and its params: the cwd,
+/// `thread/start`, `thread/resume` for a run that resumes a thread, or `thread/fork` for a fork's
+/// first run, and its params: the cwd,
 /// the mode ([`mode`]), the model, the context window, and fast mode.
 fn thread_params(request: &RunRequest) -> Result<(&'static str, Value), StartError> {
     let (mut approval_policy, sandbox, mut reviewer) = mode(request.permission)?;
@@ -234,7 +235,12 @@ fn thread_params(request: &RunRequest) -> Result<(&'static str, Value), StartErr
             check_argument("resume id", &resume.session_id)?;
             thread["threadId"] = resume.session_id.clone().into();
             thread["excludeTurns"] = true.into();
-            "thread/resume"
+            // A fork's first run continues a copy of the thread under a new id (0050).
+            if resume.fork {
+                "thread/fork"
+            } else {
+                "thread/resume"
+            }
         }
         None => "thread/start",
     };

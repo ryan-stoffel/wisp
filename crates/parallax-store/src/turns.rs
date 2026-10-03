@@ -1,5 +1,5 @@
 use jiff::Timestamp;
-use rusqlite::{Row, params};
+use rusqlite::{OptionalExtension, Row, params};
 use uuid::Uuid;
 
 use crate::Store;
@@ -47,6 +47,25 @@ impl Store {
         Ok(turns)
     }
 
+    /// The id of `run_id`'s newest recorded turn, or `None` if it has none: where a fork with no
+    /// turn named continues from (0050).
+    ///
+    /// # Errors
+    ///
+    /// A database error, or an error if the stored id is corrupt.
+    pub fn latest_turn(&self, run_id: Uuid) -> Result<Option<Uuid>, StoreError> {
+        let turn: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT turn_id FROM turns WHERE run_id = ?1
+                 ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                params![run_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(turn.as_deref().map(Uuid::parse_str).transpose()?)
+    }
+
     /// When `run_id`'s newest recorded turn was sent, or `None` if it has none: a coordinator's
     /// last turn, which wake-ups rebuilt after a restart count from (RYA-178).
     ///
@@ -88,6 +107,10 @@ mod tests {
         );
         assert_eq!(store.run_turns(other_run).unwrap(), []);
         assert!(store.last_turn_at(run).unwrap().is_some());
+        let later = Uuid::now_v7();
+        store.record_turn(run, later, "and then this").unwrap();
+        assert_eq!(store.latest_turn(run).unwrap(), Some(later));
+        assert_eq!(store.latest_turn(other_run).unwrap(), None);
         assert_eq!(store.last_turn_at(other_run).unwrap(), None);
     }
 }

@@ -34,6 +34,7 @@ use crate::support::{Client, InProcess, PATIENCE, kind, temp_dir};
 
 mod context;
 mod files;
+mod fork;
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let output = Command::new("git")

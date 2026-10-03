@@ -46,10 +46,10 @@ use crate::{
     ProjectUpdateParams, ProjectUpdateResult, PromptImage, PullRequest, RepoAddParams,
     RepoAddResult, RepoFilesParams, RepoFilesResult, RepoRefsParams, RepoRefsResult,
     RepoUpdateParams, RepoUpdateResult, ThreadArchiveParams, ThreadArchiveResult,
-    ThreadDeleteParams, ThreadDeleteResult, ThreadListParams, ThreadListResult, ThreadSearchParams,
-    ThreadSearchResult, ThreadStartParams, ThreadStartResult, ThreadUpdateParams,
-    ThreadUpdateResult, UsageDailyParams, UsageDailyResult, UsageGetParams, UsageGetResult,
-    UsageHistoryParams, UsageHistoryResult,
+    ThreadDeleteParams, ThreadDeleteResult, ThreadForkParams, ThreadListParams, ThreadListResult,
+    ThreadSearchParams, ThreadSearchResult, ThreadStartParams, ThreadStartResult,
+    ThreadUpdateParams, ThreadUpdateResult, UsageDailyParams, UsageDailyResult, UsageGetParams,
+    UsageGetResult, UsageHistoryParams, UsageHistoryResult,
 };
 
 /// A method that is called with a request and answered with a response.
@@ -241,6 +241,10 @@ method_table! {
         /// scratch repository of its own when no repo is given. Idempotent on its
         /// client-generated run id.
         ThreadStart = "thread/start": ThreadStartParams => ThreadStartResult;
+        /// `thread/fork`: a new thread that continues a thread's conversation from one of its
+        /// turns, in a workspace of the same kind (0050). Idempotent on its client-generated
+        /// run id. Gated on the `threadFork` capability.
+        ThreadFork = "thread/fork": ThreadForkParams => ThreadStartResult;
         /// `thread/archive`: archives a normal thread or brings it back.
         ThreadArchive = "thread/archive": ThreadArchiveParams => ThreadArchiveResult;
         /// `thread/update`: marks a normal thread seen or snoozes it (0033), gated on the
@@ -378,6 +382,7 @@ mod tests {
                 "thread/list",
                 "repo/add",
                 "thread/start",
+                "thread/fork",
                 "thread/archive",
                 "thread/update",
                 "repo/update",

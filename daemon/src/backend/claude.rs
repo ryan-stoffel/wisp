@@ -4,7 +4,7 @@
 //!
 //! Every run is `claude -p --output-format stream-json --verbose --input-format stream-json` in
 //! the run's cwd, plus the policy's flags, `--model`, `--effort`, and `--resume <session id>`
-//! (0004 [10]). Fast mode is `fastMode` in the run's one `--settings`, and a 200k context window
+//! (0004 [10]), with `--fork-session` for a fork's first run (0050). Fast mode is `fastMode` in the run's one `--settings`, and a 200k context window
 //! is [`DISABLE_1M_ENV`]:
 //!
 //! - **No-write** is 0004's: [`NO_WRITE_ARGS`], then [`no_write_settings`] as `--settings`, which
@@ -662,6 +662,9 @@ pub fn arguments(request: &RunRequest) -> Result<Vec<OsString>, StartError> {
     if let Some(resume) = &request.resume {
         check_argument("resume id", &resume.session_id)?;
         args.extend(["--resume".into(), resume.session_id.clone().into()]);
+        if resume.fork {
+            args.push("--fork-session".into());
+        }
     }
     Ok(args)
 }
@@ -886,6 +889,7 @@ impl Backend for ClaudeBackend {
             reports_cost: true,
             rate_limits: true,
             worker_sandbox: cfg!(any(target_os = "macos", target_os = "linux")),
+            fork: true,
         }
     }
 
