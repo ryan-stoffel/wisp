@@ -259,7 +259,10 @@ async fn cancelling_a_waiting_run_clears_its_timer() {
     until(&mut client, |event| waiting(event).is_some()).await;
 
     let cancelled = client
-        .call::<AgentCancel>(AgentCancelParams { run_id: run.id })
+        .call::<AgentCancel>(AgentCancelParams {
+            run_id: run.id,
+            from: None,
+        })
         .await
         .unwrap()
         .run;

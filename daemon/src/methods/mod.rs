@@ -125,13 +125,9 @@ pub(crate) async fn dispatch(context: Context, request: Request) -> Reply {
         name if name.starts_with("agent/") => agent_method(&context, &request)
             .await
             .unwrap_or_else(|| Err(ErrorObject::method_not_found(name))),
-        PrView::NAME => handle::<PrView, _, _>(&request, |p| pr::view(&context, p)).await,
-        PrAct::NAME => handle::<PrAct, _, _>(&request, |p| pr::act(&context, p)).await,
-        PrDiff::NAME => handle::<PrDiff, _, _>(&request, |p| pr::diff(&context, p)).await,
-        PrLink::NAME => handle::<PrLink, _, _>(&request, |p| pr::link(&context, p, true)).await,
-        PrUnlink::NAME => {
-            handle::<PrUnlink, _, _>(&request, |p| pr::link(&context, p, false)).await
-        }
+        name if name.starts_with("pr/") => pr_method(&context, &request)
+            .await
+            .unwrap_or_else(|| Err(ErrorObject::method_not_found(name))),
         GithubStatusGet::NAME => {
             handle::<GithubStatusGet, _, _>(&request, |p| accounts::github(&context, p)).await
         }
@@ -187,6 +183,18 @@ async fn host_settings_method(
         HostSettingsSet::NAME => {
             handle::<HostSettingsSet, _, _>(request, |p| host::set_settings(context, p)).await
         }
+        _ => return None,
+    })
+}
+
+/// Answers a `pr/*` method, or `None` if there is no such method.
+async fn pr_method(context: &Context, request: &Request) -> Option<Result<Value, ErrorObject>> {
+    Some(match request.method.as_str() {
+        PrView::NAME => handle::<PrView, _, _>(request, |p| pr::view(context, p)).await,
+        PrAct::NAME => handle::<PrAct, _, _>(request, |p| pr::act(context, p)).await,
+        PrDiff::NAME => handle::<PrDiff, _, _>(request, |p| pr::diff(context, p)).await,
+        PrLink::NAME => handle::<PrLink, _, _>(request, |p| pr::link(context, p, true)).await,
+        PrUnlink::NAME => handle::<PrUnlink, _, _>(request, |p| pr::link(context, p, false)).await,
         _ => return None,
     })
 }

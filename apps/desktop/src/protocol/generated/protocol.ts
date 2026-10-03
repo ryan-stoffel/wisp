@@ -273,6 +273,17 @@ export type ParallaxRequests = {
 	 */
 	"pr/diff": { params: PrViewParams, result: PrDiffResult },
 	/**
+	 * `pr/link`: links a GitHub pull request URL to a run, unless it already is, and reports
+	 * the run as `agent.updated` (0041). Fails with `invalidParams` for another URL. Gated
+	 * on the `threadTools` capability, like `pr/unlink`.
+	 */
+	"pr/link": { params: PrViewParams, result: AgentRunResult },
+	/**
+	 * `pr/unlink`: removes a pull request URL from a run's links. Unlinking one that isn't
+	 * linked changes nothing.
+	 */
+	"pr/unlink": { params: PrViewParams, result: AgentRunResult },
+	/**
 	 * `project/delete`: deletes a project with every run in it, stopping their CLIs first
 	 * (PLX-338). Fails with `projectNotFound` for an unknown project or a repo entry's id.
 	 * Gated on the `projectDelete` capability.
@@ -1701,6 +1712,12 @@ export type AgentSendParams = {
 	 * the run's CLI gets their summaries when it's sent.
 	 */
 	threads?: Array<RunId>,
+	/**
+	 * The thread sending it through its Parallax tools (0041), which the turn's `turnStarted`
+	 * names. It must be a run on the host, or the send fails with `runNotFound`. Absent for the
+	 * user's own message. Behind `threadTools`.
+	 */
+	from?: RunId,
 };
 
 /**
@@ -1718,6 +1735,12 @@ export type AgentCancelParams = {
 	 * The run.
 	 */
 	runId: RunId,
+	/**
+	 * The thread stopping it through its Parallax tools (0041): a running run logs an
+	 * `interrupted` item naming it. It must be a run on the host, or the cancel fails with
+	 * `runNotFound`. Behind `threadTools`.
+	 */
+	from?: RunId,
 };
 
 /**
@@ -2001,6 +2024,12 @@ export type AgentOutputItem = { "kind": "sessionStarted",
 	 */
 	wake?: boolean,
 	/**
+	 * The thread that sent a follow-up through its Parallax tools (0041), as `agent/send`'s
+	 * `from` named it. Absent for the user's own message and for the prompt's turn, whose
+	 * sender is the thread's `parent`.
+	 */
+	from?: RunId,
+	/**
 	 * The images sent with the turn's message, the prompt's or a follow-up's, in order, for
 	 * `agent/image` (RYA-191). Absent when it had none.
 	 */
@@ -2079,7 +2108,11 @@ export type AgentOutputItem = { "kind": "sessionStarted",
 	/**
 	 * The follow-up's turn id.
 	 */
-	turnId: TurnId, } | { "kind": "usage",
+	turnId: TurnId, } | { "kind": "interrupted",
+	/**
+	 * The thread that stopped it.
+	 */
+	from: RunId, } | { "kind": "usage",
 	/**
 	 * The model, when the vendor breaks usage down by model.
 	 */
@@ -3285,7 +3318,7 @@ export type RepoRef = {
 };
 
 /**
- * Params of `pr/view`, and of `pr/diff`.
+ * Params of `pr/view`, of `pr/diff`, and of `pr/link` and `pr/unlink`.
  */
 export type PrViewParams = {
 	/**

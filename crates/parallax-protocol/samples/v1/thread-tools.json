@@ -1,0 +1,151 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "agent/send",
+    "params": {
+      "runId": "01a0f300-2b3c-7d4e-9f50-6a7b8c9d0e02",
+      "turnId": "01a0f300-4d5e-7f60-9b72-8c9d0e1f2a04",
+      "text": "Add a summary.",
+      "from": "01a0f300-1a2b-7c3d-8e4f-5a6b7c8d9e01"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "run": {
+        "id": "01a0f300-2b3c-7d4e-9f50-6a7b8c9d0e02",
+        "project": "01a0d5c1-1a2b-7c3d-8e4f-5a6b7c8d9e03",
+        "prompt": "Write the notes.",
+        "policy": "workspaceWrite",
+        "status": "running",
+        "backend": "claude",
+        "accountId": "claude",
+        "createdAt": "2026-10-03T12:10:00Z",
+        "updatedAt": "2026-10-03T12:11:00Z"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0f300-3c4d-7e5f-8a61-7b8c9d0e1f03",
+      "seq": 60,
+      "time": "2026-10-03T12:11:00Z",
+      "project": "01a0d5c1-1a2b-7c3d-8e4f-5a6b7c8d9e03",
+      "event": {
+        "kind": "agent.output",
+        "runId": "01a0f300-2b3c-7d4e-9f50-6a7b8c9d0e02",
+        "items": [
+          {
+            "kind": "turnStarted",
+            "turnId": "01a0f300-4d5e-7f60-9b72-8c9d0e1f2a04",
+            "text": "Add a summary.",
+            "from": "01a0f300-1a2b-7c3d-8e4f-5a6b7c8d9e01"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "agent/cancel",
+    "params": {
+      "runId": "01a0f300-2b3c-7d4e-9f50-6a7b8c9d0e02",
+      "from": "01a0f300-1a2b-7c3d-8e4f-5a6b7c8d9e01"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "result": {
+      "run": {
+        "id": "01a0f300-2b3c-7d4e-9f50-6a7b8c9d0e02",
+        "project": "01a0d5c1-1a2b-7c3d-8e4f-5a6b7c8d9e03",
+        "prompt": "Write the notes.",
+        "policy": "workspaceWrite",
+        "status": "running",
+        "backend": "claude",
+        "accountId": "claude",
+        "createdAt": "2026-10-03T12:10:00Z",
+        "updatedAt": "2026-10-03T12:11:00Z"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0f300-3c4d-7e5f-8a61-7b8c9d0e1f03",
+      "seq": 61,
+      "time": "2026-10-03T12:11:05Z",
+      "project": "01a0d5c1-1a2b-7c3d-8e4f-5a6b7c8d9e03",
+      "event": {
+        "kind": "agent.output",
+        "runId": "01a0f300-2b3c-7d4e-9f50-6a7b8c9d0e02",
+        "items": [
+          {
+            "kind": "interrupted",
+            "from": "01a0f300-1a2b-7c3d-8e4f-5a6b7c8d9e01"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "pr/link",
+    "params": {
+      "runId": "01a0f300-2b3c-7d4e-9f50-6a7b8c9d0e02",
+      "url": "https://github.com/me/app/pull/7"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "result": {
+      "run": {
+        "id": "01a0f300-2b3c-7d4e-9f50-6a7b8c9d0e02",
+        "project": "01a0d5c1-1a2b-7c3d-8e4f-5a6b7c8d9e03",
+        "prompt": "Write the notes.",
+        "policy": "workspaceWrite",
+        "status": "cancelled",
+        "backend": "claude",
+        "accountId": "claude",
+        "pullRequests": ["https://github.com/me/app/pull/7"],
+        "createdAt": "2026-10-03T12:10:00Z",
+        "updatedAt": "2026-10-03T12:12:00Z"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "pr/unlink",
+    "params": {
+      "runId": "01a0f300-2b3c-7d4e-9f50-6a7b8c9d0e02",
+      "url": "https://github.com/me/app/pull/7"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "result": {
+      "run": {
+        "id": "01a0f300-2b3c-7d4e-9f50-6a7b8c9d0e02",
+        "project": "01a0d5c1-1a2b-7c3d-8e4f-5a6b7c8d9e03",
+        "prompt": "Write the notes.",
+        "policy": "workspaceWrite",
+        "status": "cancelled",
+        "backend": "claude",
+        "accountId": "claude",
+        "createdAt": "2026-10-03T12:10:00Z",
+        "updatedAt": "2026-10-03T12:12:30Z"
+      }
+    }
+  }
+]

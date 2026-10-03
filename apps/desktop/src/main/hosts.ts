@@ -79,6 +79,8 @@ const rendererMethods: Record<RendererMethod, true> = {
   "pr/view": true,
   "pr/act": true,
   "pr/diff": true,
+  "pr/link": true,
+  "pr/unlink": true,
   "agent/commands": true,
   "repo/files": true,
   "github/status": true,

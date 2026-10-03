@@ -75,8 +75,8 @@ const PROMPT_PREVIEW_BYTES: usize = 500;
 const LAST_OUTPUT_BYTES: usize = 8 * 1024;
 
 /// How long `thread_wait` waits without a `timeoutSeconds`, and the most it takes.
-const DEFAULT_WAIT: Duration = Duration::from_secs(300);
-const MAX_WAIT: Duration = Duration::from_secs(1800);
+const DEFAULT_WAIT: Duration = Duration::from_mins(5);
+const MAX_WAIT: Duration = Duration::from_mins(30);
 
 /// How often `thread_wait` checks the thread.
 const POLL: Duration = Duration::from_millis(500);
@@ -390,18 +390,10 @@ async fn call_tool(binding: &Binding, name: &str, arguments: Value) -> Result<St
         "thread_list" => {
             let ListArgs { include_archived } = parse(arguments)?;
             let mut plxd = Plxd::open(&binding.socket).await?;
-            let (listed, runs) = host(&mut plxd).await?;
-            let threads: Vec<Value> = listed
-                .threads
-                .iter()
-                .rev()
-                .filter(|thread| include_archived || !thread.archived)
-                .filter_map(|thread| {
-                    let run = runs.iter().find(|run| run.id == thread.id)?;
-                    Some(describe(run, Some(thread), &listed.repos, caller))
-                })
-                .collect();
-            Ok(pretty(&json!({"threads": threads})))
+            let mut threads = plxd.call::<ThreadList>(ThreadListParams {}).await?.threads;
+            threads.reverse();
+            threads.retain(|thread| include_archived || !thread.archived);
+            described(&mut plxd, &threads, caller).await
         }
         "thread_read" => {
             let ReadArgs { run_id, after } = parse(arguments)?;
@@ -415,16 +407,7 @@ async fn call_tool(binding: &Binding, name: &str, arguments: Value) -> Result<St
             let found = plxd
                 .call::<ThreadSearch>(ThreadSearchParams { query, limit })
                 .await?;
-            let (listed, runs) = host(&mut plxd).await?;
-            let threads: Vec<Value> = found
-                .threads
-                .iter()
-                .filter_map(|thread| {
-                    let run = runs.iter().find(|run| run.id == thread.id)?;
-                    Some(describe(run, Some(thread), &listed.repos, caller))
-                })
-                .collect();
-            Ok(pretty(&json!({"threads": threads})))
+            described(&mut plxd, &found.threads, caller).await
         }
         "thread_launch" => launch(binding, parse(arguments)?).await,
         "thread_send" => {
@@ -496,6 +479,19 @@ async fn call_tool(binding: &Binding, name: &str, arguments: Value) -> Result<St
         }
         other => Err(format!("no tool is named {other:?}")),
     }
+}
+
+/// `{"threads": [...]}`, each of `threads` with its run, in their order.
+async fn described(plxd: &mut Plxd, threads: &[Thread], caller: RunId) -> Result<String, String> {
+    let (listed, runs) = host(plxd).await?;
+    let threads: Vec<Value> = threads
+        .iter()
+        .filter_map(|thread| {
+            let run = runs.iter().find(|run| run.id == thread.id)?;
+            Some(describe(run, Some(thread), &listed.repos, caller))
+        })
+        .collect();
+    Ok(pretty(&json!({"threads": threads})))
 }
 
 /// Refuses a tool that would act on the caller itself: a thread can't wait on, message, or stop
@@ -574,10 +570,9 @@ async fn read(plxd: &mut Plxd, run_id: RunId, after: u64) -> Result<String, Stri
         for logged in &events.events {
             let text = render.event(&logged.event);
             if !page.is_empty() && page.len() + text.len() > PAGE_BYTES {
-                page.push_str(&format!(
-                    "\n[more: call thread_read with after={cursor} for the next page]\n"
+                return Ok(format!(
+                    "{page}\n[more: call thread_read with after={cursor} for the next page]\n"
                 ));
-                return Ok(page);
             }
             page.push_str(&text);
             cursor = logged.seq;
