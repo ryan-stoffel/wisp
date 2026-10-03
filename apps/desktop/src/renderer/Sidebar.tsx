@@ -35,6 +35,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import {
+  Fragment,
   useEffect,
   useId,
   useRef,
@@ -60,6 +61,7 @@ import {
   attentionOf,
   initials,
   lastPrompt,
+  mostUrgent,
   projectAttention,
   snoozeChoices,
   snoozed,
@@ -264,7 +266,8 @@ type Item = (
 /**
  * Search, the Repos filter, a menu to create a Project or add a repository, and New thread, then
  * every host's Projects in a collapsible section, then their threads, each the most recently active first (0033). A thread row shows its repo, how long ago
- * it was prompted or what it asks of the user, its title, branch, and provider. Snoozed and
+ * it was prompted or what it asks of the user, its title, branch, and provider. A thread's children
+ * (0041) nest under it, collapsed behind their count and most urgent status. Snoozed and
  * Archived threads sit under the list. Resting on a thread shows a card with where and how it runs.
  */
 export function ThreadList({
@@ -301,6 +304,9 @@ export function ThreadList({
     setCollapsedState(next);
     saveStored(collapsedKey, String(next));
   };
+  // The threads whose children show, by key, and the open thread whose groups were last opened.
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  const [revealed, setRevealed] = useState<string>();
   const [card, setCard] = useState<{ item: Item; top: number; left: number }>();
   const cardTimer = useRef<number>(undefined);
   // Snoozes end on time even with nothing else changing.
@@ -365,9 +371,44 @@ export function ThreadList({
   // them all.
   const hasProjects = items.some((i) => i.kind === "project");
 
+  // A thread whose parent is in the list nests under it (0041), oldest first, collapsed until
+  // opened or until one of them is the open thread.
+  const parentKey = (i: Item) =>
+    i.kind === "thread" && i.view.lineage && i.thread.parent
+      ? `${i.host.id}/${i.thread.parent}`
+      : undefined;
+  const inList = new Set(threads.map((i) => i.key));
+  const children = new Map<string, Item[]>();
+  const created = (i: Item) => (i.kind === "thread" ? i.thread.createdAt : "");
+  for (const i of [...threads].sort((a, b) => created(a).localeCompare(created(b)))) {
+    const key = parentKey(i);
+    if (key && inList.has(key)) children.set(key, [...(children.get(key) ?? []), i]);
+  }
+  const topThreads = threads.filter((i) => !inList.has(parentKey(i) ?? ""));
+  const selectedKey = selection.kind === "thread" ? `${host.id}/${selection.threadId}` : undefined;
+  if (selectedKey !== revealed) {
+    setRevealed(selectedKey);
+    // Opens the groups the open thread is in, so its row shows. A loop of parents stops.
+    const byKey = new Map(threads.map((i) => [i.key, i]));
+    const opened = new Set(expanded);
+    const chosen = selectedKey === undefined ? undefined : byKey.get(selectedKey);
+    let up = chosen && parentKey(chosen);
+    while (up && byKey.has(up) && !opened.has(up)) {
+      opened.add(up);
+      up = parentKey(byKey.get(up)!);
+    }
+    if (opened.size !== expanded.size) setExpanded(opened);
+  }
+  // The rows shown, in order, a group's children after their parent while it's open.
+  const flat = (i: Item): Item[] => [
+    i,
+    ...(expanded.has(i.key) ? (children.get(i.key) ?? []).flatMap(flat) : []),
+  ];
+  const threadRows = topThreads.flatMap(flat);
+
   // Mod+1 to Mod+9 open the first nine rows shown, which show their badges while Mod is held: the
   // Projects section's, unless it's collapsed, then the threads'.
-  const listed = [...(collapsed ? [] : projects), ...threads];
+  const listed = [...(collapsed ? [] : projects), ...threadRows];
   const modHeld = useModHeld();
   const openItem = (item: Item) =>
     onSelect(
@@ -410,7 +451,8 @@ export function ThreadList({
     deleteDialog.current?.showModal();
   };
 
-  const row = (item: Item) => {
+  const row = (item: Item) => itemRow(item, false);
+  const itemRow = (item: Item, nested: boolean) => {
     const n = modHeld ? listed.indexOf(item) : -1;
     const badge = n >= 0 && n < 9 ? <RowBadge index={n} /> : undefined;
     const selected =
@@ -448,6 +490,7 @@ export function ThreadList({
         attention={item.attention}
         selected={selected}
         badge={badge}
+        nested={nested}
         snoozable={view.attention}
         onOpen={() => openItem(item)}
         onArchive={async () => setActionError(await view.archive(t.id, !t.archived))}
@@ -458,6 +501,55 @@ export function ThreadList({
         onRest={(el) => showCard(item, el)}
         onLeave={hideCard}
       />
+    );
+  };
+
+  // Every thread under `key`, at any depth, for its group's most urgent status.
+  const descendants = (key: string): Item[] =>
+    (children.get(key) ?? []).flatMap((c) => [c, ...descendants(c.key)]);
+  // A thread's row, then with children, a toggle with their count and most urgent status, and
+  // while it's open, their rows indented on a guide line.
+  const tree = (item: Item, nested: boolean): ReactNode => {
+    const kids = children.get(item.key);
+    if (!kids) return itemRow(item, nested);
+    const isOpen = expanded.has(item.key);
+    const toggle = () => {
+      const next = new Set(expanded);
+      if (!next.delete(item.key)) next.add(item.key);
+      setExpanded(next);
+    };
+    const urgent = mostUrgent(descendants(item.key).map((c) => c.attention));
+    return (
+      <Fragment key={item.key}>
+        {itemRow(item, nested)}
+        <li>
+          <button
+            type="button"
+            aria-expanded={isOpen}
+            onClick={toggle}
+            className="flex w-full items-center gap-1 rounded-md py-0.5 pr-2 pl-2 text-left text-[11.5px] text-faint-foreground hover:bg-hover hover:text-foreground"
+          >
+            <ChevronRight
+              aria-hidden
+              className={`size-3 shrink-0 transition-transform ${isOpen ? "rotate-90" : ""}`}
+            />
+            {kids.length} {kids.length === 1 ? "thread" : "threads"}
+            {urgent !== "settled" && (
+              <span className="ml-auto">
+                <AttentionBadge attention={urgent} />
+              </span>
+            )}
+          </button>
+          {isOpen && (
+            <ul
+              aria-label={`Threads ${titleOf(item)} started`}
+              className="mt-0.5 ml-3 flex flex-col gap-0.5 border-l border-border pl-1.5"
+            >
+              {kids.map((k) => tree(k, true))}
+            </ul>
+          )}
+        </li>
+      </Fragment>
     );
   };
 
@@ -573,7 +665,7 @@ export function ThreadList({
             </div>
             <div id={projectsId} hidden={collapsed}>
               <ul aria-label="Projects" className="flex flex-col gap-0.5">
-                {projects.map(row)}
+                {projects.map((i) => row(i))}
               </ul>
               {projects.length === 0 && <p className={emptyNote}>Nothing matches</p>}
             </div>
@@ -581,7 +673,7 @@ export function ThreadList({
           </>
         )}
         <ul aria-label="Threads" className="flex flex-col gap-0.5">
-          {threads.map(row)}
+          {topThreads.map((i) => tree(i, false))}
         </ul>
         {threads.length === 0 && (
           <p className={emptyNote}>
@@ -1158,6 +1250,7 @@ function ThreadRow({
   attention,
   selected,
   badge,
+  nested,
   snoozable,
   onOpen,
   onArchive,
@@ -1174,6 +1267,8 @@ function ThreadRow({
   selected: boolean;
   /** Its Mod+number badge, shown in place of its status while Mod is held. */
   badge?: ReactNode;
+  /** Under its parent's row, which names the repo: its status goes beside its title instead. */
+  nested?: boolean;
   /** Whether its plxd keeps seen and snooze state (`threadAttention`). */
   snoozable: boolean;
   onOpen: () => void;
@@ -1211,6 +1306,7 @@ function ThreadRow({
     ) : (
       <AttentionBadge attention={attention} since={lastPrompt(thread)} />
     ));
+  const titleColor = selected || attention !== "settled" ? "text-foreground" : "text-foreground/70";
   return (
     <li
       data-kind="thread"
@@ -1228,13 +1324,26 @@ function ThreadRow({
         }}
         className={`flex w-full flex-col gap-0.5 rounded-lg px-2 py-1.5 text-left hover:bg-hover ${selected ? current : ""}`}
       >
-        <RowHead repo={repo} status={status} />
-        <span
-          data-title
-          className={`w-full truncate text-[13px] ${selected || attention !== "settled" ? "text-foreground" : "text-foreground/70"}`}
-        >
-          {title}
-        </span>
+        {nested ? (
+          <span className="flex w-full items-center gap-2 group-has-[:focus-visible]/row:pr-34 group-hover/row:pr-34">
+            <span data-title className={`min-w-0 flex-1 truncate text-[13px] ${titleColor}`}>
+              {title}
+            </span>
+            <span
+              data-status
+              className="shrink-0 text-[11.5px] text-faint-foreground group-has-[:focus-visible]/row:hidden group-hover/row:hidden"
+            >
+              {status}
+            </span>
+          </span>
+        ) : (
+          <>
+            <RowHead repo={repo} status={status} />
+            <span data-title className={`w-full truncate text-[13px] ${titleColor}`}>
+              {title}
+            </span>
+          </>
+        )}
         {hasDetails && (
           <span className="flex w-full items-center gap-2 text-[11.5px] text-faint-foreground">
             <span className="min-w-0 flex-1 truncate">{run?.branch}</span>

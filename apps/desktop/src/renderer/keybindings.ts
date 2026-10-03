@@ -10,7 +10,10 @@ export type Command =
   | "terminal"
   | "open"
   | "settings"
-  | "usage";
+  | "usage"
+  | "parentThread"
+  | "nextThread"
+  | "previousThread";
 
 /**
  * Every rebindable command, in Settings > Keybinds' order, with its default bindings. "Mod" is
@@ -26,6 +29,10 @@ export const commands: { id: Command; name: string; defaults: string[] }[] = [
   { id: "open", name: "Open folder in default app", defaults: ["Mod+Alt+KeyO"] },
   { id: "settings", name: "Open Settings", defaults: ["Mod+Comma"] },
   { id: "usage", name: "Open Usage", defaults: ["Mod+Alt+KeyU"] },
+  // A thread's lineage (0041): from a parent, next and previous open its first and last child.
+  { id: "parentThread", name: "Go to parent thread", defaults: ["Mod+Alt+ArrowUp"] },
+  { id: "nextThread", name: "Next sibling thread", defaults: ["Mod+Alt+ArrowRight"] },
+  { id: "previousThread", name: "Previous sibling thread", defaults: ["Mod+Alt+ArrowLeft"] },
 ];
 
 const order = ["Ctrl", "Alt", "Shift", "Meta"];
@@ -52,7 +59,16 @@ export function keybindingOf(e: KeyPress): string | undefined {
 }
 
 const macSymbols: Record<string, string> = { Ctrl: "⌃", Alt: "⌥", Shift: "⇧", Meta: "⌘" };
-const keyNames: Record<string, string> = { Comma: ",", Backquote: "`", Period: ".", Slash: "/" };
+const keyNames: Record<string, string> = {
+  Comma: ",",
+  Backquote: "`",
+  Period: ".",
+  Slash: "/",
+  ArrowUp: "↑",
+  ArrowDown: "↓",
+  ArrowLeft: "←",
+  ArrowRight: "→",
+};
 
 /** A keybinding as the OS writes it: "⌃⇧T" on macOS, "Ctrl+Shift+T" elsewhere. */
 export function formatKeybinding(keybinding: string): string {

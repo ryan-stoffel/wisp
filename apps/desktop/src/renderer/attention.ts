@@ -26,6 +26,13 @@ export function projectAttention(runs: AgentRun[], asks: (runId: string) => numb
   return runs.some((r) => isRunning(r.status)) ? "working" : "settled";
 }
 
+// Most urgent first: what waits on the user, then news, then work still going.
+const urgency: Attention[] = ["needsYou", "failed", "done", "working", "settled"];
+
+/** The most urgent of `attentions`, as a collapsed group of threads shows it; settled for none. */
+export const mostUrgent = (attentions: Attention[]): Attention =>
+  urgency.find((a) => attentions.includes(a)) ?? "settled";
+
 /** Whether a thread is snoozed at `now`. One that needs the user wakes early. */
 export const snoozed = (thread: Thread, attention: Attention, now = Date.now()) =>
   !!thread.snoozedUntil && Date.parse(thread.snoozedUntil) > now && attention !== "needsYou";

@@ -107,6 +107,24 @@ test("a thread's title is the first line of its run's prompt", () => {
   expect(state.titles).toEqual({ [run.id]: "Fix the flaky attach test." });
 });
 
+test("a thread's own title wins over its run's, a later run list keeps it, and clearing it falls back", () => {
+  const titled = { ...started.thread, title: "Flaky attach test" };
+  let state = threadsReducer(emptyThreads, {
+    type: "snapshot",
+    projects: [],
+    repos: [],
+    threads: [titled],
+    runs: [started.run],
+  });
+  expect(state.titles[titled.id]).toBe("Flaky attach test");
+  state = threadsReducer(state, { type: "runs", runs: [started.run] });
+  expect(state.titles[titled.id]).toBe("Flaky attach test");
+  state = apply(state, { kind: "thread.updated", thread: { ...titled, title: "Renamed" } });
+  expect(state.titles[titled.id]).toBe("Renamed");
+  state = apply(state, { kind: "thread.updated", thread: started.thread });
+  expect(state.titles[titled.id]).toBe(started.run.prompt.trim().split("\n")[0]);
+});
+
 test("runs are kept by id: a later list replaces the runs it has, and keeps the rest", () => {
   const other = { ...started.run, id: "other" };
   let state = threadsReducer(emptyThreads, {
