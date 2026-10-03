@@ -62,6 +62,29 @@ impl WorktreeManager {
         .await?;
         Ok(())
     }
+
+    /// Fetches `commit` and what it needs from the repository at `from` into the scratch
+    /// repository at `path`, so a fork of a thread with no repo can cut its worktree from its
+    /// parent's latest commit (0050).
+    ///
+    /// # Errors
+    ///
+    /// [`WorktreeError::GitFailed`], [`WorktreeError::Timeout`], or [`WorktreeError::Spawn`]
+    /// from running git.
+    pub async fn fetch_commit(
+        &self,
+        path: &Path,
+        from: &Path,
+        commit: &str,
+    ) -> Result<(), WorktreeError> {
+        let from = from.to_string_lossy();
+        self.run_git_ok(
+            path,
+            &["fetch", "--quiet", "--no-tags", "--", &from, commit],
+        )
+        .await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -95,5 +118,24 @@ mod tests {
             .await
             .unwrap();
         assert!(created.path.join(".git").exists());
+
+        // A fork's scratch repository takes its parent's latest commit, which no branch names.
+        let commit = std::process::Command::new("git")
+            .args(["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "work"])
+            .current_dir(&scratch)
+            .output()
+            .unwrap();
+        let commit = String::from_utf8(commit.stdout).unwrap().trim().to_owned();
+        let fork = dir.path().join("data/scratch/fork");
+        manager.init_scratch(&fork).await.unwrap();
+        manager
+            .fetch_commit(&fork, &scratch, &commit)
+            .await
+            .unwrap();
+        let cut = manager
+            .create(&fork, parallax_protocol::RunId::generate(), Some(&commit))
+            .await
+            .unwrap();
+        assert_eq!(cut.base, commit);
     }
 }

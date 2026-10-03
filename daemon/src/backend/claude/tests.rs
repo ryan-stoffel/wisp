@@ -1120,6 +1120,25 @@ async fn a_result_without_ids_or_a_queue_count_ends_every_turn() {
     assert!(matches!(outcome(&all), Outcome::Completed { .. }));
 }
 
+/// A fork's first run continues a copy of the parent's session (0050).
+#[test]
+fn a_forks_first_run_forks_the_session() {
+    let mut request = request(Path::new("/repo"));
+    request.resume = Some(Resume {
+        fork: true,
+        ..Resume::new(SESSION)
+    });
+    let args: Vec<String> = super::arguments(&request)
+        .unwrap()
+        .into_iter()
+        .map(|arg| arg.into_string().unwrap())
+        .collect();
+    assert_eq!(
+        &args[args.len() - 3..],
+        ["--resume", SESSION, "--fork-session"]
+    );
+}
+
 #[tokio::test]
 async fn a_resumed_session_reports_only_what_it_adds() {
     let fake = Fake::new("resume");
@@ -1131,6 +1150,7 @@ async fn a_resumed_session_reports_only_what_it_adds() {
     request.resume = Some(Resume {
         session_id: SESSION.into(),
         usage_totals: baseline,
+        fork: false,
     });
     let all = run(&fake, request).await;
     assert_eq!(&fake.argv()[fake.argv().len() - 2..], ["--resume", SESSION]);
@@ -1605,6 +1625,7 @@ async fn a_resumed_session_starts_on_images_alone() {
         resume: Some(Resume {
             session_id: SESSION.into(),
             usage_totals: Vec::new(),
+            fork: false,
         }),
         ..request(&fake.root())
     };

@@ -308,6 +308,9 @@ pub struct Resume {
     /// run reports only what it adds, even for vendors whose totals carry over into a resumed
     /// session (Claude, Codex) and across a plxd restart. Empty for a session with no usage.
     pub usage_totals: Vec<ModelUsage>,
+    /// Continue a copy of the session under a new id, leaving it as it is: a fork's first run
+    /// (0050). Only a backend whose [`Capabilities::fork`] is set gets it.
+    pub fork: bool,
 }
 
 impl Resume {
@@ -316,6 +319,7 @@ impl Resume {
         Self {
             session_id: session_id.into(),
             usage_totals: Vec::new(),
+            fork: false,
         }
     }
 }
@@ -463,6 +467,8 @@ pub struct Capabilities {
     /// OS, so M3's runner may start workers on it. Cursor never does: it runs only threads
     /// (0036).
     pub worker_sandbox: bool,
+    /// [`Resume::fork`] works for a thread's run (0050).
+    pub fork: bool,
 }
 
 /// Why a run could not start.

@@ -106,6 +106,7 @@ pub(crate) fn initialize(
 /// `threadLineage` (PLX-369, 0041): `parent`, `forkedFrom`, `title`, and `settled` on `Thread`,
 /// `thread/start`'s `parent` and `title`, and `thread/update`'s `title` and `settled`, which an
 /// older plxd would silently drop.
+/// `threadFork` (PLX-375, 0050): `thread/fork`.
 /// `checkout`: `thread/start` takes `checkout`, to work in the repo's own checkout instead of a
 /// new worktree, and `AgentRun` reports it; an older plxd would silently make a worktree.
 /// `repoRefs`: `repo/refs`, and `thread/start` takes `base` and `checkoutRef`, which an older plxd
@@ -174,6 +175,7 @@ fn capabilities_advertised() -> Capabilities {
                 ("maxSummaryBytes".to_owned(), attached::SUMMARY_BYTES.into()),
             ]),
         ),
+        ("threadFork".to_owned(), serde_json::Map::new()),
         ("threadLineage".to_owned(), serde_json::Map::new()),
         ("threads".to_owned(), serde_json::Map::new()),
     ]))

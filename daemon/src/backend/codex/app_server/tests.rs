@@ -256,6 +256,7 @@ async fn a_resumed_thread_without_approvals_never_asks_and_declines_what_codex_d
                 ..Usage::default()
             },
         }],
+        fork: false,
     });
     let events = rest(&mut backend.start(request).unwrap().events).await;
     assert!(
@@ -301,6 +302,19 @@ async fn a_resumed_thread_without_approvals_never_asks_and_declines_what_codex_d
     );
     assert_eq!(written[5]["id"], 1);
     assert_eq!(written[5]["error"]["code"], -32601);
+}
+
+/// A fork's first run forks the parent's thread rather than resuming it (0050).
+#[test]
+fn a_forks_first_run_forks_the_thread() {
+    let mut request = request(AgentPermission::Edit);
+    request.resume = Some(Resume {
+        fork: true,
+        ..Resume::new("t-0")
+    });
+    let (method, params) = super::thread_params(&request).unwrap();
+    assert_eq!(method, "thread/fork");
+    assert_eq!(params["threadId"], "t-0");
 }
 
 #[test]

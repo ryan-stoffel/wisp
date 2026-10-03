@@ -11,7 +11,8 @@
 //! [`CancelSwitch`] stop the process directly, and leaves usage totals to [`EventSink`].
 //!
 //! The child gets its arguments as the vendor CLIs would: the resume id, the prompt as a JSON
-//! string, the policy, and the model. Follow-ups reach it on stdin, one JSON string per line, and
+//! string, the policy, and the model. A fork's run gets no resume id, so it starts the script's
+//! session, and [`FORKED_FROM_ENV`] names the session it forked. Follow-ups reach it on stdin, one JSON string per line, and
 //! so do answers to its permission requests (RYA-222), each a JSON object in that string. As
 //! Claude Code without its prompt channel denies instead of asking, a run without
 //! [`RunRequest::approvals`] skips the script's requests and takes no answers.
@@ -59,6 +60,9 @@ pub const API_KEY_ENV: &str = "FAKE_API_KEY";
 
 /// The variable the fake CLI takes a second account's configuration folder from.
 pub const CONFIG_HOME_ENV: &str = "FAKE_CONFIG_HOME";
+
+/// The variable naming the session a fork's run forked (0050), which `echoEnv` can print.
+pub const FORKED_FROM_ENV: &str = "FAKE_FORKED_FROM";
 
 /// A fake CLI's script.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
@@ -281,6 +285,7 @@ impl Backend for FakeBackend {
             reports_cost: true,
             rate_limits: true,
             worker_sandbox: true,
+            fork: true,
         }
     }
 
@@ -305,10 +310,15 @@ impl Backend for FakeBackend {
             ToolPolicy::NoWrite => "no-write",
             ToolPolicy::WorkspaceWrite => "workspace-write",
         };
+        // A fork starts the script's own session, and says which one it forked (0050).
         let session = request
             .resume
             .as_ref()
+            .filter(|resume| !resume.fork)
             .map(|resume| resume.session_id.clone());
+        if let Some(resume) = request.resume.as_ref().filter(|resume| resume.fork) {
+            spec.inject.set(FORKED_FROM_ENV, &resume.session_id);
+        }
         spec.args = vec![
             "-c".into(),
             script.into(),

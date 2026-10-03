@@ -1072,7 +1072,8 @@ impl Actor {
     /// `images`, after storing `changes` to its options, which the new process runs with. It
     /// resumes the run's vendor session, on `account` if that's another of the same backend's. On
     /// another backend's account, or with no session to resume, a new session starts, told the
-    /// conversation so far.
+    /// conversation so far. A fork's first message forks its parent's session instead, when
+    /// [`Actor::fork_source`] finds one (0050).
     async fn resume(
         &mut self,
         turn_id: TurnId,
@@ -1143,20 +1144,14 @@ impl Actor {
             .store_options(prepared.resolved.backend(), changes)
             .await?;
         let message = text;
-        let (prompt, resume) = if let Some(session_id) = session_id {
-            info!(run = %self.id, "resuming an agent run's session");
-            (sent, Some(self.resume_of(session_id).await?))
-        } else {
-            info!(run = %self.id, from, to = backend, "starting a new session for an agent run");
-            match self
-                .handoff_prompt(&from, &sent, &prepared.place, paths.as_ref())
-                .await
-            {
-                Ok(prompt) => (prompt, None),
-                Err(error) => {
-                    self.move_back(moved_from).await;
-                    return Err(error);
-                }
+        let opening = self
+            .opening(session_id, &from, sent, &prepared, paths.as_ref())
+            .await;
+        let (prompt, resume) = match opening {
+            Ok(opening) => opening,
+            Err(error) => {
+                self.move_back(moved_from).await;
+                return Err(error);
             }
         };
         let fresh = resume.is_none();
@@ -1266,7 +1261,80 @@ impl Actor {
         Ok(Resume {
             session_id,
             usage_totals: totals.into_iter().map(model_usage).collect(),
+            fork: false,
         })
+    }
+
+    /// The first message and the session of the run's next CLI, on `prepared`'s backend: `text`
+    /// with the run's session `session_id` to resume, or with a fork's parent session to fork
+    /// ([`Actor::fork_source`]), or else a new session told the conversation so far, which ran
+    /// on `from`.
+    async fn opening(
+        &mut self,
+        session_id: Option<String>,
+        from: &str,
+        text: String,
+        prepared: &Prepared,
+        paths: Option<&(PathBuf, PathBuf)>,
+    ) -> Result<(String, Option<Resume>), ErrorObject> {
+        if let Some(session_id) = session_id {
+            info!(run = %self.id, "resuming an agent run's session");
+            return Ok((text, Some(self.resume_of(session_id).await?)));
+        }
+        if let Some(session_id) = self.fork_source(&prepared.resolved).await? {
+            info!(run = %self.id, "forking the parent thread's session");
+            let resume = Resume {
+                fork: true,
+                ..self.resume_of(session_id).await?
+            };
+            return Ok((text, Some(resume)));
+        }
+        let to = prepared.resolved.backend().name();
+        info!(run = %self.id, from, to, "starting a new session for an agent run");
+        let prompt = self
+            .handoff_prompt(from, &text, &prepared.place, paths)
+            .await?;
+        Ok((prompt, None))
+    }
+
+    /// The parent's session that a fork's first CLI, on `resolved`'s backend and account,
+    /// continues a copy of (0050): when the run is a fork that has sent nothing yet, the backend
+    /// can fork, and the parent still runs on that backend and account, isn't running, and has
+    /// had no turn since the one the fork was made at. `None` means the fork takes a handoff
+    /// (0014) from its own log, which starts with the parent's transcript up to that turn.
+    async fn fork_source(
+        &self,
+        resolved: &routing::Resolved,
+    ) -> Result<Option<String>, ErrorObject> {
+        let backend = resolved.backend();
+        if !self.turns.is_empty() || !backend.capabilities().fork {
+            return Ok(None);
+        }
+        let (id, backend, account_id) = (
+            self.row.id,
+            backend.name().to_owned(),
+            resolved.account_id(),
+        );
+        store(&self.daemon, move |db| {
+            let error = |error| store_error(&error);
+            let Some(from) = db
+                .get_thread(id)
+                .map_err(error)?
+                .and_then(|thread| thread.fields.forked_from)
+            else {
+                return Ok(None);
+            };
+            let Some(parent) = db.get_run(from.run).map_err(error)? else {
+                return Ok(None);
+            };
+            let latest = db.latest_turn(from.run).map_err(error)?;
+            let idle =
+                ![convert::RUNNING, convert::STARTING].contains(&parent.state.status.as_str());
+            let same = parent.fields.backend == backend && parent.state.account_id == account_id;
+            let unmoved = latest.unwrap_or(from.run) == from.turn;
+            Ok(parent.state.session_id.filter(|_| idle && same && unmoved))
+        })
+        .await
     }
 
     /// Moves the run back to the backend and options it had, `fields`, after its move to another
@@ -1878,7 +1946,7 @@ impl Actor {
 
 /// The account a run's session belongs to, as routing takes it: a key account's id, or else a
 /// backend's name for its subscription (0012).
-fn session_account(account_id: &str) -> AccountChoice {
+pub(crate) fn session_account(account_id: &str) -> AccountChoice {
     match account_id.parse::<AccountId>() {
         Ok(id) => AccountChoice::Key { id },
         Err(_) => AccountChoice::Subscription {
@@ -1893,8 +1961,11 @@ const HISTORY_BYTES: usize = 64 * 1024;
 /// What a [`conversation`] cut to its cap starts with. One that isn't cut starts with who spoke.
 pub(super) const LEFT_OUT: &str = "(Earlier messages are left out.)\n\n";
 
-/// Every event run `run` logged, oldest first.
-async fn logged_events(daemon: &Daemon, run: RunId) -> Result<Vec<ParallaxEvent>, ErrorObject> {
+/// Every event run `run` logged, oldest first: what a handoff (0014) and a fork (0050) read.
+pub(crate) async fn logged_events(
+    daemon: &Daemon,
+    run: RunId,
+) -> Result<Vec<ParallaxEvent>, ErrorObject> {
     let log = Arc::clone(&daemon.log);
     tokio::task::spawn_blocking(move || {
         let mut events = Vec::new();

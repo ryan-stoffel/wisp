@@ -120,8 +120,8 @@ pub use thread::{
     ForkedFrom, MAX_THREAD_TITLE_BYTES, Repo, RepoAddParams, RepoAddResult, RepoId, RepoRef,
     RepoRefsParams, RepoRefsResult, RepoUpdateParams, RepoUpdateResult, Thread,
     ThreadArchiveParams, ThreadArchiveResult, ThreadDeleteParams, ThreadDeleteResult,
-    ThreadListParams, ThreadListResult, ThreadSearchParams, ThreadSearchResult, ThreadStartParams,
-    ThreadStartResult, ThreadUpdateParams, ThreadUpdateResult,
+    ThreadForkParams, ThreadListParams, ThreadListResult, ThreadSearchParams, ThreadSearchResult,
+    ThreadStartParams, ThreadStartResult, ThreadUpdateParams, ThreadUpdateResult,
 };
 pub use usage::{
     AccountRuns, AccountUsage, UsageDailyParams, UsageDailyResult, UsageDay, UsageGetParams,

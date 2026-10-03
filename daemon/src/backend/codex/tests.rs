@@ -411,6 +411,7 @@ async fn a_resumed_thread_reports_only_what_it_adds() {
             model: None,
             usage: tokens(18_922, 184, 36_352),
         }],
+        fork: false,
     });
     let events = run(&fake.backend, resumed).await;
 
@@ -633,6 +634,7 @@ fn a_context_window_and_fast_mode_are_overrides_on_every_session() {
             worker.resume = resume.map(|id| Resume {
                 session_id: id.into(),
                 usage_totals: Vec::new(),
+                fork: false,
             });
             let argv: Vec<String> = arguments(&worker, None, &[])
                 .unwrap()
