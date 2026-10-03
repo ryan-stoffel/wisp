@@ -466,7 +466,7 @@ async fn cancelling_the_run_denies_what_waits() {
     let host = host(script, NEVER);
     let (mut client, run_id, approval_id) = start(&host).await;
     client
-        .call::<AgentCancel>(AgentCancelParams { run_id })
+        .call::<AgentCancel>(AgentCancelParams { run_id, from: None })
         .await
         .unwrap();
     let events = until(&mut client, updated_to(AgentStatus::Cancelled)).await;

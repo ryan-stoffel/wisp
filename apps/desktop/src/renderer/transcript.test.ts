@@ -181,6 +181,22 @@ test("a wake-up is marked as Parallax's, and a pause says the next message resum
   });
 });
 
+test("another thread's message and stop are marked with its run id (0041)", () => {
+  const [turnId, from] = [uuidv7(), uuidv7()];
+  const t = build(
+    ...upTo(1),
+    output({ kind: "turnStarted", turnId, text: "Rebase first.", from }),
+    output({ kind: "interrupted", from }),
+  );
+  expect(of(t.items, "user").at(-1)).toMatchObject({ text: "Rebase first.", turnId, from });
+  expect(of(t.items, "user")[0]).not.toHaveProperty("from");
+  expect(t.items.at(-1)).toMatchObject({
+    kind: "notice",
+    text: "Stopped by another thread.",
+    from,
+  });
+});
+
 test("uuidv7 puts the time first and sets the version and variant", () => {
   const id = uuidv7(0x0190_1234_5678);
   expect(id).toMatch(/^01901234-5678-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);

@@ -503,6 +503,12 @@ pub enum AgentOutputItem {
         /// 0049).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         wake: bool,
+        /// The thread that sent a follow-up through its Parallax tools (0041), as `agent/send`'s
+        /// `from` named it. Absent for the user's own message and for the prompt's turn, whose
+        /// sender is the thread's `parent`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        from: Option<RunId>,
         /// The images sent with the turn's message, the prompt's or a follow-up's, in order, for
         /// `agent/image` (RYA-191). Absent when it had none.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -586,6 +592,12 @@ pub enum AgentOutputItem {
     FollowUpDropped {
         /// The follow-up's turn id.
         turn_id: TurnId,
+    },
+    /// Another thread stopped the run through its Parallax tools, with `agent/cancel`'s `from`
+    /// (0041). The run's `agent.finished` follows.
+    Interrupted {
+        /// The thread that stopped it.
+        from: RunId,
     },
     /// Tokens and cost used since the previous `usage` item.
     Usage {
@@ -817,6 +829,12 @@ pub struct AgentSendParams {
     /// the run's CLI gets their summaries when it's sent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub threads: Vec<RunId>,
+    /// The thread sending it through its Parallax tools (0041), which the turn's `turnStarted`
+    /// names. It must be a run on the host, or the send fails with `runNotFound`. Absent for the
+    /// user's own message. Behind `threadTools`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub from: Option<RunId>,
 }
 
 /// Params of `agent/cancel`: stops a running agent, which ends as `cancelled`. Cancelling a run
@@ -826,6 +844,12 @@ pub struct AgentSendParams {
 pub struct AgentCancelParams {
     /// The run.
     pub run_id: RunId,
+    /// The thread stopping it through its Parallax tools (0041): a running run logs an
+    /// `interrupted` item naming it. It must be a run on the host, or the cancel fails with
+    /// `runNotFound`. Behind `threadTools`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub from: Option<RunId>,
 }
 
 /// Params of `agent/resumeNow`: resumes a `waiting` run now instead of at its `resumeAt`, with

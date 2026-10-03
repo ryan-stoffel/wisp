@@ -23,8 +23,10 @@
 //!   [`permission_mode`], then [`worker_settings`] as `--settings`, then `--add-dir` for each
 //!   writable folder. A normal thread in any mode whose client answers permission requests (0034),
 //!   and a worker in [`AgentPermission::Bypass`] (0027), are full Claude Code instead, as on the
-//!   user's own machine ([`unsandboxed`]): only the permission mode, `--allowedTools` with
-//!   [`TODO_TOOLS`], `--add-dir`, and `--settings` with only [`settings_env`], with no sandbox, so
+//!   user's own machine ([`unsandboxed`]): only the permission mode, for a thread `--mcp-config`
+//!   with its `plxd mcp --thread` server (0041), `--allowedTools` with that server's
+//!   [`crate::mcp::thread::ALLOWED_TOOLS`] and [`TODO_TOOLS`], `--add-dir`, and `--settings`
+//!   with only [`settings_env`], with no sandbox, so
 //!   the user's settings, `CLAUDE.md` files, skills, plugins, hooks, subagents, and MCP servers all
 //!   load, and its `system/init` may list any tool. Otherwise:
 //!   - `--restricted` loads no user, project, or local settings files, so a repository's
@@ -631,7 +633,20 @@ pub fn arguments(request: &RunRequest) -> Result<Vec<OsString>, StartError> {
             allowed.join(",").into(),
         ]);
     } else if unsandboxed {
-        args.extend(["--allowedTools".into(), TODO_TOOLS.join(",").into()]);
+        // A thread's host-wide tools join the user's own MCP servers (0041), and the allowlist
+        // lets them run in every mode.
+        let thread_tools: &[&str] = match &request.thread_tools {
+            Some(tools) => {
+                args.extend([
+                    "--mcp-config".into(),
+                    tools.mcp_config()?.to_string().into(),
+                ]);
+                mcp::thread::ALLOWED_TOOLS
+            }
+            None => &[],
+        };
+        let allowed: Vec<&str> = thread_tools.iter().chain(TODO_TOOLS).copied().collect();
+        args.extend(["--allowedTools".into(), allowed.join(",").into()]);
     }
     if let Some(sandbox) = worker_sandbox(request)? {
         if !unsandboxed {

@@ -35,8 +35,8 @@ fn worker() -> Vec<Step> {
     ]
 }
 
-/// `plxd mcp` bound to `project` and `thread`, initialized.
-struct Mcp {
+/// `plxd mcp` bound to `project` and `thread`, or to a thread (`thread_tools.rs`), initialized.
+pub(crate) struct Mcp {
     child: Child,
     stdin: ChildStdin,
     stdout: Lines<BufReader<ChildStdout>>,
@@ -44,12 +44,21 @@ struct Mcp {
 }
 
 fn command(data_dir: &Path, project: ProjectId, thread: CoordinatorThreadId) -> Command {
+    let project = project.to_string();
+    let thread = thread.to_string();
+    mcp_command(
+        data_dir,
+        &["--project", &project, "--coordinator-thread", &thread],
+    )
+}
+
+/// `plxd mcp --data-dir <data_dir> <binding>`, with piped stdio.
+pub(crate) fn mcp_command(data_dir: &Path, binding: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_plxd"));
     command
         .args(["mcp", "--data-dir"])
         .arg(data_dir)
-        .args(["--project", &project.to_string()])
-        .args(["--coordinator-thread", &thread.to_string()])
+        .args(binding)
         .env_remove("PLXD_DATA_DIR")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -60,9 +69,12 @@ fn command(data_dir: &Path, project: ProjectId, thread: CoordinatorThreadId) -> 
 
 impl Mcp {
     async fn start(data_dir: &Path, project: ProjectId, thread: CoordinatorThreadId) -> Self {
-        let mut child = command(data_dir, project, thread)
-            .spawn()
-            .expect("spawn plxd mcp");
+        Self::spawn(command(data_dir, project, thread)).await
+    }
+
+    /// Starts and initializes `command`, a [`mcp_command`].
+    pub(crate) async fn spawn(mut command: Command) -> Self {
+        let mut child = command.spawn().expect("spawn plxd mcp");
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap()).lines();
         let mut mcp = Self {
@@ -103,7 +115,7 @@ impl Mcp {
         Some(serde_json::from_str(&line).expect("a JSON line"))
     }
 
-    async fn request(&mut self, method: &str, params: Value) -> Value {
+    pub(crate) async fn request(&mut self, method: &str, params: Value) -> Value {
         self.next_id += 1;
         let id = self.next_id;
         self.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
@@ -114,7 +126,7 @@ impl Mcp {
     }
 
     /// Calls a tool and returns its text and whether it is an error.
-    async fn tool(&mut self, name: &str, arguments: Value) -> (String, bool) {
+    pub(crate) async fn tool(&mut self, name: &str, arguments: Value) -> (String, bool) {
         let response = self
             .request("tools/call", json!({"name": name, "arguments": arguments}))
             .await;
@@ -127,14 +139,14 @@ impl Mcp {
     }
 
     /// Calls a tool that must succeed and parses its JSON text.
-    async fn ok(&mut self, name: &str, arguments: Value) -> Value {
+    pub(crate) async fn ok(&mut self, name: &str, arguments: Value) -> Value {
         let (text, is_error) = self.tool(name, arguments).await;
         assert!(!is_error, "{name} failed: {text}");
         serde_json::from_str(&text).unwrap_or_else(|_| panic!("{name} returned {text}"))
     }
 
     /// Calls a tool that must fail, and returns its message.
-    async fn refused(&mut self, name: &str, arguments: Value) -> String {
+    pub(crate) async fn refused(&mut self, name: &str, arguments: Value) -> String {
         let (text, is_error) = self.tool(name, arguments).await;
         assert!(is_error, "{name} succeeded: {text}");
         text

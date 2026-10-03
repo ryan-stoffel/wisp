@@ -339,6 +339,11 @@ pub fn start(
         // Only the coordinator starts and steers other runs (0019).
         request.coordinator_tools = None;
     }
+    if !request.thread {
+        // Only a normal thread gets the host-wide thread tools (0041); a coordinator keeps its
+        // own, and its subagents get none.
+        request.thread_tools = None;
+    }
     let started = backend.start(request.clone())?;
 
     let fallback_id = is_subscription

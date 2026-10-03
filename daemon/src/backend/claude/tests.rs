@@ -22,8 +22,8 @@ use crate::backend::{
     AccountRef, AgentEffort, AgentPermission, Answer, ApiKey, ApprovalRequest, Backend,
     CoordinatorTools, Credential, Decision, Event, EventStream, FailureKind, FollowUp,
     ImageMediaType, LimitStatus, LimitWindow, ModelUsage, Outcome, PromptImage, Resume, RunId,
-    RunRequest, SendError, StartError, Started, TodoItem, TodoStatus, ToolPolicy, ToolStatus,
-    TurnId, Usage, WarningKind, WorkerSandbox,
+    RunRequest, SendError, StartError, Started, ThreadTools, TodoItem, TodoStatus, ToolPolicy,
+    ToolStatus, TurnId, Usage, WarningKind, WorkerSandbox,
 };
 use crate::mcp;
 use crate::paths::DataDir;
@@ -198,6 +198,7 @@ fn request(cwd: &Path) -> RunRequest {
         context_window: None,
         fast: None,
         coordinator_tools: None,
+        thread_tools: None,
         approvals: false,
         thread: false,
     }
@@ -2188,6 +2189,68 @@ fn a_thread_is_full_claude_code_in_every_mode() {
         violation_kind(&translator.line(&loaded)),
         Some(FailureKind::PolicyViolation)
     );
+}
+
+/// 0041: a full Claude Code thread gets `plxd mcp --thread <its run>` through `--mcp-config`,
+/// with no `--strict-mcp-config`, so the user's own MCP servers stay, and the tools lead its
+/// `--allowedTools`, so they run in every mode. A sandboxed thread gets none, since the server
+/// runs outside the sandbox.
+#[test]
+fn a_full_thread_gets_its_thread_tools_beside_the_users_mcp_servers() {
+    let cwd = Path::new("/Users/u/wt");
+    let tools = ThreadTools {
+        program: PathBuf::from("/Applications/Parallax.app/Contents/Resources/plxd"),
+        data_dir: PathBuf::from("/Users/u/Library/Application Support/parallax"),
+        run: RunId::generate(),
+    };
+    let mut thread = request(cwd);
+    thread.policy = ToolPolicy::WorkspaceWrite;
+    thread.sandbox = Some(worker_sandbox(cwd));
+    thread.approvals = true;
+    thread.thread = true;
+    thread.thread_tools = Some(tools.clone());
+    let config = serde_json::json!({"mcpServers": {"plxd": {
+        "type": "stdio",
+        "command": "/Applications/Parallax.app/Contents/Resources/plxd",
+        "args": [
+            "mcp",
+            "--data-dir", "/Users/u/Library/Application Support/parallax",
+            "--thread", tools.run.to_string(),
+        ],
+    }}});
+    let allowed = format!(
+        "{},TodoWrite,TaskCreate,TaskGet,TaskList,TaskUpdate",
+        mcp::thread::ALLOWED_TOOLS.join(",")
+    );
+    for permission in [
+        None,
+        Some(AgentPermission::Manual),
+        Some(AgentPermission::Plan),
+    ] {
+        let request = RunRequest {
+            permission,
+            ..thread.clone()
+        };
+        let args: Vec<String> = super::arguments(&request)
+            .unwrap()
+            .into_iter()
+            .map(|arg| arg.into_string().unwrap())
+            .collect();
+        let at = args.iter().position(|arg| arg == "--mcp-config").unwrap();
+        assert_eq!(args[at + 1], config.to_string(), "{permission:?}");
+        assert_eq!(
+            args[at + 2..at + 4],
+            ["--allowedTools".to_owned(), allowed.clone()]
+        );
+        assert!(!args.contains(&"--strict-mcp-config".to_owned()));
+    }
+    let sandboxed = RunRequest {
+        approvals: false,
+        ..thread
+    };
+    let args = super::arguments(&sandboxed).unwrap();
+    assert!(args.contains(&"--strict-mcp-config".into()));
+    assert!(!args.contains(&"--mcp-config".into()));
 }
 
 /// 0027: a coordinator and a bypass worker are full Claude Code, so their init may list any

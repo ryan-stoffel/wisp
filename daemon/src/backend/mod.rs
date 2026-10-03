@@ -205,6 +205,10 @@ pub struct RunRequest {
     /// plxd's MCP tools, for a coordinator's [`ToolPolicy::NoWrite`] run only (#195, 0019).
     /// Routing drops them for every other role, and a backend refuses them on a worker.
     pub coordinator_tools: Option<CoordinatorTools>,
+    /// plxd's host-wide thread tools, for a normal thread's run only (0041). Routing drops them
+    /// for every other run, and Claude Code attaches them only to a thread that runs as full
+    /// Claude Code ([`claude::unsandboxed`]), since the server runs outside any sandbox.
+    pub thread_tools: Option<ThreadTools>,
     /// The client answers permission requests (RYA-222, 0031): a CLI that can ask before a tool
     /// call asks through [`Event::ApprovalRequested`] and [`Run::answer`]. Without it, the CLI
     /// runs as it did before, denying what would prompt.
@@ -237,28 +241,63 @@ impl CoordinatorTools {
     ///
     /// [`StartError::Invalid`] if the program's or the data folder's path isn't UTF-8.
     pub fn mcp_config(&self) -> Result<serde_json::Value, StartError> {
-        let text = |path: &std::path::Path, what: &str| {
-            path.to_str().map(str::to_owned).ok_or_else(|| {
-                StartError::Invalid(format!("{what} {} is not UTF-8", path.display()))
-            })
-        };
-        let program = text(&self.program, "plxd's executable")?;
-        let data_dir = text(&self.data_dir, "the data folder")?;
-        Ok(serde_json::json!({
-            "mcpServers": {
-                crate::mcp::SERVER: {
-                    "type": "stdio",
-                    "command": program,
-                    "args": [
-                        "mcp",
-                        "--data-dir", data_dir,
-                        "--project", self.project.to_string(),
-                        "--coordinator-thread", self.thread.to_string(),
-                    ],
-                },
-            },
-        }))
+        let (project, thread) = (self.project.to_string(), self.thread.to_string());
+        mcp_config(
+            &self.program,
+            &self.data_dir,
+            &["--project", &project, "--coordinator-thread", &thread],
+        )
     }
+}
+
+/// How a normal thread's CLI launches `plxd mcp --thread` (0041): the server is bound to the
+/// thread's own run, which plxd sets and the model never sees or chooses, so a thread it
+/// launches records it as the parent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThreadTools {
+    /// The `plxd` executable that serves the tools.
+    pub program: PathBuf,
+    /// plxd's data folder, which tells `plxd mcp` where the socket is.
+    pub data_dir: PathBuf,
+    /// The thread's run: the caller of every tool.
+    pub run: RunId,
+}
+
+impl ThreadTools {
+    /// `{"mcpServers": {"plxd": ...}}`, for a CLI's `--mcp-config`, as [`CoordinatorTools`]'s.
+    ///
+    /// # Errors
+    ///
+    /// [`StartError::Invalid`] if the program's or the data folder's path isn't UTF-8.
+    pub fn mcp_config(&self) -> Result<serde_json::Value, StartError> {
+        let run = self.run.to_string();
+        mcp_config(&self.program, &self.data_dir, &["--thread", &run])
+    }
+}
+
+/// The one stdio server `plxd mcp --data-dir <data_dir> <binding>`, as `--mcp-config` takes it.
+fn mcp_config(
+    program: &Path,
+    data_dir: &Path,
+    binding: &[&str],
+) -> Result<serde_json::Value, StartError> {
+    let text = |path: &Path, what: &str| {
+        path.to_str()
+            .map(str::to_owned)
+            .ok_or_else(|| StartError::Invalid(format!("{what} {} is not UTF-8", path.display())))
+    };
+    let mut args = vec!["mcp".to_owned(), "--data-dir".to_owned()];
+    args.push(text(data_dir, "the data folder")?);
+    args.extend(binding.iter().map(|&arg| arg.to_owned()));
+    Ok(serde_json::json!({
+        "mcpServers": {
+            crate::mcp::SERVER: {
+                "type": "stdio",
+                "command": text(program, "plxd's executable")?,
+                "args": args,
+            },
+        },
+    }))
 }
 
 /// Checks that `value`, such as a model or a session id, can be a CLI's argument: not empty,

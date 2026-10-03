@@ -141,6 +141,7 @@ pub(crate) fn send_params(run_id: RunId, turn_id: TurnId, text: &str) -> AgentSe
         account: None,
         images: Vec::new(),
         threads: Vec::new(),
+        from: None,
     }
 }
 
@@ -587,6 +588,7 @@ async fn a_follow_up_reaches_a_live_run_and_a_finished_run_resumes_its_session()
         turn_id: Some(first),
         text: Some("and the tests".to_owned()),
         wake: false,
+        from: None,
         images: Vec::new(),
         threads: Vec::new(),
     }));
@@ -630,6 +632,7 @@ async fn a_follow_up_reaches_a_live_run_and_a_finished_run_resumes_its_session()
         turn_id: Some(second),
         text: Some("one more thing".to_owned()),
         wake: false,
+        from: None,
         images: Vec::new(),
         threads: Vec::new(),
     }));
@@ -796,7 +799,7 @@ async fn cancel_stops_a_running_worker() {
     assert_eq!(health.running_agents, 1);
 
     let cancelling = client
-        .call::<AgentCancel>(AgentCancelParams { run_id })
+        .call::<AgentCancel>(AgentCancelParams { run_id, from: None })
         .await
         .unwrap();
     assert_eq!(cancelling.run.id, run_id);
@@ -808,7 +811,7 @@ async fn cancel_stops_a_running_worker() {
         .unwrap();
     assert_eq!(health.running_agents, 0);
     let again = client
-        .call::<AgentCancel>(AgentCancelParams { run_id })
+        .call::<AgentCancel>(AgentCancelParams { run_id, from: None })
         .await
         .unwrap();
     assert_eq!(again.run.status, AgentStatus::Cancelled, "a no-op");
@@ -816,6 +819,7 @@ async fn cancel_stops_a_running_worker() {
     let unknown = client
         .call::<AgentCancel>(AgentCancelParams {
             run_id: RunId::generate(),
+            from: None,
         })
         .await
         .unwrap_err();
@@ -935,6 +939,7 @@ async fn a_run_interrupted_by_a_restart_or_a_crash_resumes_by_its_session() {
             turn_id: Some(turn),
             text: Some("carry on".to_owned()),
             wake: false,
+            from: None,
             images: Vec::new(),
             threads: Vec::new(),
         },
@@ -990,7 +995,7 @@ async fn a_sent_turn_stays_idempotent_across_a_restart() {
     .await;
 
     client
-        .call::<AgentCancel>(AgentCancelParams { run_id })
+        .call::<AgentCancel>(AgentCancelParams { run_id, from: None })
         .await
         .unwrap();
     until(&mut client, updated_to(AgentStatus::Cancelled)).await;
@@ -1009,6 +1014,7 @@ async fn a_sent_turn_stays_idempotent_across_a_restart() {
             turn_id: Some(turn),
             text: Some("carry on".to_owned()),
             wake: false,
+            from: None,
             images: Vec::new(),
             threads: Vec::new(),
         }),
@@ -1617,7 +1623,7 @@ async fn review_reads_commits_not_the_worktree_and_accept_waits_for_the_run_to_s
     assert!(busy.message.contains("running"), "{}", busy.message);
 
     client
-        .call::<AgentCancel>(AgentCancelParams { run_id })
+        .call::<AgentCancel>(AgentCancelParams { run_id, from: None })
         .await
         .unwrap();
     until(&mut client, updated_to(AgentStatus::Cancelled)).await;

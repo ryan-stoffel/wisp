@@ -231,7 +231,7 @@ async fn a_running_run_reads_its_status_but_refuses_commit_and_push() {
         assert!(error.message.contains("still running"), "{}", error.message);
     }
     client
-        .call::<AgentCancel>(AgentCancelParams { run_id })
+        .call::<AgentCancel>(AgentCancelParams { run_id, from: None })
         .await
         .unwrap();
     until(&mut client, updated_to(AgentStatus::Cancelled)).await;

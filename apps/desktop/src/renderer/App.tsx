@@ -456,6 +456,7 @@ export function App() {
                 onPrOpened={linksPrs ? openPr : undefined}
                 compose={compose}
                 onComposed={composed}
+                titles={threads.state.titles}
               />
             ) : selection.kind === "new" ? (
               <NewThread
@@ -486,6 +487,7 @@ export function App() {
                 // A Project's subagents are kept current.
                 going={isRunning(agent?.status)}
                 others={othersAsked(agentId)}
+                titles={threads.state.titles}
               />
             ) : (
               project && (

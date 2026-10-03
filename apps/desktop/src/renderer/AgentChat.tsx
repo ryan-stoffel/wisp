@@ -142,6 +142,7 @@ export function AgentChat({
   onPrOpened,
   compose,
   onComposed,
+  titles,
 }: {
   hostId: string;
   runId: string;
@@ -182,6 +183,8 @@ export function AgentChat({
    */
   compose?: { text: string; send: boolean };
   onComposed?: () => void;
+  /** Threads' titles by run id, to name the thread that sent a message or stopped this one. */
+  titles?: Readonly<Record<string, string>>;
 }) {
   const connection = useConnection(hostId);
   const connected = connection?.status === "connected";
@@ -290,12 +293,12 @@ export function AgentChat({
         : { kind: "user", key: "prompt", text: prompt },
     ];
   }, [items, sent, prompt, going]);
-  // The user's prompts, for the composer's Up: not Parallax's wake-ups.
+  // The user's prompts, for the composer's Up: not Parallax's wake-ups or other threads' messages.
   const history = useMemo(
     () =>
       rows.flatMap((row) => {
         if (row.kind === "pending") return [row.text];
-        if (row.kind !== "user" || row.wake) return [];
+        if (row.kind !== "user" || notTheUsers(row)) return [];
         const text = row.text ?? (row.turnId && sent.get(row.turnId)?.text);
         return text ? [text] : [];
       }),
@@ -306,7 +309,10 @@ export function AgentChat({
   const unanswered = useMemo<(Unanswered & { turnId?: string }) | undefined>(() => {
     const at = rows.findLastIndex((r) => r.kind === "user" || r.kind === "pending");
     const row = rows[at];
-    if ((row?.kind !== "user" && row?.kind !== "pending") || (row.kind === "user" && row.wake))
+    if (
+      (row?.kind !== "user" && row?.kind !== "pending") ||
+      (row.kind === "user" && notTheUsers(row))
+    )
       return undefined;
     if (!rows.slice(at + 1).every((r) => ["notice", "end", "session"].includes(r.kind)))
       return undefined;
@@ -383,6 +389,7 @@ export function AgentChat({
           stalled={stalled}
           onResend={resend}
           loadImage={showImage}
+          titles={titles}
         />
       ) : (
         <div className="flex flex-1 flex-col items-center justify-center gap-1 px-8 text-center text-[13px] text-faint-foreground">
@@ -484,6 +491,7 @@ export function TranscriptView({
   stalled = false,
   onResend,
   loadImage,
+  titles,
 }: {
   rows: Row[];
   sent: ReadonlyMap<string, SentMessage>;
@@ -493,6 +501,8 @@ export function TranscriptView({
   onResend?: (turnId: string, message: SentMessage) => void;
   /** Fetches a message's image by id, as a data URL. */
   loadImage?: (imageId: ImageId) => Promise<string | undefined>;
+  /** Threads' titles by run id, as `AgentChat` takes them. */
+  titles?: Readonly<Record<string, string>>;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
@@ -630,6 +640,7 @@ export function TranscriptView({
                     onToggle={toggle}
                     onResend={onResend}
                     loadImage={loadImage}
+                    sender={"from" in row && row.from ? titles?.[row.from] : undefined}
                   />
                 </div>
               </div>
@@ -647,13 +658,14 @@ export function TranscriptView({
 /**
  * The user's prompts among `view`'s rows, for the rail: a follow-up's text from `sent` when the
  * log lacks it, and the start of the agent's last reply before the next prompt. Parallax's own
- * wake-ups aren't the user's, and replies to them aren't replies to the prompt before.
+ * wake-ups and other threads' messages aren't the user's, and replies to them aren't replies to
+ * the prompt before.
  */
 function promptsOf(view: readonly ViewRow[], sent: ReadonlyMap<string, SentMessage>): Prompt[] {
   const prompts: Prompt[] = [];
   let last: Prompt | undefined;
   view.forEach((row, index) => {
-    if (row.kind === "user" && row.wake) last = undefined;
+    if (row.kind === "user" && notTheUsers(row)) last = undefined;
     else if (row.kind === "user" || row.kind === "pending") {
       const said = row.text ?? (row.kind === "user" && row.turnId && sent.get(row.turnId)?.text);
       const text = said ? plainText(said) : "";
@@ -709,7 +721,12 @@ interface RowProps {
   onResend?: (turnId: string, message: SentMessage) => void;
   /** Fetches a message's image by id, as a data URL. */
   loadImage?: (imageId: ImageId) => Promise<string | undefined>;
+  /** The title of the thread a message or a stop came from, when the row has one and it's known. */
+  sender?: string;
 }
+
+/** A message Parallax or another thread sent, not the user (0025, 0041). */
+const notTheUsers = (row: Extract<Item, { kind: "user" }>) => row.wake || row.from !== undefined;
 
 /** One transcript row. Memoized: an unchanged item keeps its object, so it skips re-rendering. */
 export const RowView = memo(function RowView({
@@ -722,6 +739,7 @@ export const RowView = memo(function RowView({
   onToggle,
   onResend,
   loadImage,
+  sender,
 }: RowProps) {
   switch (row.kind) {
     case "work":
@@ -753,6 +771,25 @@ export const RowView = memo(function RowView({
           >
             <p className="text-[13px] leading-relaxed whitespace-pre-wrap text-muted-foreground">
               {row.text}
+            </p>
+          </Disclosure>
+        );
+      // Another thread's message, sent with its Parallax tools (0041).
+      if (row.kind === "user" && row.from)
+        return (
+          <Disclosure
+            id={row.key}
+            open={open}
+            onToggle={onToggle}
+            summary={
+              <span className="flex items-center gap-1.5 text-muted-foreground">
+                <Workflow aria-hidden className="size-3.5" />
+                {sender ? `From another thread: ${sender}` : "From another thread"}
+              </span>
+            }
+          >
+            <p className="text-[13px] leading-relaxed whitespace-pre-wrap text-muted-foreground">
+              {row.text ?? "Follow-up message"}
             </p>
           </Disclosure>
         );
@@ -837,7 +874,7 @@ export const RowView = memo(function RowView({
             <Info aria-hidden className="mt-0.5 size-3.5 shrink-0" />
           )}
           <span>
-            {row.text}
+            {row.from && sender ? `Stopped by another thread: ${sender}.` : row.text}
             {/* A dropped follow-up this window sent: offer it again, rather than lose it. */}
             {row.turnId && sent !== undefined && onResend && (
               <>

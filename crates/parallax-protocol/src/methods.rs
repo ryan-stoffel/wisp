@@ -274,6 +274,13 @@ method_table! {
         /// `pr/diff`: one of a run's linked pull requests' unified diff, read with `gh pr diff`
         /// and cut at a size cap (PLX-328). Gated on the `prDiff` capability.
         PrDiff = "pr/diff": PrViewParams => PrDiffResult;
+        /// `pr/link`: links a GitHub pull request URL to a run, unless it already is, and reports
+        /// the run as `agent.updated` (0041). Fails with `invalidParams` for another URL. Gated
+        /// on the `threadTools` capability, like `pr/unlink`.
+        PrLink = "pr/link": PrViewParams => AgentRunResult;
+        /// `pr/unlink`: removes a pull request URL from a run's links. Unlinking one that isn't
+        /// linked changes nothing.
+        PrUnlink = "pr/unlink": PrViewParams => AgentRunResult;
         /// `project/delete`: deletes a project with every run in it, stopping their CLIs first
         /// (PLX-338). Fails with `projectNotFound` for an unknown project or a repo entry's id.
         /// Gated on the `projectDelete` capability.
@@ -388,6 +395,8 @@ mod tests {
                 "pr/view",
                 "pr/act",
                 "pr/diff",
+                "pr/link",
+                "pr/unlink",
                 "project/delete",
                 "agent/commands",
                 "repo/files",
