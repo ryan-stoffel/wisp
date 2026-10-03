@@ -415,8 +415,9 @@ export interface Crumb {
  */
 export function Breadcrumb({ items, trail }: { items: Crumb[]; trail?: ReactNode }) {
   return (
-    // A trail takes the room the crumbs leave, and fits itself to it.
-    <nav aria-label="Breadcrumb" className={`min-w-0 ${trail ? "flex-1" : ""}`}>
+    // A trail takes the room the crumbs leave, and fits itself to it. In a pane too narrow for
+    // the crumbs' minimum widths, they're cut off rather than slid under the top bar's buttons.
+    <nav aria-label="Breadcrumb" className={`min-w-0 overflow-x-clip ${trail ? "flex-1" : ""}`}>
       <ol className="flex min-w-0 items-center gap-2 text-[13px]">
         {items.map(({ label, icon, onClick }, i) => {
           const last = i === items.length - 1;

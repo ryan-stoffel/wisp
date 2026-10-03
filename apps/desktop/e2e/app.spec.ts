@@ -517,6 +517,9 @@ test("switches between a thread and the one it launched, by chip, crumb, and sho
     expect(answer).not.toHaveProperty("error");
     return params.runId;
   };
+  // The test above left the side panel open, which leaves the top bar too little room for the
+  // crumbs on a small screen.
+  await page.getByRole("button", { name: "Hide side panel" }).click();
   const parent = await start("Plan the release");
   await start("Write the changelog", parent);
 
