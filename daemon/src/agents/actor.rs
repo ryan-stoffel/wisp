@@ -255,7 +255,8 @@ pub(super) struct Actor {
     /// requests they print (PLX-318).
     pr_calls: HashSet<String>,
     /// The threads that sent messages through their Parallax tools, by turn id, until the
-    /// messages' `TurnStarted` names them (0041). Not stored: a restart drops waiting messages.
+    /// messages' `TurnStarted` names them or they're dropped (0041). Not stored: a restart drops
+    /// waiting messages.
     senders: HashMap<TurnId, RunId>,
 }
 
@@ -1103,6 +1104,7 @@ impl Actor {
                 detail: format!("A message couldn't be sent: {why}"),
             })
             .await;
+            self.senders.remove(&turn_id);
             self.push(AgentOutputItem::FollowUpDropped { turn_id })
                 .await;
             self.flush().await;
@@ -1114,6 +1116,7 @@ impl Actor {
         while let Some(queued) = self.queued.pop_front() {
             info!(run = %self.id, turn = %queued.turn_id, "dropping a waiting message");
             let turn_id = queued.turn_id;
+            self.senders.remove(&turn_id);
             self.push(AgentOutputItem::FollowUpDropped { turn_id })
                 .await;
         }
