@@ -317,6 +317,27 @@ export type ParallaxRequests = {
 	 * `host/settings/set`: changes this host's settings and returns them.
 	 */
 	"host/settings/set": { params: HostSettingsSetParams, result: HostSettings },
+	/**
+	 * `queue/list`: a run's waiting messages, first to be sent first (PLX-370). Gated on
+	 * the `queue` capability, like every `queue/*` method.
+	 */
+	"queue/list": { params: QueueListParams, result: QueueResult },
+	/**
+	 * `queue/edit`: replaces a waiting message's text.
+	 */
+	"queue/edit": { params: QueueEditParams, result: QueueResult },
+	/**
+	 * `queue/reorder`: puts a run's waiting messages in a new order.
+	 */
+	"queue/reorder": { params: QueueReorderParams, result: QueueResult },
+	/**
+	 * `queue/cancel`: drops a waiting message, which is never sent.
+	 */
+	"queue/cancel": { params: QueueCancelParams, result: QueueResult },
+	/**
+	 * `queue/steer`: sends a waiting message into the turn running now.
+	 */
+	"queue/steer": { params: QueueSteerParams, result: QueueResult },
 };
 
 /** Notifications, which get no response, by method. */
@@ -1701,7 +1722,20 @@ export type AgentSendParams = {
 	 * the run's CLI gets their summaries when it's sent.
 	 */
 	threads?: Array<RunId>,
+	/**
+	 * How the message reaches a run whose CLI is working on a turn, sent only to a plxd that
+	 * advertises `queue` (PLX-370, 0048). Absent is `queue`.
+	 */
+	delivery?: AgentDelivery,
 };
+
+/**
+ * How `agent/send` delivers a message to a run whose CLI is working on a turn, behind the
+ * `queue` capability. A run with no turn running takes either at once.
+ *
+ * A newer peer may send a value this version does not know; treat it as unknown.
+ */
+export type AgentDelivery = "queue" | "steer";
 
 /**
  * A follow-up turn's id: a version 7 UUID that the client generates once and sends again on
@@ -1889,7 +1923,15 @@ export type ParallaxEvent = { "kind": "project.created",
 	/**
 	 * The coordinator's run id.
 	 */
-	runId: RunId, } | { "kind": "repo.added",
+	runId: RunId, } | { "kind": "queue.updated",
+	/**
+	 * The run's id.
+	 */
+	runId: RunId,
+	/**
+	 * The queue as it is now, first to be sent first.
+	 */
+	messages: Array<QueuedMessage>, } | { "kind": "repo.added",
 	/**
 	 * The entry.
 	 */
@@ -2296,6 +2338,28 @@ export type AgentRunState = {
 	 * When it changed, in RFC 3339 UTC.
 	 */
 	updatedAt: string,
+};
+
+/**
+ * A message waiting in a run's queue.
+ */
+export type QueuedMessage = {
+	/**
+	 * The message's `turnId` from `agent/send`, which its turn keeps once it is sent.
+	 */
+	id: TurnId,
+	/**
+	 * The message.
+	 */
+	text: string,
+	/**
+	 * How many images go with it.
+	 */
+	images: number,
+	/**
+	 * The threads attached to it (PLX-372), whose summaries the CLI gets with it.
+	 */
+	threads: Array<RunId>,
 };
 
 /**
@@ -3795,6 +3859,87 @@ export type HostSettingsSetParams = {
 };
 
 /**
+ * Params of `queue/list`.
+ */
+export type QueueListParams = {
+	/**
+	 * The run.
+	 */
+	runId: RunId,
+};
+
+/**
+ * Result of every `queue/*` method: the run's queue after it, first to be sent first.
+ */
+export type QueueResult = {
+	/**
+	 * The waiting messages.
+	 */
+	messages: Array<QueuedMessage>,
+};
+
+/**
+ * Params of `queue/edit`: replaces a waiting message's text, keeping its images.
+ */
+export type QueueEditParams = {
+	/**
+	 * The run.
+	 */
+	runId: RunId,
+	/**
+	 * The message.
+	 */
+	id: TurnId,
+	/**
+	 * Its new text, which may be empty only when it has images.
+	 */
+	text: string,
+};
+
+/**
+ * Params of `queue/reorder`.
+ */
+export type QueueReorderParams = {
+	/**
+	 * The run.
+	 */
+	runId: RunId,
+	/**
+	 * Every waiting message's id, in the new order, first to be sent first.
+	 */
+	ids: Array<TurnId>,
+};
+
+/**
+ * Params of `queue/cancel`: drops a waiting message, which is never sent.
+ */
+export type QueueCancelParams = {
+	/**
+	 * The run.
+	 */
+	runId: RunId,
+	/**
+	 * The message.
+	 */
+	id: TurnId,
+};
+
+/**
+ * Params of `queue/steer`: takes a waiting message out of the queue and sends it into the turn
+ * running now, as `agent/send` with `delivery: steer` does.
+ */
+export type QueueSteerParams = {
+	/**
+	 * The run.
+	 */
+	runId: RunId,
+	/**
+	 * The message.
+	 */
+	id: TurnId,
+};
+
+/**
  * Params of `$/cancelRequest`.
  */
 export type CancelRequestParams = {
@@ -3856,7 +4001,7 @@ export type ErrorData = {
  * A newer plxd may send kinds that are not listed here. Treat those as unknown errors, so a
  * `switch` over this type must not end in an exhaustiveness assertion.
  */
-export type ErrorKind = "notInitialized" | "incompatibleProtocol" | "resyncRequired" | "projectNotFound" | "accountNotFound" | "keychainUnavailable" | "idConflict" | "contextNotFound" | "contextTooLarge" | "notARepository" | "runNotFound" | "runNotResumable" | "workerUnavailable" | "worktreeFailed" | "runAccepted" | "mergeRefused" | "mergeConflict" | "repoNotFound" | "threadNotFound" | "noDefaultAccount" | "unsupportedOption" | "prRefused" | "pushFailed" | "ghUnavailable" | "prFailed" | "imageTooLarge" | "imageNotFound" | "approvalNotFound" | "gitRefused" | "commitFailed";
+export type ErrorKind = "notInitialized" | "incompatibleProtocol" | "resyncRequired" | "projectNotFound" | "accountNotFound" | "keychainUnavailable" | "idConflict" | "contextNotFound" | "contextTooLarge" | "notARepository" | "runNotFound" | "runNotResumable" | "workerUnavailable" | "worktreeFailed" | "runAccepted" | "mergeRefused" | "mergeConflict" | "repoNotFound" | "threadNotFound" | "noDefaultAccount" | "unsupportedOption" | "prRefused" | "pushFailed" | "ghUnavailable" | "prFailed" | "imageTooLarge" | "imageNotFound" | "approvalNotFound" | "gitRefused" | "commitFailed" | "queuedMessageNotFound";
 
 /**
  * The `detail` of `incompatibleProtocol`. Its shape never changes, so every client can read it

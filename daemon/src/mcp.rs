@@ -464,6 +464,7 @@ async fn call_tool(binding: &Binding, name: &str, arguments: Value) -> Result<St
                     account: None,
                     images: Vec::new(),
                     threads: Vec::new(),
+                    delivery: None,
                 })
                 .await?
                 .run;

@@ -230,7 +230,8 @@ pub(crate) fn run_of(event: &ParallaxEvent) -> Option<RunId> {
         | ParallaxEvent::AgentFinished { run_id, .. }
         | ParallaxEvent::AgentDiffReady { run_id, .. }
         | ParallaxEvent::AgentAccepted { run_id, .. }
-        | ParallaxEvent::AgentWakeupsPaused { run_id } => Some(*run_id),
+        | ParallaxEvent::AgentWakeupsPaused { run_id }
+        | ParallaxEvent::QueueUpdated { run_id, .. } => Some(*run_id),
         ParallaxEvent::ProjectCreated { .. }
         | ParallaxEvent::ProjectUpdated { .. }
         | ParallaxEvent::ProjectDeleted { .. }

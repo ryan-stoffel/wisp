@@ -48,6 +48,7 @@ fn fixture(name: &str) -> &'static str {
         "malformed" => include_str!("fixtures/malformed.jsonl"),
         "follow-up-folded" => include_str!("fixtures/follow-up-folded.jsonl"),
         "follow-up-turns" => include_str!("fixtures/follow-up-turns.jsonl"),
+        "held" => include_str!("fixtures/held.jsonl"),
         "cancel" => include_str!("fixtures/cancel.jsonl"),
         "stubborn" => include_str!("fixtures/stubborn.jsonl"),
         "follow-up-no-echo" => include_str!("fixtures/follow-up-no-echo.jsonl"),
@@ -1106,6 +1107,7 @@ async fn a_result_without_ids_or_a_queue_count_ends_every_turn() {
         turn_id: turn(TURN_2),
         text: "Fix the tests too.".into(),
         images: Vec::new(),
+        steer: false,
     })
     .unwrap();
     let all = rest(&mut events).await;
@@ -1430,6 +1432,7 @@ async fn a_follow_up_during_a_turn_that_the_cli_folds_in_finishes_with_it() {
         turn_id: turn(TURN_2),
         text: "Fix the tests too.".into(),
         images: Vec::new(),
+        steer: false,
     };
     run.send(follow_up.clone()).unwrap();
     run.send(follow_up).unwrap();
@@ -1474,6 +1477,7 @@ async fn a_follow_up_during_a_turn_that_the_cli_folds_in_finishes_with_it() {
             turn_id: TurnId::generate(),
             text: "too late".into(),
             images: Vec::new(),
+            steer: false,
         }),
         Err(SendError::Finished)
     );
@@ -1492,6 +1496,7 @@ async fn a_follow_up_can_be_its_own_turn_and_stdin_waits_for_it() {
         turn_id: turn(TURN_2),
         text: "And now the docs.".into(),
         images: Vec::new(),
+        steer: false,
     })
     .unwrap();
     let all = rest(&mut events).await;
@@ -1568,6 +1573,7 @@ async fn images_go_before_the_text_as_base64_blocks_and_a_message_of_images_alon
         turn_id: turn(TURN_2),
         text: String::new(),
         images: vec![gif],
+        steer: false,
     })
     .unwrap();
     rest(&mut events).await;
@@ -2643,6 +2649,7 @@ async fn an_approved_plan_lets_a_coordinator_leave_plan_mode() {
         turn_id: turn(TURN_2),
         text: "Go ahead.".into(),
         images: Vec::new(),
+        steer: false,
     })
     .unwrap();
     let all = rest(&mut events).await;
@@ -2935,6 +2942,7 @@ async fn a_plan_worker_hands_its_plan_over_and_leaves_plan_mode_only_once_allowe
             turn_id: turn(TURN_2),
             text: "Go ahead.".into(),
             images: Vec::new(),
+            steer: false,
         })
         .unwrap();
         let all = rest(&mut events).await;
@@ -3064,4 +3072,39 @@ async fn a_request_left_waiting_when_the_cli_exits_is_withdrawn_before_the_run_e
         "{all:?}"
     );
     assert!(matches!(outcome(&all), Outcome::Failed(_)), "{all:?}");
+}
+
+/// PLX-370: while plxd holds the CLI for a waiting message, stdin stays open after the last
+/// turn, so the message goes to the same process; let go, the CLI exits after it.
+#[tokio::test]
+async fn a_held_cli_waits_after_its_turn_for_the_next_message() {
+    let fake = Fake::new("held");
+    let Started { run, mut events } = launch(&fake.backend, request(&fake.root())).await;
+    run.hold(true);
+    loop {
+        if let Event::TurnFinished { turn_id, .. } = next(&mut events).await {
+            assert_eq!(turn_id, Some(turn(TURN_1)));
+            break;
+        }
+    }
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), events.next())
+            .await
+            .is_err(),
+        "a held CLI exited after its turn"
+    );
+    run.send(FollowUp {
+        turn_id: turn(TURN_2),
+        text: "And now the docs.".into(),
+        images: Vec::new(),
+        steer: false,
+    })
+    .unwrap();
+    run.hold(false);
+    let all = rest(&mut events).await;
+    assert!(all.contains(&Event::TurnFinished {
+        turn_id: Some(turn(TURN_2)),
+        result: Some("Second answer.".into()),
+    }));
+    assert!(matches!(outcome(&all), Outcome::Completed { .. }));
 }

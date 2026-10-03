@@ -182,6 +182,7 @@ fn message(run_id: RunId, text: &str) -> AgentSendParams {
         account: None,
         images: Vec::new(),
         threads: Vec::new(),
+        delivery: None,
     }
 }
 
@@ -200,7 +201,7 @@ fn attention(
     }
 }
 
-fn start_params(repo: Option<RepoId>, prompt: &str) -> ThreadStartParams {
+pub(crate) fn start_params(repo: Option<RepoId>, prompt: &str) -> ThreadStartParams {
     ThreadStartParams {
         run_id: RunId::generate(),
         repo,
@@ -1360,8 +1361,8 @@ async fn a_message_changes_a_finished_threads_model_and_effort() {
 }
 
 /// A running CLI can't change its model or effort, so a message asking for another one waits,
-/// with every message sent after it, until the CLI exits; then each starts a CLI of its own, in
-/// order, the first with the new model.
+/// with every message sent after it, until the CLI exits; then each that changes one starts a CLI
+/// of its own, in order, the first with the new model and the second with the new effort.
 #[tokio::test]
 async fn a_message_with_a_new_model_waits_for_a_running_thread_to_finish() {
     let slow = vec![
@@ -1396,7 +1397,10 @@ async fn a_message_with_a_new_model_waits_for_a_running_thread_to_finish() {
     let waiting = client.call::<AgentSend>(change.clone()).await.unwrap().run;
     assert_eq!(waiting.status, AgentStatus::Running);
     assert_eq!(waiting.model, None, "nothing changes until the CLI exits");
-    let after = message(params.run_id, "And the tests");
+    let after = AgentSendParams {
+        effort: Some(AgentEffort::Low),
+        ..message(params.run_id, "And the tests")
+    };
     client.call::<AgentSend>(after.clone()).await.unwrap();
     // A retry of a waiting message is the same message.
     client.call::<AgentSend>(change.clone()).await.unwrap();
@@ -1438,7 +1442,7 @@ async fn a_message_with_a_new_model_waits_for_a_running_thread_to_finish() {
         [
             (None, high, None, false, true),
             (sonnet.clone(), high, None, false, true),
-            (sonnet, high, None, false, true),
+            (sonnet, Some(AgentEffort::Low), None, false, true),
         ]
     );
     host.server.stop().await;

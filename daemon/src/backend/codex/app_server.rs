@@ -11,8 +11,12 @@
 //! tier, and the mode's approval policy and sandbox ([`mode`]). The prompt is the first
 //! `turn/start`, as written, with its images as `localImage` files ([`write_images`]) and the
 //! effort. Each follow-up is a later `turn/start` in the same process, sent once the turn before
-//! it has completed. Once no turn and no approval request is outstanding, stdin closes and
-//! app-server exits, which ends the run; `agent/send` then resumes the thread in a new run.
+//! it has completed. A steer (PLX-370) is `turn/steer` with the running turn's id, which
+//! codex-cli 0.160.0 adds to that turn's input after its current item; if Codex refuses it, or no
+//! turn runs, it is the next turn instead. Once no turn, steer, or approval request is
+//! outstanding and plxd holds no message for it ([`Run::hold`](super::super::Run::hold)), stdin
+//! closes and app-server exits, which ends the run; `agent/send` then resumes the thread in a new
+//! run.
 //!
 //! # Approval requests
 //!
@@ -63,7 +67,7 @@ use crate::backend::process::{
 };
 use crate::backend::{
     AgentPermission, Answer, ApprovalId, CancelSwitch, Credential, Decision, EVENT_BUFFER,
-    EventSink, FollowUp, RunHandle, RunRequest, StartError, Started, TurnId, check_argument,
+    EventSink, FollowUp, Held, RunHandle, RunRequest, StartError, Started, TurnId, check_argument,
 };
 
 /// The permissions a thread maps, in Claude Code's picker order (0027): Codex's own presets
@@ -136,6 +140,7 @@ pub(super) fn start(launcher: &Launcher, request: RunRequest) -> Result<Started,
     switch.arm(process.signals().clone(), policy);
     let (handle, control) = RunHandle::new(request.run_id, true, switch.clone());
     let (handle, answers) = handle.with_answers();
+    let held = handle.held();
     let baseline = request
         .resume
         .map(|resume| resume.usage_totals)
@@ -150,6 +155,7 @@ pub(super) fn start(launcher: &Launcher, request: RunRequest) -> Result<Started,
         process,
         control,
         answers,
+        held,
         sink,
         switch,
         translator: Translator::default(),
@@ -258,9 +264,14 @@ struct Turn {
     input: Value,
 }
 
-/// The turn Codex is running: its caller's id, if it has one.
+/// The turn Codex is running: its caller's id, if it has one, Codex's own once `turn/start` has
+/// answered, and the messages steered into it, whose turns end with it.
 #[derive(Debug)]
-struct Running(Option<TurnId>);
+struct Running {
+    turn_id: Option<TurnId>,
+    codex_id: Option<String>,
+    steered: Vec<TurnId>,
+}
 
 /// What one of plxd's requests was, to read its response.
 #[derive(Debug)]
@@ -268,6 +279,8 @@ enum Request {
     Initialize,
     Thread,
     Turn,
+    /// A `turn/steer` with the message it carries, which becomes the next turn if Codex refuses.
+    Steer(Turn),
 }
 
 /// Writes lines to app-server's stdin in order, off the driver's loop, so an app-server that
@@ -313,6 +326,8 @@ struct Driver {
     stdin: Stdin,
     control: mpsc::UnboundedReceiver<FollowUp>,
     answers: mpsc::UnboundedReceiver<Answer>,
+    /// While held, plxd has a message waiting for Codex, so stdin stays open (PLX-370).
+    held: Held,
     sink: EventSink,
     switch: CancelSwitch,
     translator: Translator,
@@ -384,6 +399,7 @@ impl Driver {
                     self.stdin.close();
                     self.control.close();
                 }
+                () = self.held.changed() => {}
             }
             self.close_when_idle();
         };
@@ -416,8 +432,7 @@ impl Driver {
                 self.turns_done += 1;
                 self.last_result.clone_from(&result);
                 self.failure = failure;
-                let turn_id = self.running.take().and_then(|running| running.0);
-                self.emit(Event::TurnFinished { turn_id, result }).await;
+                self.finish_running(result).await;
                 self.next_turn().await;
             }
             Step::Ask(request, ask) => {
@@ -486,18 +501,57 @@ impl Driver {
                 self.next_turn().await;
             }
             (Request::Initialize | Request::Thread, Err(message)) => self.fail_to_start(message),
-            (Request::Turn, Ok(_)) => {}
+            (Request::Turn, Ok(result)) => {
+                if let Some(running) = &mut self.running {
+                    running.codex_id = result
+                        .pointer("/turn/id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                }
+            }
             // The turn never ran.
             (Request::Turn, Err(message)) => {
                 self.failure = Some(failure(super::stream::classify(&message), message));
-                let turn_id = self.running.take().and_then(|running| running.0);
-                self.emit(Event::TurnFinished {
-                    turn_id,
-                    result: None,
-                })
-                .await;
+                self.finish_running(None).await;
                 self.next_turn().await;
             }
+            (Request::Steer(turn), Ok(_)) => {
+                self.emit(Event::TurnStarted {
+                    turn_id: turn.turn_id,
+                })
+                .await;
+                match (&mut self.running, turn.turn_id) {
+                    (Some(running), Some(turn_id)) => running.steered.push(turn_id),
+                    // The turn it joined has already completed.
+                    (_, turn_id) => {
+                        let result = None;
+                        self.emit(Event::TurnFinished { turn_id, result }).await;
+                    }
+                }
+            }
+            // Codex wouldn't take it into the turn, which may have just ended: it goes next.
+            (Request::Steer(turn), Err(message)) => {
+                self.emit(Event::Notice {
+                    detail: format!("Codex took the message as the next turn: {message}"),
+                })
+                .await;
+                self.queued.push_front(turn);
+                self.next_turn().await;
+            }
+        }
+    }
+
+    /// Ends the running turn, and the turns of the messages steered into it, with `result`.
+    async fn finish_running(&mut self, result: Option<String>) {
+        let Some(running) = self.running.take() else {
+            let turn_id = None;
+            self.emit(Event::TurnFinished { turn_id, result }).await;
+            return;
+        };
+        let turns = std::iter::once(running.turn_id).chain(running.steered.into_iter().map(Some));
+        for turn_id in turns {
+            let result = result.clone();
+            self.emit(Event::TurnFinished { turn_id, result }).await;
         }
     }
 
@@ -526,7 +580,11 @@ impl Driver {
             })
             .await;
         }
-        self.running = Some(Running(turn.turn_id));
+        self.running = Some(Running {
+            turn_id: turn.turn_id,
+            codex_id: None,
+            steered: Vec::new(),
+        });
         let mut params = json!({"threadId": thread_id, "input": turn.input});
         if let Some(effort) = self.effort {
             params["effort"] = effort.into();
@@ -550,10 +608,28 @@ impl Driver {
                 Vec::new()
             }
         };
-        self.queued.push_back(Turn {
+        let turn = Turn {
             turn_id: Some(follow_up.turn_id),
             input: input(&follow_up.text, &paths),
-        });
+        };
+        if !follow_up.steer {
+            self.queued.push_back(turn);
+        } else if let (Some(thread_id), Some(codex_id)) = (
+            &self.thread_id,
+            self.running
+                .as_ref()
+                .and_then(|running| running.codex_id.as_ref()),
+        ) {
+            let params =
+                json!({"threadId": thread_id, "expectedTurnId": codex_id, "input": turn.input});
+            self.request(Request::Steer(turn), "turn/steer", &params);
+            return;
+        } else {
+            // No turn to steer into yet: it goes before anything else waiting, but after the
+            // prompt.
+            let at = usize::from(!self.started_any).min(self.queued.len());
+            self.queued.insert(at, turn);
+        }
         self.next_turn().await;
     }
 
@@ -566,11 +642,22 @@ impl Driver {
         self.stdin.send(&json!({"id": ask.id, "result": result}));
     }
 
-    /// Closes stdin once no turn runs or waits and no request waits on an answer, so app-server
-    /// exits.
+    /// Closes stdin once no turn runs or waits, no steer or request waits on an answer, and plxd
+    /// holds no message for Codex, so app-server exits.
     fn close_when_idle(&mut self) {
         let started = self.thread_id.is_some();
-        if started && self.running.is_none() && self.queued.is_empty() && self.asks.is_empty() {
+        let steering = self
+            .requests
+            .values()
+            .any(|request| matches!(request, Request::Steer(_)));
+        if started
+            && self.running.is_none()
+            && self.queued.is_empty()
+            && self.asks.is_empty()
+            && !steering
+            && self.control.is_empty()
+            && !self.held.now()
+        {
             self.stdin.close();
             self.control.close();
         }
@@ -594,6 +681,15 @@ impl Driver {
             .drain(..)
             .filter_map(|turn| turn.turn_id)
             .collect();
+        for request in std::mem::take(&mut self.requests).into_values() {
+            if let Request::Steer(Turn {
+                turn_id: Some(turn_id),
+                ..
+            }) = request
+            {
+                dropped.push(turn_id);
+            }
+        }
         while let Ok(follow_up) = self.control.try_recv() {
             dropped.push(follow_up.turn_id);
         }

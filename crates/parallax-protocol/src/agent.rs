@@ -13,7 +13,8 @@ use ts_rs::TS;
 
 use crate::id::uuid_v7_id;
 use crate::{
-    AccountChoice, AgentApprovalBy, AgentApprovalDecision, ApprovalId, ParallaxEvent, ProjectId,
+    AccountChoice, AgentApprovalBy, AgentApprovalDecision, AgentDelivery, ApprovalId,
+    ParallaxEvent, ProjectId,
 };
 
 uuid_v7_id! {
@@ -817,6 +818,11 @@ pub struct AgentSendParams {
     /// the run's CLI gets their summaries when it's sent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub threads: Vec<RunId>,
+    /// How the message reaches a run whose CLI is working on a turn, sent only to a plxd that
+    /// advertises `queue` (PLX-370, 0048). Absent is `queue`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub delivery: Option<AgentDelivery>,
 }
 
 /// Params of `agent/cancel`: stops a running agent, which ends as `cancelled`. Cancelling a run

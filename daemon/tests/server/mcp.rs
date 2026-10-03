@@ -30,6 +30,7 @@ fn worker() -> Vec<Step> {
             content: "hello\nEdited by a subagent.\n".to_owned(),
         },
         text("Edited the README."),
+        Step::EndTurn { result: None },
         Step::AwaitFollowUp,
         end_turn("Done."),
     ]

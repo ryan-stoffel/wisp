@@ -9,11 +9,15 @@
 //! answered in time, and logs how each one ended, including when a cancel, a stop, or the CLI's
 //! exit ends it first.
 //!
-//! A message that changes what its CLI runs with (its model, another run option, or account)
-//! can't reach a CLI that's running, so it waits in a queue, with every message sent after it,
-//! until that CLI exits; then each goes to a new CLI process in turn. A new account on another
-//! backend moves the run there: the session can't follow, so a new one starts in the same place,
-//! told the conversation so far.
+//! A message sent while its CLI works on a turn waits in the run's queue (PLX-370, decision
+//! 0048), stored so a restart keeps it, until the turn ends; then it goes to the same CLI, which
+//! [`Run::hold`] keeps open for it. A message that changes what its CLI runs with (its model,
+//! another run option, or account) can't reach a CLI that's running, so it waits, with every
+//! message after it, until that CLI exits; then each goes to a new CLI process in turn. A new
+//! account on another backend moves the run there: the session can't follow, so a new one starts
+//! in the same place, told the conversation so far. Clients list, edit, reorder, and cancel what
+//! waits, and a steer goes into the running turn instead, through the backend, or by cancelling
+//! the CLI and resuming it with the message where the backend takes no messages while it runs.
 //!
 //! A project's coordinator (0024) differs in four places: it starts in a detached worktree of
 //! the project's repository (RYA-171) with plxd's tools and no sandbox, that worktree is checked
@@ -38,9 +42,12 @@ use parallax_protocol::{
     AccountChoice, AccountId, AgentApprovalAnswer, AgentApprovalBy, AgentApprovalDecision,
     AgentApproveParams, AgentApproveResult, AgentFailureKind, AgentOutcome, AgentOutputItem,
     AgentRun, ApprovalId, CoordinatorThreadId, DiffSummary, ErrorKind, GitStatus, ImageId,
-    ParallaxEvent, ProjectId, PromptImage, Role, RunId, TurnId,
+    ParallaxEvent, ProjectId, PromptImage, QueueResult, QueuedMessage, Role, RunId, TurnId,
 };
-use parallax_store::{Run as RunRow, RunAccept, SessionModelUsage, StoredImage, Worktree};
+use parallax_store::{
+    QueuedRow, Run as RunRow, RunAccept, SessionModelUsage, StoredImage, Worktree,
+};
+use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Instant, sleep_until};
 use tokio_util::sync::CancellationToken;
@@ -90,7 +97,14 @@ pub(super) enum Command {
         options: RunOptions,
         /// A new account for the run, perhaps on another backend.
         account: Option<AccountChoice>,
+        /// Into the running turn rather than after it (PLX-370).
+        steer: bool,
         reply: oneshot::Sender<Result<AgentRun, ErrorObject>>,
+    },
+    /// `queue/*` (PLX-370).
+    Queue {
+        op: QueueOp,
+        reply: oneshot::Sender<Result<QueueResult, ErrorObject>>,
     },
     /// `agent/cancel`.
     Cancel {
@@ -152,6 +166,9 @@ impl Command {
             Self::Approve { reply, .. } => {
                 let _ = reply.send(Err(error));
             }
+            Self::Queue { reply, .. } => {
+                let _ = reply.send(Err(error));
+            }
             Self::OpenPr { reply, .. } => {
                 let _ = reply.send(Err(error));
             }
@@ -166,8 +183,18 @@ impl Command {
     }
 }
 
-/// A message waiting for the run's CLI to exit: one that changes what the CLI runs with, or one
-/// sent after it.
+/// What `queue/*` asks of the run's queue (PLX-370).
+pub(crate) enum QueueOp {
+    List,
+    Edit { id: TurnId, text: String },
+    Reorder { ids: Vec<TurnId> },
+    Cancel { id: TurnId },
+    Steer { id: TurnId },
+}
+
+/// A message waiting for the run's CLI: one sent during a turn, one that changes what the CLI
+/// runs with, or one sent after either. Stored, so a restart keeps it (PLX-370).
+#[derive(Clone)]
 struct Queued {
     turn_id: TurnId,
     text: String,
@@ -175,6 +202,67 @@ struct Queued {
     threads: Vec<RunId>,
     options: RunOptions,
     account: Option<AccountChoice>,
+}
+
+/// What a stored [`Queued`] keeps beside its text, as its row's JSON.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
+struct QueuedExtra {
+    images: Vec<PromptImage>,
+    threads: Vec<RunId>,
+    options: RunOptions,
+    account: Option<AccountChoice>,
+}
+
+impl Queued {
+    fn row(&self) -> QueuedRow {
+        let extra = QueuedExtra {
+            images: self.images.clone(),
+            threads: self.threads.clone(),
+            options: self.options.clone(),
+            account: self.account.clone(),
+        };
+        QueuedRow {
+            turn_id: self.turn_id.into(),
+            text: self.text.clone(),
+            // Plain data, which serializes.
+            extra: serde_json::to_string(&extra).unwrap_or_default(),
+        }
+    }
+
+    /// `row` as it was stored, or `None` if it's corrupt.
+    fn from_row(row: QueuedRow) -> Option<Self> {
+        let turn_id = TurnId::try_from(row.turn_id).ok()?;
+        let extra: QueuedExtra = serde_json::from_str(&row.extra).ok()?;
+        Some(Self {
+            turn_id,
+            text: row.text,
+            images: extra.images,
+            threads: extra.threads,
+            options: extra.options,
+            account: extra.account,
+        })
+    }
+
+    /// It, for the live CLI as its next turn, after the summaries of the threads attached to it
+    /// (PLX-372).
+    async fn follow_up(&self, daemon: &Daemon) -> Result<FollowUp, ErrorObject> {
+        Ok(FollowUp {
+            turn_id: self.turn_id,
+            text: attached::prompt(daemon, &self.threads, &self.text).await?,
+            images: self.images.clone(),
+            steer: false,
+        })
+    }
+
+    fn message(&self) -> QueuedMessage {
+        QueuedMessage {
+            id: self.turn_id,
+            text: self.text.clone(),
+            images: u32::try_from(self.images.len()).unwrap_or(u32::MAX),
+            threads: self.threads.clone(),
+        }
+    }
 }
 
 struct Live {
@@ -221,8 +309,16 @@ pub(super) struct Actor {
     attached: HashMap<Option<TurnId>, Vec<RunId>>,
     /// The latest prompt or message, for the commit message.
     last_message: String,
-    /// Messages waiting for the running CLI to exit, oldest first.
+    /// Messages waiting for the run's CLI, first to be sent first (PLX-370).
     queued: VecDeque<Queued>,
+    /// Turns the live CLI has been given and hasn't finished: while there are any, a queued
+    /// message waits.
+    in_flight: usize,
+    /// What [`Run::hold`] last told the live CLI.
+    held: bool,
+    /// Messages the live CLI took and hasn't started a turn for: one it drops instead, as a CLI
+    /// that exits first does, waits again for the next CLI.
+    handed: Vec<Queued>,
     stopping: bool,
     /// Set once `thread/delete` or `project/delete` removed the run: the actor stops, refusing
     /// what is still queued.
@@ -267,6 +363,9 @@ impl Actor {
             attached: HashMap::new(),
             last_message,
             queued: VecDeque::new(),
+            in_flight: 0,
+            held: false,
+            handed: Vec::new(),
             stopping: false,
             deleted: false,
             wakes: Wakes::default(),
@@ -297,10 +396,9 @@ impl Actor {
         if self.is_coordinator() {
             self.load_wakes().await;
         }
+        self.load_queue().await;
         loop {
-            if self.live.is_none() && !self.stopping {
-                self.send_queued().await;
-            }
+            self.deliver().await;
             let deadline = self.batch.since.map(|since| since + COALESCE);
             // A coordinator's turn in progress gets its wake-ups next, once its CLI has exited.
             let wake_at = self.wakes.due().filter(|_| self.live.is_none());
@@ -317,9 +415,9 @@ impl Actor {
                 // `Finished` hasn't been drained yet. `send` already copes with the equivalent
                 // case (`SendError::Finished`); a caller of `accept` just retries.
                 biased;
+                // What waits stays stored, for the next plxd to send.
                 () = shutdown.cancelled(), if !self.stopping => {
                     self.stopping = true;
-                    self.drop_queued().await;
                     self.stop_approvals(AgentApprovalBy::Stop).await;
                     if let Some(live) = &self.live {
                         live.run.cancel();
@@ -365,11 +463,18 @@ impl Actor {
                 threads,
                 options,
                 account,
+                steer,
                 reply,
             } => {
-                let answer = self
-                    .send(turn_id, text, images, threads, options, account)
-                    .await;
+                let message = Queued {
+                    turn_id,
+                    text,
+                    images,
+                    threads,
+                    options,
+                    account,
+                };
+                let answer = self.send(message, steer).await;
                 if answer.is_ok() && self.wakes.attended() {
                     self.save_wakes().await;
                 }
@@ -380,8 +485,10 @@ impl Actor {
                     info!(run = %self.id, "cancelling an agent run");
                     self.stop_approvals(AgentApprovalBy::Cancel).await;
                 }
-                // Stop means stop: what waited for this turn to end doesn't start another, and a
-                // run waiting for its usage limit doesn't resume.
+                // Stop means stop: what waited for this turn to end doesn't start another, nor
+                // does what the CLI took and drops as it stops, and a run waiting for its usage
+                // limit doesn't resume.
+                self.handed.clear();
                 self.drop_queued().await;
                 self.cancel_waiting().await;
                 if let Some(live) = &self.live {
@@ -396,6 +503,10 @@ impl Actor {
             }
             Command::Approve { params, reply } => {
                 let answer = self.approve(params).await;
+                let _ = reply.send(answer);
+            }
+            Command::Queue { op, reply } => {
+                let answer = self.queue_op(op).await;
                 let _ = reply.send(answer);
             }
             Command::Accept {
@@ -899,16 +1010,11 @@ impl Actor {
         }
     }
 
-    async fn send(
-        &mut self,
-        turn_id: TurnId,
-        text: String,
-        images: Vec<PromptImage>,
-        threads: Vec<RunId>,
-        options: RunOptions,
-        account: Option<AccountChoice>,
-    ) -> Result<AgentRun, ErrorObject> {
-        if text.trim().is_empty() && images.is_empty() {
+    /// `agent/send`: `queued` goes into the running turn with `steer`, and otherwise as the
+    /// run's next turn, waiting for it if it must.
+    async fn send(&mut self, queued: Queued, steer: bool) -> Result<AgentRun, ErrorObject> {
+        let (turn_id, text) = (queued.turn_id, &queued.text);
+        if text.trim().is_empty() && queued.images.is_empty() {
             return Err(ErrorObject::invalid_params("text must not be empty"));
         }
         if self.accepted() {
@@ -920,58 +1026,123 @@ impl Actor {
             .get(&turn_id)
             .or(waiting.map(|queued| &queued.text))
         {
-            return if *sent == text {
+            return if sent == text {
                 self.snapshot()
             } else {
-                Err(ErrorObject::parallax(
-                    ErrorKind::IdConflict,
-                    format!("turn {turn_id} was already sent with a different text"),
-                ))
+                Err(id_conflict(turn_id))
             };
         }
-        // A running CLI can't change what it runs with, and what's sent after a message that
-        // waits for it waits too, so the messages keep their order.
-        let changing =
-            self.changes(options.clone()) != RunOptions::default() || self.moves(account.as_ref());
-        if self.live.is_some() && (changing || !self.queued.is_empty()) {
-            return self.queue(turn_id, text, images, threads, options, account);
+        if steer {
+            return self.steer(queued).await;
         }
-        if let Some(live) = &self.live {
-            let follow_up = FollowUp {
-                turn_id,
-                text: attached::prompt(&self.daemon, &threads, &text).await?,
-                images: images.clone(),
-            };
-            match live.run.send(follow_up) {
+        // A running CLI can't change what it runs with, a turn in progress finishes before the
+        // next starts, and what's sent after a message that waits waits too, so the messages keep
+        // their order.
+        if self.live.is_some()
+            && (self.changing(&queued) || self.in_flight > 0 || !self.queued.is_empty())
+        {
+            return self.queue(queued).await;
+        }
+        if self.live.is_some() {
+            match self.hand_over(&queued).await? {
                 Ok(()) => {
-                    self.record_turn(turn_id, text.clone()).await;
-                    self.keep_images(Some(turn_id), images).await;
-                    self.attach(Some(turn_id), threads);
-                    self.last_message = text;
+                    self.handed_over(queued).await;
                     return self.snapshot();
                 }
-                Err(SendError::IdConflict) => {
-                    return Err(ErrorObject::parallax(
-                        ErrorKind::IdConflict,
-                        format!("turn {turn_id} was already sent with a different text"),
-                    ));
-                }
+                Err(SendError::IdConflict) => return Err(id_conflict(turn_id)),
                 // A backend that takes no messages while it runs gets this one once it's done.
-                Err(SendError::Unsupported) => {
-                    return self.queue(turn_id, text, images, threads, options, account);
-                }
+                Err(SendError::Unsupported) => return self.queue(queued).await,
                 // The CLI is exiting: let the run finish, then resume it with the message.
-                Err(SendError::Finished) => {
-                    while self.live.is_some() {
-                        let event = next_event(&mut self.live).await;
-                        self.on_event(event).await;
-                    }
-                }
+                Err(SendError::Finished) => self.drain().await,
             }
         }
+        let Queued {
+            turn_id,
+            text,
+            images,
+            threads,
+            options,
+            account,
+        } = queued;
         let changes = self.changes(options);
         self.resume(turn_id, text, images, threads, changes, account)
             .await
+    }
+
+    /// `agent/send` with `delivery: steer`, and `queue/steer`: `queued` goes into the turn running
+    /// now (PLX-370). A backend that takes no messages while it runs is cancelled and resumed
+    /// with it, and a run with no CLI running resumes with it at once.
+    async fn steer(&mut self, queued: Queued) -> Result<AgentRun, ErrorObject> {
+        if self.changing(&queued) {
+            return Err(ErrorObject::parallax(
+                ErrorKind::UnsupportedOption,
+                "a steer goes into the running turn, which can't change the run's model, \
+                 options, or account; queue the message instead",
+            ));
+        }
+        let mut steer = queued.follow_up(&self.daemon).await?;
+        steer.steer = true;
+        let sent = self.live.as_ref().map(|live| live.run.send(steer));
+        match sent {
+            Some(Ok(())) => {
+                info!(run = %self.id, turn = %queued.turn_id, "steering a running turn");
+                self.handed_over(queued).await;
+                return self.snapshot();
+            }
+            Some(Err(SendError::IdConflict)) => return Err(id_conflict(queued.turn_id)),
+            Some(Err(SendError::Unsupported)) => {
+                info!(run = %self.id, turn = %queued.turn_id, "interrupting a run to steer it");
+                self.stop_approvals(AgentApprovalBy::Cancel).await;
+                if let Some(live) = &self.live {
+                    live.run.cancel();
+                }
+                self.drain().await;
+            }
+            Some(Err(SendError::Finished)) => self.drain().await,
+            None => {}
+        }
+        let Queued {
+            turn_id,
+            text,
+            images,
+            threads,
+            ..
+        } = queued;
+        self.resume(turn_id, text, images, threads, RunOptions::default(), None)
+            .await
+    }
+
+    /// Hands `queued` to the live CLI as its next turn.
+    async fn hand_over(&self, queued: &Queued) -> Result<Result<(), SendError>, ErrorObject> {
+        let follow_up = queued.follow_up(&self.daemon).await?;
+        Ok(match &self.live {
+            Some(live) => live.run.send(follow_up),
+            None => Err(SendError::Finished),
+        })
+    }
+
+    /// Records `queued`, which the live CLI has taken.
+    async fn handed_over(&mut self, queued: Queued) {
+        self.in_flight += 1;
+        self.handed.push(queued.clone());
+        self.record_turn(queued.turn_id, queued.text.clone()).await;
+        self.keep_images(Some(queued.turn_id), queued.images).await;
+        self.attach(Some(queued.turn_id), queued.threads);
+        self.last_message = queued.text;
+    }
+
+    /// Lets the live CLI, which is exiting or was cancelled, finish.
+    async fn drain(&mut self) {
+        while self.live.is_some() {
+            let event = next_event(&mut self.live).await;
+            self.on_event(event).await;
+        }
+    }
+
+    /// Whether `queued` changes what the run's CLI runs with, so it waits for the CLI to exit.
+    fn changing(&self, queued: &Queued) -> bool {
+        self.changes(queued.options.clone()) != RunOptions::default()
+            || self.moves(queued.account.as_ref())
     }
 
     /// Of `options`, those that differ from the run's.
@@ -995,26 +1166,72 @@ impl Actor {
         account.is_some_and(|account| *account != session_account(&self.row.state.account_id))
     }
 
-    /// Keeps a message until the running CLI exits.
-    fn queue(
-        &mut self,
-        turn_id: TurnId,
-        text: String,
-        images: Vec<PromptImage>,
-        threads: Vec<RunId>,
-        options: RunOptions,
-        account: Option<AccountChoice>,
-    ) -> Result<AgentRun, ErrorObject> {
-        info!(run = %self.id, turn = %turn_id, "a message waits for the run's CLI to exit");
-        self.queued.push_back(Queued {
-            turn_id,
-            text,
-            images,
-            threads,
-            options,
-            account,
-        });
+    /// Keeps a message until the run's CLI can take it.
+    async fn queue(&mut self, queued: Queued) -> Result<AgentRun, ErrorObject> {
+        info!(run = %self.id, turn = %queued.turn_id, "a message waits for the run's CLI");
+        self.queued.push_back(queued);
+        // A message plxd couldn't store must not look queued.
+        if let Err(error) = self.store_queue().await {
+            self.queued.pop_back();
+            return Err(error);
+        }
+        self.report_queue().await;
         self.snapshot()
+    }
+
+    /// Sends what waits as far as the run can take it now: while no CLI runs, the next message
+    /// to a new CLI process; while the live CLI has no turn in progress, the next message that
+    /// doesn't change what it runs with, as its next turn. Holds the CLI open while that waits.
+    async fn deliver(&mut self) {
+        if self.stopping {
+            return;
+        }
+        if self.live.is_none() {
+            self.send_queued().await;
+        }
+        while self.in_flight == 0 && self.live.is_some() {
+            let Some(next) = self.queued.front().cloned() else {
+                break;
+            };
+            if self.changing(&next) {
+                break;
+            }
+            // At least once (0048): the CLI gets the message before its stored row is deleted,
+            // so a crash between the two resends it once after a restart, as `record_turn` does,
+            // rather than losing it.
+            let handed = match self.hand_over(&next).await {
+                Ok(handed) => handed,
+                Err(error) => {
+                    self.queued.pop_front();
+                    self.dropped(next.turn_id, &error.message).await;
+                    self.save_queue().await;
+                    continue;
+                }
+            };
+            match handed {
+                Ok(()) => {
+                    self.queued.pop_front();
+                    self.handed_over(next).await;
+                    self.save_queue().await;
+                }
+                Err(SendError::IdConflict) => {
+                    self.queued.pop_front();
+                    self.dropped(next.turn_id, "its turn id was already used")
+                        .await;
+                    self.save_queue().await;
+                }
+                // It goes once the CLI has exited.
+                Err(SendError::Unsupported | SendError::Finished) => break,
+            }
+        }
+        let hold =
+            self.live.is_some() && self.queued.front().is_some_and(|next| !self.changing(next));
+        if let Some(live) = &self.live
+            && hold != self.held
+        {
+            live.run.hold(hold);
+            self.held = hold;
+        }
     }
 
     /// Sends the next waiting message, now that no CLI runs, to a new CLI process with its
@@ -1034,38 +1251,188 @@ impl Actor {
                 account,
             } = next;
             let changes = self.changes(options);
-            let resumed = self
+            let why = match self
                 .resume(turn_id, text, images, threads, changes, account)
-                .await;
-            let why = match resumed {
-                Ok(_) if self.live.is_some() => return,
-                Ok(_) => self
-                    .row
-                    .state
-                    .error
-                    .clone()
-                    .unwrap_or_else(|| "its CLI didn't start".to_owned()),
-                Err(error) => error.message,
+                .await
+            {
+                Ok(_) if self.live.is_some() => None,
+                Ok(_) => Some(
+                    self.row
+                        .state
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "its CLI didn't start".to_owned()),
+                ),
+                Err(error) => Some(error.message),
             };
-            warn!(run = %self.id, turn = %turn_id, %why, "a waiting message couldn't be sent");
-            self.push(AgentOutputItem::Warning {
-                detail: format!("A message couldn't be sent: {why}"),
-            })
-            .await;
-            self.push(AgentOutputItem::FollowUpDropped { turn_id })
-                .await;
-            self.flush().await;
+            if let Some(why) = why {
+                self.dropped(turn_id, &why).await;
+            }
+            self.save_queue().await;
         }
+    }
+
+    /// Logs that waiting message `turn_id` couldn't be sent, and why.
+    async fn dropped(&mut self, turn_id: TurnId, why: &str) {
+        warn!(run = %self.id, turn = %turn_id, %why, "a waiting message couldn't be sent");
+        self.push(AgentOutputItem::Warning {
+            detail: format!("A message couldn't be sent: {why}"),
+        })
+        .await;
+        self.push(AgentOutputItem::FollowUpDropped { turn_id })
+            .await;
+        self.flush().await;
     }
 
     /// Drops every waiting message, which never reached a CLI, as a stopped run's follow-ups are.
     async fn drop_queued(&mut self) {
+        if self.queued.is_empty() {
+            return;
+        }
         while let Some(queued) = self.queued.pop_front() {
             info!(run = %self.id, turn = %queued.turn_id, "dropping a waiting message");
             let turn_id = queued.turn_id;
             self.push(AgentOutputItem::FollowUpDropped { turn_id })
                 .await;
         }
+        self.save_queue().await;
+    }
+
+    /// `queue/*` (PLX-370): reads or changes the waiting messages, and answers with them as they
+    /// are after.
+    async fn queue_op(&mut self, op: QueueOp) -> Result<QueueResult, ErrorObject> {
+        match op {
+            QueueOp::List => {}
+            QueueOp::Edit { id, text } => {
+                let at = self.position(id)?;
+                let queued = &mut self.queued[at];
+                if text.trim().is_empty() && queued.images.is_empty() {
+                    return Err(ErrorObject::invalid_params("text must not be empty"));
+                }
+                queued.text = text;
+                self.save_queue().await;
+            }
+            QueueOp::Reorder { ids } => {
+                let mut rest = self.queued.clone();
+                let mut reordered = VecDeque::with_capacity(rest.len());
+                for id in ids {
+                    let at = rest.iter().position(|queued| queued.turn_id == id);
+                    let Some(queued) = at.and_then(|at| rest.remove(at)) else {
+                        return Err(ErrorObject::invalid_params(format!(
+                            "ids must list each waiting message once, and {id} isn't one or is \
+                             listed twice"
+                        )));
+                    };
+                    reordered.push_back(queued);
+                }
+                if !rest.is_empty() {
+                    return Err(ErrorObject::invalid_params(format!(
+                        "ids must list each waiting message once, and leave out {}",
+                        rest.len()
+                    )));
+                }
+                self.queued = reordered;
+                self.save_queue().await;
+            }
+            QueueOp::Cancel { id } => {
+                let at = self.position(id)?;
+                self.queued.remove(at);
+                info!(run = %self.id, turn = %id, "cancelling a waiting message");
+                self.push(AgentOutputItem::FollowUpDropped { turn_id: id })
+                    .await;
+                self.save_queue().await;
+            }
+            QueueOp::Steer { id } => {
+                let at = self.position(id)?;
+                let queued = self.queued[at].clone();
+                if self.changing(&queued) {
+                    // `steer` refuses it; the message keeps its place.
+                    self.steer(queued).await?;
+                } else {
+                    self.queued.remove(at);
+                    let steered = self.steer(queued.clone()).await;
+                    if let Err(error) = steered {
+                        let at = at.min(self.queued.len());
+                        self.queued.insert(at, queued);
+                        return Err(error);
+                    }
+                    self.save_queue().await;
+                }
+            }
+        }
+        Ok(QueueResult {
+            messages: self.messages(),
+        })
+    }
+
+    /// Where waiting message `id` is in the queue.
+    fn position(&self, id: TurnId) -> Result<usize, ErrorObject> {
+        self.queued
+            .iter()
+            .position(|queued| queued.turn_id == id)
+            .ok_or_else(|| {
+                ErrorObject::parallax(
+                    ErrorKind::QueuedMessageNotFound,
+                    format!("run {} has no waiting message {id}", self.id),
+                )
+            })
+    }
+
+    fn messages(&self) -> Vec<QueuedMessage> {
+        self.queued.iter().map(Queued::message).collect()
+    }
+
+    /// Takes up the waiting messages the store has for the run, which a plxd before this one
+    /// left (PLX-370). One that can't be read is left out, with a warning.
+    async fn load_queue(&mut self) {
+        let id = self.row.id;
+        let stored = store(&self.daemon, move |db| {
+            db.queue(id).map_err(|error| store_error(&error))
+        })
+        .await;
+        match stored {
+            Ok(rows) => {
+                for row in rows {
+                    match Queued::from_row(row) {
+                        Some(queued) => self.queued.push_back(queued),
+                        None => {
+                            warn!(run = %self.id, "a stored waiting message is corrupt; leaving it out");
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                warn!(run = %self.id, error = %error.message, "could not read a run's waiting messages");
+            }
+        }
+    }
+
+    /// Stores the waiting messages as they are now, and reports them as `queue.updated`.
+    async fn save_queue(&mut self) {
+        if let Err(error) = self.store_queue().await {
+            warn!(run = %self.id, error = %error.message, "could not store a run's waiting messages");
+        }
+        self.report_queue().await;
+    }
+
+    /// Stores the waiting messages as they are now.
+    async fn store_queue(&self) -> Result<(), ErrorObject> {
+        let id = self.row.id;
+        let rows: Vec<QueuedRow> = self.queued.iter().map(Queued::row).collect();
+        store(&self.daemon, move |db| {
+            db.set_queue(id, &rows).map_err(|error| store_error(&error))
+        })
+        .await
+    }
+
+    /// Reports the waiting messages as they are now as `queue.updated`.
+    async fn report_queue(&mut self) {
+        self.flush().await;
+        self.append(ParallaxEvent::QueueUpdated {
+            run_id: self.id,
+            messages: self.messages(),
+        })
+        .await;
     }
 
     /// Starts a new CLI process for the run with `text`, after the summaries of `threads`, and
@@ -1463,6 +1830,9 @@ impl Actor {
                     temp,
                 });
                 self.daemon.agents.running.fetch_add(1, Ordering::Relaxed);
+                // The prompt's turn.
+                self.in_flight = 1;
+                self.held = false;
                 convert::RUNNING.clone_into(&mut self.row.state.status);
                 self.row.state.account_id = account_id;
                 self.row.state.error = None;
@@ -1655,6 +2025,9 @@ impl Actor {
                 self.finish(&outcome).await;
             }
             _ => {
+                if self.track_turns(&event).await {
+                    return;
+                }
                 let created = self.created_prs(&event);
                 if let Some(mut item) = output_item(&event) {
                     // A follow-up's text, which `send` recorded before its CLI could report the
@@ -1690,7 +2063,37 @@ impl Actor {
         }
     }
 
+    /// Counts the live CLI's turns in flight, and puts a message it took but drops as it exits
+    /// back first in the queue, for the next CLI (PLX-370). Returns whether that happened, so the
+    /// message isn't logged dropped.
+    async fn track_turns(&mut self, event: &Event) -> bool {
+        if matches!(
+            event,
+            Event::TurnFinished { .. } | Event::FollowUpDropped { .. }
+        ) {
+            self.in_flight = self.in_flight.saturating_sub(1);
+        }
+        match event {
+            Event::TurnStarted {
+                turn_id: Some(turn_id),
+            } => self.handed.retain(|queued| queued.turn_id != *turn_id),
+            Event::FollowUpDropped { turn_id } => {
+                if let Some(at) = self.handed.iter().position(|q| q.turn_id == *turn_id) {
+                    let queued = self.handed.remove(at);
+                    self.queued.push_front(queued);
+                    self.save_queue().await;
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        false
+    }
+
     fn clear_live(&mut self) {
+        self.in_flight = 0;
+        self.held = false;
+        self.handed.clear();
         if let Some(live) = self.live.take() {
             self.daemon.agents.running.fetch_sub(1, Ordering::Relaxed);
             // A worker's temp can hold a whole package store, so it goes off this task's thread.
@@ -1874,6 +2277,13 @@ impl Actor {
         })
         .await;
     }
+}
+
+fn id_conflict(turn_id: TurnId) -> ErrorObject {
+    ErrorObject::parallax(
+        ErrorKind::IdConflict,
+        format!("turn {turn_id} was already sent with a different text"),
+    )
 }
 
 /// The account a run's session belongs to, as routing takes it: a key account's id, or else a
@@ -2090,7 +2500,7 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::{
-        Actor, Command, HISTORY_BYTES, Live, attached, commit_message, conversation,
+        Actor, Command, HISTORY_BYTES, Live, Queued, attached, commit_message, conversation,
         handoff_message, handoff_notice, session_account,
     };
     use crate::agents::RunOptions;
@@ -2099,6 +2509,18 @@ mod tests {
         Answer, AnswerError, ApprovalRequest, Event, EventSink, FollowUp, Run, SendError,
     };
     use crate::server::Daemon;
+
+    /// A message for [`Actor::send`].
+    fn message(turn_id: TurnId, text: &str, options: RunOptions) -> Queued {
+        Queued {
+            turn_id,
+            text: text.to_owned(),
+            images: Vec::new(),
+            threads: Vec::new(),
+            options,
+            account: None,
+        }
+    }
 
     #[test]
     fn a_session_resumes_on_the_account_it_ended_on() {
@@ -2430,48 +2852,20 @@ mod tests {
         };
         let (first, second) = (TurnId::generate(), TurnId::generate());
         let run = actor
-            .send(
-                first,
-                "Hurry up".to_owned(),
-                Vec::new(),
-                Vec::new(),
-                sonnet.clone(),
-                None,
-            )
+            .send(message(first, "Hurry up", sonnet.clone()), false)
             .await
             .unwrap();
         assert_eq!(run.model, None, "nothing changes until the CLI exits");
         actor
-            .send(
-                second,
-                "And then".to_owned(),
-                Vec::new(),
-                Vec::new(),
-                RunOptions::default(),
-                None,
-            )
+            .send(message(second, "And then", RunOptions::default()), false)
             .await
             .unwrap();
         actor
-            .send(
-                first,
-                "Hurry up".to_owned(),
-                Vec::new(),
-                Vec::new(),
-                sonnet.clone(),
-                None,
-            )
+            .send(message(first, "Hurry up", sonnet.clone()), false)
             .await
             .unwrap();
         let conflict = actor
-            .send(
-                first,
-                "Other".to_owned(),
-                Vec::new(),
-                Vec::new(),
-                sonnet,
-                None,
-            )
+            .send(message(first, "Other", sonnet), false)
             .await
             .unwrap_err();
         assert_eq!(
@@ -2518,14 +2912,7 @@ mod tests {
         });
         let turn = TurnId::generate();
         actor
-            .send(
-                turn,
-                "Also this".to_owned(),
-                Vec::new(),
-                Vec::new(),
-                RunOptions::default(),
-                None,
-            )
+            .send(message(turn, "Also this", RunOptions::default()), false)
             .await
             .unwrap();
         assert_eq!(

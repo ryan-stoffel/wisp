@@ -1,0 +1,20 @@
+# A steer (PLX-370): a message sent with turn/steer while a command runs joins that turn. The
+# shapes are 0.160.0's, trimmed from a real run on gpt-6-luna.
+<
+{"id":1,"result":{"userAgent":"plxd/0.160.0","codexHome":"/Users/u/.codex","platformFamily":"unix","platformOs":"macos"}}
+# initialized, then thread/start
+<
+<
+{"id":2,"result":{"thread":{"id":"t-1","sessionId":"t-1","preview":"","ephemeral":false,"modelProvider":"openai","model":"gpt-6-luna","status":{"type":"idle"},"turns":[]},"model":"gpt-6-luna","modelProvider":"openai","cwd":"/repo","approvalPolicy":"on-request","sandbox":{"type":"workspaceWrite"}}}
+# turn/start
+<
+{"id":3,"result":{"turn":{"id":"u-1","items":[],"itemsView":"notLoaded","status":"inProgress","error":null,"startedAt":null,"completedAt":null,"durationMs":null}}}
+{"method":"turn/started","params":{"threadId":"t-1","turn":{"id":"u-1","items":[],"itemsView":"notLoaded","status":"inProgress","error":null,"startedAt":1791049954,"completedAt":null,"durationMs":null}}}
+{"method":"item/started","params":{"item":{"type":"commandExecution","id":"exec-1","pluginId":null,"scriptPath":null,"command":"/bin/zsh -lc 'sleep 8'","cwd":"/repo","processId":"63721","source":"unifiedExecStartup","status":"inProgress","commandActions":[{"type":"unknown","command":"sleep 8"}],"aggregatedOutput":null,"exitCode":null,"durationMs":null},"threadId":"t-1","turnId":"u-1","startedAtMs":1791049957000}}
+# turn/steer
+<
+{"id":4,"result":{"turnId":"u-1"}}
+{"method":"item/completed","params":{"item":{"type":"commandExecution","id":"exec-1","pluginId":null,"scriptPath":null,"command":"/bin/zsh -lc 'sleep 8'","cwd":"/repo","processId":"63721","source":"unifiedExecStartup","status":"completed","commandActions":[{"type":"unknown","command":"sleep 8"}],"aggregatedOutput":null,"exitCode":0,"durationMs":7875},"threadId":"t-1","turnId":"u-1","completedAtMs":1791049966000}}
+{"method":"item/completed","params":{"item":{"type":"userMessage","id":"user-2","clientId":null,"content":[{"type":"text","text":"Change of plan: reply BANANA instead.","text_elements":[]}]},"threadId":"t-1","turnId":"u-1","completedAtMs":1791049966363}}
+{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"msg_1","text":"BANANA","phase":"final_answer","memoryCitation":null,"delivery":null,"questions":null},"threadId":"t-1","turnId":"u-1","completedAtMs":1791049967290}}
+{"method":"turn/completed","params":{"threadId":"t-1","turn":{"id":"u-1","items":[{"type":"agentMessage","id":"msg_1","text":"BANANA","phase":"final_answer","memoryCitation":null,"delivery":null,"questions":null}],"itemsView":"summary","status":"completed","error":null,"startedAt":1791049954,"completedAt":1791049967,"durationMs":13000}}}

@@ -43,8 +43,9 @@ use crate::{
     HostVersionParams, HostVersionResult, InitializeParams, InitializeResult, PrActParams,
     PrDiffResult, PrViewParams, ProjectCreateParams, ProjectCreateResult, ProjectDeleteParams,
     ProjectDeleteResult, ProjectListParams, ProjectListResult, ProjectStartParams,
-    ProjectUpdateParams, ProjectUpdateResult, PromptImage, PullRequest, RepoAddParams,
-    RepoAddResult, RepoFilesParams, RepoFilesResult, RepoRefsParams, RepoRefsResult,
+    ProjectUpdateParams, ProjectUpdateResult, PromptImage, PullRequest, QueueCancelParams,
+    QueueEditParams, QueueListParams, QueueReorderParams, QueueResult, QueueSteerParams,
+    RepoAddParams, RepoAddResult, RepoFilesParams, RepoFilesResult, RepoRefsParams, RepoRefsResult,
     RepoUpdateParams, RepoUpdateResult, ThreadArchiveParams, ThreadArchiveResult,
     ThreadDeleteParams, ThreadDeleteResult, ThreadListParams, ThreadListResult, ThreadSearchParams,
     ThreadSearchResult, ThreadStartParams, ThreadStartResult, ThreadUpdateParams,
@@ -301,6 +302,17 @@ method_table! {
         HostSettingsGet = "host/settings/get": HostSettingsGetParams => HostSettings;
         /// `host/settings/set`: changes this host's settings and returns them.
         HostSettingsSet = "host/settings/set": HostSettingsSetParams => HostSettings;
+        /// `queue/list`: a run's waiting messages, first to be sent first (PLX-370). Gated on
+        /// the `queue` capability, like every `queue/*` method.
+        QueueList = "queue/list": QueueListParams => QueueResult;
+        /// `queue/edit`: replaces a waiting message's text.
+        QueueEdit = "queue/edit": QueueEditParams => QueueResult;
+        /// `queue/reorder`: puts a run's waiting messages in a new order.
+        QueueReorder = "queue/reorder": QueueReorderParams => QueueResult;
+        /// `queue/cancel`: drops a waiting message, which is never sent.
+        QueueCancel = "queue/cancel": QueueCancelParams => QueueResult;
+        /// `queue/steer`: sends a waiting message into the turn running now.
+        QueueSteer = "queue/steer": QueueSteerParams => QueueResult;
     }
     notifications {
         /// `$/cancelRequest`: cancels a request, which still gets exactly one response. Either
@@ -397,6 +409,11 @@ mod tests {
                 "agent/autoResume",
                 "host/settings/get",
                 "host/settings/set",
+                "queue/list",
+                "queue/edit",
+                "queue/reorder",
+                "queue/cancel",
+                "queue/steer",
                 "$/cancelRequest",
                 "events/event",
             ]
