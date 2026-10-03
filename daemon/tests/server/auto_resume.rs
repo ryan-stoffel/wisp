@@ -10,9 +10,9 @@ use parallax_protocol::methods::{
     AgentCancel, AgentList, AgentResumeNow, AgentSend, AgentStart, HostSettingsGet, HostSettingsSet,
 };
 use parallax_protocol::{
-    AgentCancelParams, AgentListParams, AgentOutputItem, AgentResumeNowParams, AgentRunState,
-    AgentStatus, ErrorKind, EventsEventParams, HostSettingsGetParams, HostSettingsSetParams,
-    ParallaxEvent, Provider, RunId, TurnId,
+    AgentCancelParams, AgentListParams, AgentOutputItem, AgentPermission, AgentResumeNowParams,
+    AgentRunState, AgentStatus, ErrorKind, EventsEventParams, HostSettingsGetParams,
+    HostSettingsSetParams, ParallaxEvent, Provider, RunId, TurnId,
 };
 use plxd::backend::fake::{FakeBackend, Step};
 use plxd::backend::{
@@ -43,6 +43,10 @@ impl Backend for Sequence {
 
     fn capabilities(&self) -> Capabilities {
         self.scripts.lock().unwrap()[0].capabilities()
+    }
+
+    fn permissions(&self) -> &'static [AgentPermission] {
+        self.scripts.lock().unwrap()[0].permissions()
     }
 
     fn start(&self, request: RunRequest) -> Result<Started, StartError> {
