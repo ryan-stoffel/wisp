@@ -190,6 +190,25 @@ test("a wake-up reads as from Parallax, with its message folded away", () => {
   expect(document.querySelector(".bg-selected")).toBeNull();
 });
 
+test("another thread's message and stop name it, with the message folded away (0041)", () => {
+  const user: Item = { kind: "user", key: "f", text: "Rebase first.", turnId: "t", from: "r" };
+  render(<RowView row={user} live={false} open={false} onToggle={() => {}} sender="Notes" />);
+  expect(document.querySelector("summary")!.textContent).toBe("From another thread: Notes");
+  expect(document.querySelector("details")!.open).toBe(false);
+  expect(document.querySelector(".bg-selected")).toBeNull();
+  act(() => unmount());
+
+  const stop: Item = {
+    kind: "notice",
+    key: "s",
+    tone: "info",
+    text: "Stopped by another thread.",
+    from: "r",
+  };
+  render(<RowView row={stop} live={false} open={false} onToggle={() => {}} sender="Notes" />);
+  expect(document.body.textContent).toBe("Stopped by another thread: Notes.");
+});
+
 test("an assistant message renders Markdown, but never raw HTML or images", () => {
   row({
     kind: "assistant",
@@ -1569,8 +1588,10 @@ test("a bar beside the transcript for each prompt shows it and its reply, and sc
     { kind: "user", key: "u1", text: "Add a **README**" },
     { kind: "assistant", key: "a1", text: "Started.\n\nStill going." },
     { kind: "assistant", key: "a2", text: "Wrote `README.md`.\n\nIt lists the commands." },
-    // Parallax's wake-up isn't the user's, and the reply to it isn't the README's.
+    // Parallax's wake-up and another thread's message aren't the user's, and the reply to them
+    // isn't the README's.
     { kind: "user", key: "w", text: "Subagents finished", wake: true },
+    { kind: "user", key: "f", text: "Merge it.", turnId: "t1", from: "r" },
     { kind: "assistant", key: "a3", text: "Merged the PR." },
     { kind: "user", key: "u2", text: null, turnId: "t2" },
   ];
