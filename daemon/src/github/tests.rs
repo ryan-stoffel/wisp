@@ -164,6 +164,8 @@ async fn install_puts_a_verified_gh_in_the_tools_folder_where_status_finds_it() 
     let fixture = Fixture::new();
     fixture.link("curl");
     fixture.link("tar");
+    // GNU tar runs gzip to unpack Linux's tar.gz.
+    fixture.link("gzip");
     let launcher = fixture.launcher(&fixture.bin().display().to_string(), &[]);
     let github = Github::new(launcher.clone(), fixture.release(None));
     github.install().unwrap();
