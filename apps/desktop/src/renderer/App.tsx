@@ -23,6 +23,7 @@ import { attentionOf } from "./attention";
 import { useSnoozeAlarms } from "./alarms";
 import { ProjectIcon, RepoIcon, SettingsNav, settingsNames, Sidebar, ThreadList } from "./Sidebar";
 import { useThemePreference } from "./theme";
+import type { ThreadLinks } from "./threadContext";
 import { useAppearanceEffects } from "./appearance";
 import { folderOf, runInDrawer, TerminalDrawer, TerminalPool, useDeleted } from "./ThreadTerminal";
 import {
@@ -105,6 +106,15 @@ export function App() {
     [],
   );
   const threads = views[host.id] ?? idleThreads;
+  // The open host's threads, which a message attaches and its chips open (PLX-378).
+  const threadLinks = useMemo<ThreadLinks>(
+    () => ({
+      hostId: host.id,
+      state: threads.state,
+      open: (threadId) => setSelection({ kind: "thread", threadId }),
+    }),
+    [host.id, threads.state],
+  );
   const listed = useMemo(
     () => hosts.map((h) => ({ host: h, view: views[h.id] ?? idleThreads })),
     [hosts, views],
@@ -456,6 +466,7 @@ export function App() {
                 onPrOpened={linksPrs ? openPr : undefined}
                 compose={compose}
                 onComposed={composed}
+                threadLinks={threadLinks}
               />
             ) : selection.kind === "new" ? (
               <NewThread
@@ -476,6 +487,7 @@ export function App() {
                   if (!background) setSelection({ kind: "thread", threadId, started: true });
                 }}
                 disabledReason={offline}
+                threadLinks={threadLinks}
               />
             ) : agentId ? (
               <AgentChat

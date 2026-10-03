@@ -221,8 +221,9 @@ export interface ThreadsView {
    * Starts a thread in a group with `prompt` and its `images`, with `options` sent as they are, and
    * its branch and title from `name`. With `checkout`, it works in the repository's own checkout
    * instead of a new worktree, so it gets no branch. `gitRef` is the ref the worktree starts from,
-   * or with `checkout`, the branch the checkout switches to first. Reuse `runId`, with the same
-   * options, `checkout`, and `gitRef`, to retry. Resolves to plxd's error, or undefined.
+   * or with `checkout`, the branch the checkout switches to first. `attached` are the run ids of
+   * threads attached to the prompt as context (0047). Reuse `runId`, with the same options,
+   * `checkout`, and `gitRef`, to retry. Resolves to plxd's error, or undefined.
    */
   start: (
     runId: string,
@@ -233,6 +234,7 @@ export interface ThreadsView {
     checkout: boolean,
     gitRef: string | undefined,
     name?: ThreadName,
+    attached?: string[],
   ) => Promise<RpcError | undefined>;
   archive: (runId: string, archived: boolean) => Promise<string | undefined>;
   remove: (thread: Thread) => Promise<string | undefined>;
@@ -438,11 +440,13 @@ export function useThreads(
       checkout: boolean,
       gitRef: string | undefined,
       name?: ThreadName,
+      attached: string[] = [],
     ) => {
       const answer = await window.parallax.request(hostId, "thread/start", {
         runId,
         prompt,
         ...(images.length > 0 && { images }),
+        ...(attached.length > 0 && { threads: attached }),
         ...(groupId !== noRepo && { repo: groupId }),
         ...options,
         // The checkout keeps its own branch, so a name gives it none.

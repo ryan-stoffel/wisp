@@ -81,6 +81,7 @@ import {
   type ProposedPlanRow,
 } from "./Plan";
 import { plainText, PromptRail, ScrollToEnd, type Prompt } from "./PromptRail";
+import { attachThreads, SentThread, ThreadLinksContext, type ThreadLinks } from "./threadContext";
 import { titleOf } from "./threads";
 import {
   failureText,
@@ -98,7 +99,14 @@ import { useAgentRun, type SentMessage } from "./useAgentRun";
 /** A row: a transcript item, or a message this window sent that hasn't reached the agent yet. */
 type Row =
   | Item
-  | { kind: "pending"; key: string; text: string; images?: PromptImage[]; turnId?: string };
+  | {
+      kind: "pending";
+      key: string;
+      text: string;
+      images?: PromptImage[];
+      threads?: string[];
+      turnId?: string;
+    };
 /** What the list shows: a turn's activity is folded into one `Work` row, its plan apart. */
 type ViewRow = Row | Work | PlanRow | ProposedPlanRow;
 
@@ -142,6 +150,7 @@ export function AgentChat({
   onPrOpened,
   compose,
   onComposed,
+  threadLinks,
 }: {
   hostId: string;
   runId: string;
@@ -182,6 +191,11 @@ export function AgentChat({
    */
   compose?: { text: string; send: boolean };
   onComposed?: () => void;
+  /**
+   * The host's threads: the composer attaches them where plxd takes them (PLX-378), and the
+   * transcript's attached threads open from their chips.
+   */
+  threadLinks?: ThreadLinks;
 }) {
   const connection = useConnection(hostId);
   const connected = connection?.status === "connected";
@@ -195,7 +209,7 @@ export function AgentChat({
   const resend = useCallback(
     (turnId: string, message: SentMessage) => {
       setResent((prev) => new Set(prev).add(turnId));
-      void send(message.text, undefined, message.images).then((failed) => {
+      void send(message.text, undefined, message.images, message.threads).then((failed) => {
         setResendError(failed?.message);
         if (failed)
           setResent((prev) => {
@@ -237,8 +251,13 @@ export function AgentChat({
     why: string;
   }>();
   const [startingOver, setStartingOver] = useState(false);
-  const sendText = async (text: string, options: RunOptions, images: PromptImage[]) => {
-    const failed = await send(text, options, images);
+  const sendText = async (
+    text: string,
+    options: RunOptions,
+    images: PromptImage[],
+    threads: string[],
+  ) => {
+    const failed = await send(text, options, images, threads);
     if (!startOver || failed?.data?.kind !== "runNotResumable") return failed?.message;
     setRefused({ text, options, images, why: failed.message });
     return ""; // Back in the box; the line above it says why and offers Start over.
@@ -275,11 +294,12 @@ export function AgentChat({
     const seen = new Set(items.flatMap((i) => ("turnId" in i && i.turnId ? [i.turnId] : [])));
     const pending = [...sent]
       .filter(([turnId]) => !seen.has(turnId))
-      .map(([turnId, { text, images }]) => ({
+      .map(([turnId, { text, images, threads }]) => ({
         kind: "pending" as const,
         key: `pending:${turnId}`,
         text,
         images,
+        threads,
         turnId,
       }));
     const all = [...items, ...pending];
@@ -302,7 +322,8 @@ export function AgentChat({
     [rows, sent],
   );
   // The latest prompt while nothing from the agent follows it, which Stop puts back in the box:
-  // its text, and its images: at hand when sent from here, or fetched from plxd by id on Stop.
+  // its text, its attached threads, and its images: at hand when sent from here, or fetched from
+  // plxd by id on Stop.
   const unanswered = useMemo<(Unanswered & { turnId?: string }) | undefined>(() => {
     const at = rows.findLastIndex((r) => r.kind === "user" || r.kind === "pending");
     const row = rows[at];
@@ -323,8 +344,9 @@ export function AgentChat({
       );
       return [...atHand, ...got.flatMap((a) => (a && "result" in a ? [a.result] : []))];
     };
+    const threads = row.threads ?? mine?.threads;
     // Only one still on its way can be dropped, and so offer Send again.
-    return { text, images, turnId: row.kind === "pending" ? row.turnId : undefined };
+    return { text, images, threads, turnId: row.kind === "pending" ? row.turnId : undefined };
   }, [rows, sent, hostId, runId]);
   // A stopped prompt goes back in the box, so if plxd drops it, it offers no Send again too.
   const stop = async () => {
@@ -376,14 +398,16 @@ export function AgentChat({
   return (
     <>
       {rows.length > 0 ? (
-        <TranscriptView
-          rows={rows}
-          sent={unsent}
-          live={isRunning(run?.status)}
-          stalled={stalled}
-          onResend={resend}
-          loadImage={showImage}
-        />
+        <ThreadLinksContext value={threadLinks}>
+          <TranscriptView
+            rows={rows}
+            sent={unsent}
+            live={isRunning(run?.status)}
+            stalled={stalled}
+            onResend={resend}
+            loadImage={showImage}
+          />
+        </ThreadLinksContext>
       ) : (
         <div className="flex flex-1 flex-col items-center justify-center gap-1 px-8 text-center text-[13px] text-faint-foreground">
           {error ? (
@@ -467,6 +491,7 @@ export function AgentChat({
           menus={
             connected && "composerMenus" in connection.capabilities ? { hostId, runId } : undefined
           }
+          attach={attachThreads(connection, threadLinks, runId)}
         />
       </div>
     </>
@@ -759,12 +784,21 @@ export const RowView = memo(function RowView({
       const text = row.text ?? sent?.text;
       // Images sent from here are at hand; the log's come from plxd by id.
       const images = row.kind === "pending" ? row.images : (sent?.images ?? row.images);
+      const threads = row.threads ?? sent?.threads;
       return (
         <div className="group/prompt flex flex-col items-end gap-1.5">
           {images && images.length > 0 && (
             <div className="flex max-w-[85%] flex-wrap justify-end gap-1.5">
               {images.map((image, i) => (
                 <MessageImage key={i} image={image} loadImage={loadImage} />
+              ))}
+            </div>
+          )}
+          {/* The threads attached as context, which open from here (PLX-378). */}
+          {threads && threads.length > 0 && (
+            <div className="flex max-w-[85%] flex-wrap justify-end gap-1.5">
+              {threads.map((id) => (
+                <SentThread key={id} runId={id} />
               ))}
             </div>
           )}
