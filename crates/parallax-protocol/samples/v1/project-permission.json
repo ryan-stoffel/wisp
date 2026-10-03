@@ -1,0 +1,52 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "project/create",
+    "params": {
+      "id": "01a0f755-f200-74dd-8cfc-06d0b225c5ea",
+      "name": "app",
+      "repoPath": "/Users/me/src/app",
+      "permission": "bypass"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "project": {
+        "id": "01a0f755-f200-74dd-8cfc-06d0b225c5ea",
+        "name": "app",
+        "repoPath": "/Users/me/src/app",
+        "branch": "main",
+        "permission": "bypass",
+        "createdAt": "2026-10-03T12:00:00Z",
+        "updatedAt": "2026-10-03T12:00:00Z"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "project/update",
+    "params": {
+      "project": "01a0f755-f200-74dd-8cfc-06d0b225c5ea",
+      "permission": "auto"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "result": {
+      "project": {
+        "id": "01a0f755-f200-74dd-8cfc-06d0b225c5ea",
+        "name": "app",
+        "repoPath": "/Users/me/src/app",
+        "branch": "main",
+        "permission": "auto",
+        "createdAt": "2026-10-03T12:00:00Z",
+        "updatedAt": "2026-10-03T12:00:00Z"
+      }
+    }
+  }
+]

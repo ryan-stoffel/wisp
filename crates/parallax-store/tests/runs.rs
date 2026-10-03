@@ -464,7 +464,8 @@ fn a_version_6_database_gains_runs_events_and_worktree_git_dirs() {
     // migration 8 columns on it, since they're columns of the table this drops wholesale), the
     // normal threads tables (#110's migration 9), the wakes table (RYA-178's migration 14), the
     // images table (RYA-191's migration 15), the project icon columns (RYA-227's migration 16),
-    // or the host settings table (PLX-371's migration 24).
+    // the host settings table (PLX-371's migration 24), or the project permission column
+    // (PLX-394's migration 26).
     {
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch(
@@ -477,6 +478,7 @@ fn a_version_6_database_gains_runs_events_and_worktree_git_dirs() {
              ALTER TABLE projects DROP COLUMN icon_color;
              ALTER TABLE projects DROP COLUMN icon_image_type;
              ALTER TABLE projects DROP COLUMN icon_image_data;
+             ALTER TABLE projects DROP COLUMN permission;
              DELETE FROM schema_version WHERE version >= 7;",
         )
         .unwrap();

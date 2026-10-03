@@ -1,6 +1,6 @@
 //! A project's coordinator chat end to end (RYA-41, decision 0024): `project/start` against an
 //! in-process plxd whose backend is the fake CLI, in a real git repository. The coordinator runs
-//! in the project's repository, in its permission mode (0027).
+//! in the project's repository, in the project's permission mode (0042).
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -9,14 +9,15 @@ use std::time::{Duration, Instant};
 use parallax_protocol::jsonrpc::ErrorObject;
 use parallax_protocol::methods::{
     AgentCancel, AgentEvents, AgentList, AgentSend, AgentStart, EventsSubscribe, HostHealth,
-    ProjectDelete, ProjectList, ProjectStart, RepoAdd,
+    ProjectDelete, ProjectList, ProjectStart, ProjectUpdate, RepoAdd,
 };
 use parallax_protocol::{
     AccountChoice, AgentCancelParams, AgentEventsParams, AgentListParams, AgentOutputItem,
     AgentPermission, AgentPolicy, AgentRun, AgentSendParams, AgentStartParams, AgentStatus,
     CoordinatorThreadId, ErrorKind, EventsEventParams, EventsSubscribeParams, HostHealthParams,
-    ParallaxEvent, ProjectDeleteParams, ProjectDeleteResult, ProjectId, ProjectListParams,
-    ProjectStartParams, Provider, RepoAddParams, RepoId, RunId, TurnId,
+    ParallaxEvent, ProjectCreateParams, ProjectDeleteParams, ProjectDeleteResult, ProjectId,
+    ProjectListParams, ProjectPermission, ProjectStartParams, ProjectUpdateParams, Provider,
+    RepoAddParams, RepoId, RunId, TurnId,
 };
 use plxd::backend::fake::{FakeBackend, Step};
 use plxd::backend::{Backend, Capabilities, RunRequest, StartError, Started, ToolPolicy};
@@ -43,6 +44,10 @@ impl Backend for Recording {
 
     fn capabilities(&self) -> Capabilities {
         self.fake.capabilities()
+    }
+
+    fn permissions(&self) -> &'static [AgentPermission] {
+        self.fake.permissions()
     }
 
     fn start(&self, request: RunRequest) -> Result<Started, StartError> {
@@ -245,6 +250,7 @@ struct Roles {
     worker: FakeBackend,
     coordinator: Mutex<Vec<FakeBackend>>,
     seen: Arc<Mutex<Vec<RunRequest>>>,
+    permissions: &'static [AgentPermission],
 }
 
 impl Backend for Roles {
@@ -257,11 +263,7 @@ impl Backend for Roles {
     }
 
     fn permissions(&self) -> &'static [AgentPermission] {
-        &[
-            AgentPermission::Edit,
-            AgentPermission::Plan,
-            AgentPermission::Bypass,
-        ]
+        self.permissions
     }
 
     fn start(&self, request: RunRequest) -> Result<Started, StartError> {
@@ -274,11 +276,27 @@ impl Backend for Roles {
     }
 }
 
-/// Workers on `worker`, and each coordinator launch on the next of `coordinator`.
+/// Workers on `worker`, and each coordinator launch on the next of `coordinator`, in Auto or
+/// Bypass.
 fn roles(
     worker: Vec<Step>,
     coordinator: Vec<Vec<Step>>,
     seen: &Arc<Mutex<Vec<RunRequest>>>,
+) -> BackendRegistry {
+    roles_mapping(
+        worker,
+        coordinator,
+        seen,
+        &[AgentPermission::Auto, AgentPermission::Bypass],
+    )
+}
+
+/// [`roles`], mapping only `permissions`.
+fn roles_mapping(
+    worker: Vec<Step>,
+    coordinator: Vec<Vec<Step>>,
+    seen: &Arc<Mutex<Vec<RunRequest>>>,
+    permissions: &'static [AgentPermission],
 ) -> BackendRegistry {
     let mut backends = BackendRegistry::new();
     backends.register(
@@ -287,6 +305,7 @@ fn roles(
             worker: fake_backend(worker),
             coordinator: Mutex::new(coordinator.into_iter().map(fake_backend).collect()),
             seen: Arc::clone(seen),
+            permissions,
         }),
     );
     backends
@@ -337,10 +356,10 @@ async fn sessions(client: &mut Conn, runs: &[RunId]) {
     .await;
 }
 
-/// 0027: the coordinator runs in the mode it was started in, a subagent it spawns inherits it,
-/// and a mode changed between turns applies to its next turn and to the subagents after that.
+/// PLX-394 (0042): the coordinator and the runs it spawns run in the Project's mode, whatever
+/// they ask for, and a mode `project/update` changes applies from each run's next CLI process.
 #[tokio::test]
-async fn subagents_inherit_the_coordinators_permission_mode_as_it_changes() {
+async fn a_projects_runs_run_in_its_mode_and_a_new_mode_applies_from_their_next_process() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     // Workers never finish, so no wake-up takes a coordinator script.
     let backends = roles(
@@ -353,36 +372,31 @@ async fn subagents_inherit_the_coordinators_permission_mode_as_it_changes() {
     );
     let host = Host::start(temp_dir(), backends);
     let mut client = host.client().await;
-    let project = create(&mut client, project_params(host.dir.path())).await;
+    let project = create(
+        &mut client,
+        ProjectCreateParams {
+            permission: Some(ProjectPermission::Bypass),
+            ..project_params(host.dir.path())
+        },
+    )
+    .await;
+    assert_eq!(project.permission, Some(ProjectPermission::Bypass));
     subscribe(&mut client, project.id, 0).await;
     let coordinator = client
         .call::<ProjectStart>(ProjectStartParams {
-            permission: Some(AgentPermission::Bypass),
+            permission: Some(AgentPermission::Plan),
             ..start_params(project.id, "Plan.")
         })
         .await
         .unwrap()
         .run;
+    assert_eq!(coordinator.permission, Some(AgentPermission::Bypass));
     until(&mut client, updated_to(AgentStatus::Completed)).await;
     assert_eq!(
         nth_launch(&seen, 0).await.permission,
         Some(AgentPermission::Bypass)
     );
-    let first = spawn(&mut client, &coordinator, "Add a README.").await;
-
-    client
-        .call::<AgentSend>(AgentSendParams {
-            permission: Some(AgentPermission::Plan),
-            ..send_params(coordinator.id, TurnId::generate(), "Only plan now.")
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        nth_launch(&seen, 1).await.permission,
-        Some(AgentPermission::Plan)
-    );
-    let second = spawn(&mut client, &coordinator, "Add a license.").await;
-    let own = client
+    let asked = client
         .call::<AgentStart>(AgentStartParams {
             coordinator_thread: coordinator.coordinator_thread,
             permission: Some(AgentPermission::Edit),
@@ -393,6 +407,30 @@ async fn subagents_inherit_the_coordinators_permission_mode_as_it_changes() {
         .run
         .id;
 
+    let updated = client
+        .call::<ProjectUpdate>(ProjectUpdateParams {
+            project: project.id,
+            name: None,
+            icon: None,
+            permission: Some(ProjectPermission::Auto),
+        })
+        .await
+        .unwrap()
+        .project;
+    assert_eq!(updated.permission, Some(ProjectPermission::Auto));
+    client
+        .call::<AgentSend>(AgentSendParams {
+            permission: Some(AgentPermission::Plan),
+            ..send_params(coordinator.id, TurnId::generate(), "Plan more.")
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        nth_launch(&seen, 1).await.permission,
+        Some(AgentPermission::Auto)
+    );
+    let after = spawn(&mut client, &coordinator, "Add a license.").await;
+
     let launched = |run: RunId| {
         seen.lock()
             .unwrap()
@@ -400,13 +438,58 @@ async fn subagents_inherit_the_coordinators_permission_mode_as_it_changes() {
             .find(|request| request.run_id == run)
             .map(|request| request.permission)
     };
-    assert_eq!(launched(first), Some(Some(AgentPermission::Bypass)));
-    assert_eq!(launched(second), Some(Some(AgentPermission::Plan)));
-    assert_eq!(
-        launched(own),
-        Some(Some(AgentPermission::Edit)),
-        "a named mode wins"
+    assert_eq!(launched(asked), Some(Some(AgentPermission::Bypass)));
+    assert_eq!(launched(after), Some(Some(AgentPermission::Auto)));
+    host.server.stop().await;
+}
+
+/// PLX-394 (0042): a backend without the Project's mode is refused with why, and never moved up
+/// to Bypass. A Project created without a mode, as by an older app, is in Auto.
+#[tokio::test]
+async fn a_backend_without_the_projects_mode_is_refused_and_never_moved_up() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let backends = roles_mapping(
+        vec![init("worker-1"), Step::AwaitFollowUp],
+        vec![vec![init("coordinator-1"), end_turn("Planned.")]],
+        &seen,
+        &[AgentPermission::Edit, AgentPermission::Bypass],
     );
+    let host = Host::start(temp_dir(), backends);
+    let mut client = host.client().await;
+    let project = create(&mut client, project_params(host.dir.path())).await;
+    assert_eq!(project.permission, Some(ProjectPermission::Auto));
+
+    let error = client
+        .call::<ProjectStart>(start_params(project.id, "Plan."))
+        .await
+        .unwrap_err();
+    assert_eq!(kind(&error), ErrorKind::UnsupportedOption);
+    assert_eq!(
+        error.message,
+        "fake has no Auto. Set the Project to Bypass to use it."
+    );
+    let worker = client
+        .call::<AgentStart>(crate::agents::start_params(project.id, "Fix a typo."))
+        .await
+        .unwrap_err();
+    assert_eq!(worker.message, error.message);
+    assert!(seen.lock().unwrap().is_empty(), "nothing started");
+
+    client
+        .call::<ProjectUpdate>(ProjectUpdateParams {
+            project: project.id,
+            name: None,
+            icon: None,
+            permission: Some(ProjectPermission::Bypass),
+        })
+        .await
+        .unwrap();
+    let coordinator = client
+        .call::<ProjectStart>(start_params(project.id, "Plan."))
+        .await
+        .unwrap()
+        .run;
+    assert_eq!(coordinator.permission, Some(AgentPermission::Bypass));
     host.server.stop().await;
 }
 

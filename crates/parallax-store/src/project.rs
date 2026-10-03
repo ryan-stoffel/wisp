@@ -15,6 +15,8 @@ pub struct ProjectFields {
     pub name: String,
     pub repo_path: String,
     pub icon: Option<ProjectIcon>,
+    /// The permission mode, `auto` or `bypass` (decision record 0042).
+    pub permission: String,
 }
 
 /// A project's icon, stored as the client sent it and never read
@@ -66,6 +68,7 @@ pub(crate) fn icon_columns(
 pub struct ProjectEdit {
     pub name: Option<String>,
     pub icon: Option<ProjectIcon>,
+    pub permission: Option<String>,
 }
 
 /// A project row.
@@ -75,6 +78,7 @@ pub struct Project {
     pub name: String,
     pub repo_path: String,
     pub icon: Option<ProjectIcon>,
+    pub permission: String,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -86,6 +90,7 @@ struct RawProject {
     name: String,
     repo_path: String,
     icon: Option<ProjectIcon>,
+    permission: String,
     created_at: String,
     updated_at: String,
 }
@@ -96,14 +101,18 @@ impl RawProject {
             id: row.get(0)?,
             name: row.get(1)?,
             repo_path: row.get(2)?,
-            icon: icon_from_row(row, 5)?,
+            icon: icon_from_row(row, 6)?,
+            permission: row.get(5)?,
             created_at: row.get(3)?,
             updated_at: row.get(4)?,
         })
     }
 
     fn matches(&self, fields: &ProjectFields) -> bool {
-        self.name == fields.name && self.repo_path == fields.repo_path && self.icon == fields.icon
+        self.name == fields.name
+            && self.repo_path == fields.repo_path
+            && self.icon == fields.icon
+            && self.permission == fields.permission
     }
 
     fn into_project(self) -> Result<Project, StoreError> {
@@ -112,6 +121,7 @@ impl RawProject {
             name: self.name,
             repo_path: self.repo_path,
             icon: self.icon,
+            permission: self.permission,
             created_at: timestamp::parse(&self.created_at)?,
             updated_at: timestamp::parse(&self.updated_at)?,
         })
@@ -122,7 +132,7 @@ fn fetch_raw(conn: &Connection, id_text: &str) -> Result<Option<RawProject>, Sto
     Ok(conn
         .query_row(
             &format!(
-                "SELECT id, name, repo_path, created_at, updated_at, {ICON_COLUMNS}
+                "SELECT id, name, repo_path, created_at, updated_at, permission, {ICON_COLUMNS}
                  FROM projects WHERE id = ?1"
             ),
             params![id_text],
@@ -170,8 +180,9 @@ impl Store {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute(
             &format!(
-                "INSERT INTO projects (id, name, repo_path, created_at, updated_at, {ICON_COLUMNS})
-                 VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8)
+                "INSERT INTO projects (id, name, repo_path, created_at, updated_at, permission,
+                     {ICON_COLUMNS})
+                 VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, ?7, ?8, ?9)
                  ON CONFLICT (id) DO NOTHING"
             ),
             params![
@@ -179,6 +190,7 @@ impl Store {
                 fields.name,
                 fields.repo_path,
                 now,
+                fields.permission,
                 icon_name,
                 icon_color,
                 image_type,
@@ -219,7 +231,7 @@ impl Store {
     /// are corrupt.
     pub fn list_projects(&self) -> Result<Vec<Project>, StoreError> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT id, name, repo_path, created_at, updated_at, {ICON_COLUMNS}
+            "SELECT id, name, repo_path, created_at, updated_at, permission, {ICON_COLUMNS}
              FROM projects
              ORDER BY created_at ASC, id ASC"
         ))?;
@@ -232,12 +244,12 @@ impl Store {
         Ok(projects)
     }
 
-    /// Renames project `id` or sets its icon, as `edit` says, and returns
+    /// Renames project `id`, or sets its icon or permission mode, as `edit` says, and returns
     /// the project with whether anything changed. When nothing would
     /// change, it writes nothing.
     ///
-    /// `repo_path` never changes, and `updated_at` stays as it is: a rename
-    /// or a new icon is not activity (decision record 0032).
+    /// `repo_path` never changes, and `updated_at` stays as it is: a rename,
+    /// a new icon, or a new mode is not activity (decision record 0032).
     ///
     /// # Errors
     ///
@@ -265,15 +277,27 @@ impl Store {
             raw.icon.clone_from(&edit.icon);
             changed = true;
         }
+        if let Some(permission) = &edit.permission
+            && *permission != raw.permission
+        {
+            raw.permission.clone_from(permission);
+            changed = true;
+        }
 
         if changed {
             let (icon_name, icon_color, image_type, image_data) = icon_columns(raw.icon.as_ref());
             tx.execute(
                 "UPDATE projects SET name = ?2, icon_name = ?3, icon_color = ?4,
-                     icon_image_type = ?5, icon_image_data = ?6
+                     icon_image_type = ?5, icon_image_data = ?6, permission = ?7
                  WHERE id = ?1",
                 params![
-                    id_text, raw.name, icon_name, icon_color, image_type, image_data
+                    id_text,
+                    raw.name,
+                    icon_name,
+                    icon_color,
+                    image_type,
+                    image_data,
+                    raw.permission
                 ],
             )?;
             tx.commit()?;

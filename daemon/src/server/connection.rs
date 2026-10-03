@@ -538,6 +538,7 @@ mod tests {
                 repo_path: "/src/parallax".to_owned(),
                 branch: None,
                 coordinator: None,
+                permission: None,
                 created_at: Timestamp::now(),
                 updated_at: Timestamp::now(),
             };
@@ -685,6 +686,7 @@ mod tests {
                     repo_path: "/src".to_owned(),
                     branch: None,
                     coordinator: None,
+                    permission: None,
                     created_at: Timestamp::now(),
                     updated_at: Timestamp::now(),
                 },

@@ -719,8 +719,8 @@ pub struct AgentStartParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub fast: Option<bool>,
-    /// The permission mode (RYA-97, 0027). Absent means `edit`, or for a run with a
-    /// `coordinatorThread`, the coordinator's mode when it spawns the run.
+    /// The permission mode (RYA-97, 0027). Absent means `edit`. Ignored in a project, whose
+    /// runs run in the project's mode (0042).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub permission: Option<AgentPermission>,
@@ -786,7 +786,8 @@ pub struct AgentSendParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub effort: Option<AgentEffort>,
-    /// A new permission (RYA-161), as `effort`.
+    /// A new permission (RYA-161), as `effort`. Ignored for a run in a project, which runs in the
+    /// project's mode (0042).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub permission: Option<AgentPermission>,

@@ -30,6 +30,7 @@ use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
+use parallax_protocol::AgentPermission;
 use serde::Deserialize;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
@@ -282,6 +283,12 @@ impl Backend for FakeBackend {
             rate_limits: true,
             worker_sandbox: true,
         }
+    }
+
+    /// A Project's two modes (0042), so the app's end-to-end tests can run one. The fake CLI
+    /// ignores them.
+    fn permissions(&self) -> &'static [AgentPermission] {
+        &[AgentPermission::Auto, AgentPermission::Bypass]
     }
 
     fn start(&self, request: RunRequest) -> Result<Started, StartError> {

@@ -36,11 +36,46 @@ pub struct Project {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub coordinator: Option<RunId>,
+    /// The permission mode its coordinator and every run in it start in (0042), behind the
+    /// `projectPermission` capability. Absent only from an older plxd.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub permission: Option<ProjectPermission>,
     /// When the project was created, in RFC 3339 UTC.
     pub created_at: Timestamp,
     /// When the project last changed, in RFC 3339 UTC. `project/update` leaves it as it is, since
     /// a rename or a new icon is not activity (0032).
     pub updated_at: Timestamp,
+}
+
+/// A project's permission mode (0042): the mode its coordinator and every run in it start in.
+/// Each maps to the [`AgentPermission`] of the same name. A run on a backend that doesn't map it
+/// is refused with `unsupportedOption`, never moved to another mode.
+///
+/// A newer plxd may send a value this version does not know; treat it as unknown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ProjectPermission {
+    /// Auto: a classifier approves or blocks each action.
+    Auto,
+    /// Bypass Permissions: no permission checks.
+    Bypass,
+    /// A value this version does not know yet.
+    #[serde(other)]
+    #[ts(skip)]
+    Unknown,
+}
+
+impl ProjectPermission {
+    /// The run mode it maps to, or `None` for [`ProjectPermission::Unknown`].
+    #[must_use]
+    pub fn agent(self) -> Option<AgentPermission> {
+        match self {
+            Self::Auto => Some(AgentPermission::Auto),
+            Self::Bypass => Some(AgentPermission::Bypass),
+            Self::Unknown => None,
+        }
+    }
 }
 
 /// A project's icon (RYA-227, 0032): a Lucide icon and a color from the app's palette, both by
@@ -83,9 +118,9 @@ pub struct ProjectListResult {
 /// Params of `project/create`.
 ///
 /// It is idempotent on `id`: if a project with that id exists, plxd returns it instead of
-/// creating another, and fails with `idConflict` if `name`, `repoPath`, or `icon` differ. A new
-/// project's `repoPath` must be the top folder of a git working tree on this host, or it fails
-/// with `notARepository`.
+/// creating another, and fails with `idConflict` if `name`, `repoPath`, `icon`, or `permission`
+/// differ. A new project's `repoPath` must be the top folder of a git working tree on this host,
+/// or it fails with `notARepository`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectCreateParams {
@@ -100,6 +135,11 @@ pub struct ProjectCreateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub icon: Option<ProjectIcon>,
+    /// The project's permission mode, sent only to a plxd that advertises `projectPermission`.
+    /// Absent means `auto`, the mode projects from before it have.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub permission: Option<ProjectPermission>,
 }
 
 /// Result of `project/create`.
@@ -111,11 +151,11 @@ pub struct ProjectCreateResult {
 }
 
 /// Params of `project/update`: renames a project or sets its icon, behind the `projectEdit`
-/// capability (RYA-227, 0032).
+/// capability (RYA-227, 0032), or its permission mode, behind `projectPermission` (0042).
 ///
 /// A field that is absent stays as it is, and `icon` replaces the whole icon. `name` follows
-/// `project/create`'s rules, and the repository can't change. A rename or a new icon is not
-/// activity, so `updatedAt` stays as it is. Fails with `projectNotFound` for an unknown project.
+/// `project/create`'s rules, and the repository can't change. A rename, a new icon, or a new mode
+/// is not activity, so `updatedAt` stays as it is. Fails with `projectNotFound` for an unknown project.
 /// A change appends `project.updated`; an update that changes nothing appends no event.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -130,6 +170,11 @@ pub struct ProjectUpdateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub icon: Option<ProjectIcon>,
+    /// The new permission mode. Absent keeps the mode. Each run in the project starts its next
+    /// CLI process in it, and a running CLI keeps its mode until it exits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub permission: Option<ProjectPermission>,
 }
 
 /// Result of `project/update`.
@@ -173,7 +218,7 @@ pub struct ProjectStartParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub effort: Option<AgentEffort>,
-    /// The permission mode, as `agent/start`'s (RYA-188). Absent means the backend's default.
+    /// Ignored: the coordinator runs in the project's permission mode (0042).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub permission: Option<AgentPermission>,

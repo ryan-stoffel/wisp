@@ -108,6 +108,7 @@ async fn an_update_is_a_host_level_event_that_outlives_a_restart() {
                 data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==".to_owned(),
             }),
         }),
+        permission: None,
     };
     let updated = editor
         .call::<ProjectUpdate>(edit.clone())

@@ -24,6 +24,11 @@
 //! no recorded worktree; the same actor runs it. Runs it started wake it when they finish
 //! ([`wake`]).
 //!
+//! Every run in a Project, its coordinator included, runs in the Project's permission mode, Auto
+//! or Bypass (0042), whatever its request or a later `agent/send` asks for. Each new CLI process
+//! reads the mode again, so one `project/update` changed applies from the run's next process. A
+//! backend that doesn't map the mode is refused ([`in_mode`]), never moved to another mode.
+//!
 //! A normal thread's run is full Claude Code in every mode, with no worker sandbox, when its client
 //! answers permission requests, and its first message is the user's own (0034). A thread started
 //! with `checkout` has no worktree either: it runs in its repo entry's own checkout, on the branch
@@ -53,7 +58,7 @@ use parallax_protocol::{
     AgentEffort, AgentImageParams, AgentOpenPrResult, AgentOutcome, AgentPermission, AgentRun,
     AgentRunState, AgentSendParams, AgentStartParams, ApprovalId, CoordinatorThreadId, ErrorKind,
     GitStatus, ImageMediaType, ParallaxEvent, PrActParams, PrDiffResult, PrViewParams, ProjectId,
-    PromptImage, PullRequest, Role, RunId, TurnId,
+    ProjectPermission, PromptImage, PullRequest, Role, RunId, TurnId,
 };
 use parallax_store::{RunFields, RunState, StoreError, ThreadFields, WorktreeFields};
 use tokio::sync::{mpsc, oneshot};
@@ -738,37 +743,76 @@ async fn record(
     recorded
 }
 
-/// A coordinator's subagent runs in the coordinator's current permission mode unless it names its
-/// own (0027), and forwards its permission requests when the coordinator does (0031): sets
-/// `options`' permission to the mode of the coordinator whose thread is `coordinator_thread`, its
-/// own run (0024), sets `approvals` when that run has them, and returns the inherited mode. The
-/// coordinator's mode only changes between its turns, and its `approvals` never do, so a retried
-/// spawn from the same turn inherits the same.
-// ponytail: `create` drops an inherited mode the subagent's backend lacks, so a retry of that
-// spawn gets idConflict; keep requested and inherited modes apart if that bites.
+/// A coordinator's subagent forwards its permission requests when the coordinator does (0031):
+/// sets `approvals` when the run whose thread is `coordinator_thread`, the coordinator's own run
+/// (0024), has them. Its `approvals` never change, so a retried spawn gets the same.
 async fn inherit(
     daemon: &Arc<Daemon>,
     coordinator_thread: Option<CoordinatorThreadId>,
-    options: &mut RunOptions,
     approvals: &mut bool,
-) -> Result<Option<AgentPermission>, ErrorObject> {
+) -> Result<(), ErrorObject> {
     let Some(thread) = coordinator_thread else {
-        return Ok(None);
+        return Ok(());
     };
     let id = Uuid::from(thread);
-    let Some(row) = store(daemon, move |db| {
+    let row = store(daemon, move |db| {
         db.get_run(id).map_err(|e| store_error(&e))
     })
-    .await?
-    else {
-        return Ok(None);
-    };
-    *approvals |= row.fields.approvals;
-    if options.permission.is_some() {
-        return Ok(None);
+    .await?;
+    if let Some(row) = row {
+        *approvals |= row.fields.approvals;
     }
-    options.permission = row.fields.permission.as_deref().and_then(option_value);
-    Ok(options.permission)
+    Ok(())
+}
+
+/// The permission mode every run in `scope` runs in (0042): its Project's, or `None` when `scope`
+/// is a repo entry, whose threads keep their own.
+pub(super) async fn project_mode(
+    daemon: &Arc<Daemon>,
+    scope: ProjectId,
+) -> Result<Option<ProjectPermission>, ErrorObject> {
+    store(daemon, move |db| {
+        let row = db.get_project(scope.into()).map_err(|e| store_error(&e))?;
+        Ok(row.map(|row| crate::store::project_permission(&row.permission)))
+    })
+    .await
+}
+
+/// The Project's `mode` as a run on `backend` takes it, or `unsupportedOption` saying why it
+/// can't: a run in a Project is never moved to another mode (0042).
+pub(super) fn in_mode(
+    backend: &dyn Backend,
+    mode: ProjectPermission,
+) -> Result<AgentPermission, ErrorObject> {
+    let name = actor::backend_name(backend.name());
+    let maps = |mode: ProjectPermission| {
+        mode.agent()
+            .filter(|permission| backend.permissions().contains(permission))
+    };
+    let (label, other) = match mode {
+        ProjectPermission::Auto => ("Auto", ProjectPermission::Bypass),
+        ProjectPermission::Bypass => ("Bypass Permissions", ProjectPermission::Auto),
+        ProjectPermission::Unknown => {
+            return Err(ErrorObject::parallax(
+                ErrorKind::UnsupportedOption,
+                "the Project's permission mode is one this plxd doesn't know",
+            ));
+        }
+    };
+    if let Some(permission) = maps(mode) {
+        return Ok(permission);
+    }
+    let detail = if maps(other).is_some() {
+        let other = if other == ProjectPermission::Bypass {
+            "Bypass"
+        } else {
+            "Auto"
+        };
+        format!("{name} has no {label}. Set the Project to {other} to use it.")
+    } else {
+        format!("{name} has neither Auto nor Bypass Permissions, so it can't run in a Project.")
+    };
+    Err(ErrorObject::parallax(ErrorKind::UnsupportedOption, detail))
 }
 
 /// Logs `run`'s `agent.started` on `project`'s events.
@@ -898,7 +942,14 @@ pub(crate) async fn create(daemon: Arc<Daemon>, new: NewRun) -> Result<CreatedRu
         thread,
     } = new;
     let _starting = agents.start_guard(run_id).await;
-    let inherited = inherit(&daemon, coordinator_thread, &mut options, &mut approvals).await?;
+    inherit(&daemon, coordinator_thread, &mut approvals).await?;
+    // A run in a Project runs in its mode, whatever the request asked for (0042).
+    // ponytail: a retry after `project/update` changed the mode gets idConflict; compare the
+    // stored mode instead if that bites.
+    let mode = project_mode(&daemon, project).await?;
+    if let Some(mode) = mode {
+        options.permission = mode.agent();
+    }
     // What the request asks for, as the runs table stores it. Routing fills in the backend below.
     let mut fields = RunFields {
         project_id: project.into(),
@@ -936,8 +987,8 @@ pub(crate) async fn create(daemon: Arc<Daemon>, new: NewRun) -> Result<CreatedRu
         thread.is_some(),
     )
     .await?;
-    if inherited.is_some_and(|mode| !prepared.resolved.backend().permissions().contains(&mode)) {
-        (options.permission, fields.permission) = (None, None);
+    if let Some(mode) = mode {
+        in_mode(prepared.resolved.backend(), mode)?;
     }
     options.check(prepared.resolved.backend())?;
     let repo_path = match thread.as_ref().and_then(|thread| thread.scratch.clone()) {
@@ -1416,8 +1467,48 @@ mod tests {
     use parallax_store::{ProjectFields, RunFields, RunState};
     use uuid::Uuid;
 
-    use super::{StartLocks, record, store, store_error};
+    use super::{StartLocks, in_mode, record, store, store_error};
     use crate::server::Daemon;
+
+    /// PLX-394 (0042): each built-in kind in each Project mode. Claude Code and Codex map both,
+    /// and Cursor only Bypass, so a Cursor run in an Auto Project is refused with why, never
+    /// moved up to Bypass.
+    #[test]
+    fn each_kind_runs_a_projects_mode_or_says_why_not() {
+        use parallax_protocol::jsonrpc::PLX_ERROR;
+        use parallax_protocol::{AgentPermission, ProjectPermission};
+
+        use crate::backend::claude::ClaudeBackend;
+        use crate::backend::codex::CodexBackend;
+        use crate::backend::cursor::CursorBackend;
+        use crate::backend::process::{Environment, Launcher};
+        use crate::paths::DataDir;
+
+        let dir = tempfile::tempdir().unwrap();
+        let launcher = Launcher::new(
+            DataDir::new(dir.path().join("data")).unwrap(),
+            Environment::default(),
+        );
+        let claude = ClaudeBackend::new(launcher.clone());
+        let codex = CodexBackend::new(launcher.clone());
+        let cursor = CursorBackend::new(launcher);
+        let (auto, bypass) = (ProjectPermission::Auto, ProjectPermission::Bypass);
+        for backend in [&claude as &dyn crate::backend::Backend, &codex] {
+            assert_eq!(in_mode(backend, auto).unwrap(), AgentPermission::Auto);
+            assert_eq!(in_mode(backend, bypass).unwrap(), AgentPermission::Bypass);
+        }
+        assert_eq!(in_mode(&cursor, bypass).unwrap(), AgentPermission::Bypass);
+        let refused = in_mode(&cursor, auto).unwrap_err();
+        assert_eq!(refused.code, PLX_ERROR);
+        assert_eq!(
+            refused.parallax_data().unwrap().kind,
+            ErrorKind::UnsupportedOption
+        );
+        assert_eq!(
+            refused.message,
+            "Cursor has no Auto. Set the Project to Bypass to use it."
+        );
+    }
 
     /// PLX-338: a worker start that read its Project before `project/delete` removed it records
     /// no run once the row is gone, so the delete leaves no orphan behind.
@@ -1430,6 +1521,7 @@ mod tests {
             name: "app".to_owned(),
             repo_path: "/src/app".to_owned(),
             icon: None,
+            permission: "auto".to_owned(),
         };
         // The start's `prepare_run` saw the project; the delete then removed it.
         store(&daemon, move |db| {

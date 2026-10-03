@@ -536,6 +536,11 @@ export type Project = {
 	 */
 	coordinator?: RunId,
 	/**
+	 * The permission mode its coordinator and every run in it start in (0042), behind the
+	 * `projectPermission` capability. Absent only from an older plxd.
+	 */
+	permission?: ProjectPermission,
+	/**
 	 * When the project was created, in RFC 3339 UTC.
 	 */
 	createdAt: string,
@@ -600,6 +605,15 @@ export type ImageMediaType = "image/png" | "image/jpeg" | "image/gif" | "image/w
 export type ProjectId = string;
 
 /**
+ * A project's permission mode (0042): the mode its coordinator and every run in it start in.
+ * Each maps to the [`AgentPermission`] of the same name. A run on a backend that doesn't map it
+ * is refused with `unsupportedOption`, never moved to another mode.
+ *
+ * A newer plxd may send a value this version does not know; treat it as unknown.
+ */
+export type ProjectPermission = "auto" | "bypass";
+
+/**
  * An agent run's id: a version 7 UUID that the client generates once and sends again on every
  * retry of `agent/start`, so a retry never starts a second agent.
  */
@@ -609,9 +623,9 @@ export type RunId = string;
  * Params of `project/create`.
  *
  * It is idempotent on `id`: if a project with that id exists, plxd returns it instead of
- * creating another, and fails with `idConflict` if `name`, `repoPath`, or `icon` differ. A new
- * project's `repoPath` must be the top folder of a git working tree on this host, or it fails
- * with `notARepository`.
+ * creating another, and fails with `idConflict` if `name`, `repoPath`, `icon`, or `permission`
+ * differ. A new project's `repoPath` must be the top folder of a git working tree on this host,
+ * or it fails with `notARepository`.
  */
 export type ProjectCreateParams = {
 	/**
@@ -631,6 +645,11 @@ export type ProjectCreateParams = {
 	 * app's default icon.
 	 */
 	icon?: ProjectIcon,
+	/**
+	 * The project's permission mode, sent only to a plxd that advertises `projectPermission`.
+	 * Absent means `auto`, the mode projects from before it have.
+	 */
+	permission?: ProjectPermission,
 };
 
 /**
@@ -1407,8 +1426,8 @@ export type AgentStartParams = {
 	 */
 	fast?: boolean,
 	/**
-	 * The permission mode (RYA-97, 0027). Absent means `edit`, or for a run with a
-	 * `coordinatorThread`, the coordinator's mode when it spawns the run.
+	 * The permission mode (RYA-97, 0027). Absent means `edit`. Ignored in a project, whose
+	 * runs run in the project's mode (0042).
 	 */
 	permission?: AgentPermission,
 	/**
@@ -1669,7 +1688,8 @@ export type AgentSendParams = {
 	 */
 	effort?: AgentEffort,
 	/**
-	 * A new permission (RYA-161), as `effort`.
+	 * A new permission (RYA-161), as `effort`. Ignored for a run in a project, which runs in the
+	 * project's mode (0042).
 	 */
 	permission?: AgentPermission,
 	/**
@@ -3186,7 +3206,7 @@ export type ProjectStartParams = {
 	 */
 	effort?: AgentEffort,
 	/**
-	 * The permission mode, as `agent/start`'s (RYA-188). Absent means the backend's default.
+	 * Ignored: the coordinator runs in the project's permission mode (0042).
 	 */
 	permission?: AgentPermission,
 	/**
@@ -3202,11 +3222,11 @@ export type ProjectStartParams = {
 
 /**
  * Params of `project/update`: renames a project or sets its icon, behind the `projectEdit`
- * capability (RYA-227, 0032).
+ * capability (RYA-227, 0032), or its permission mode, behind `projectPermission` (0042).
  *
  * A field that is absent stays as it is, and `icon` replaces the whole icon. `name` follows
- * `project/create`'s rules, and the repository can't change. A rename or a new icon is not
- * activity, so `updatedAt` stays as it is. Fails with `projectNotFound` for an unknown project.
+ * `project/create`'s rules, and the repository can't change. A rename, a new icon, or a new mode
+ * is not activity, so `updatedAt` stays as it is. Fails with `projectNotFound` for an unknown project.
  * A change appends `project.updated`; an update that changes nothing appends no event.
  */
 export type ProjectUpdateParams = {
@@ -3222,6 +3242,11 @@ export type ProjectUpdateParams = {
 	 * The new icon. Absent keeps the icon, and so does `null`: an icon can't be removed (0032).
 	 */
 	icon?: ProjectIcon,
+	/**
+	 * The new permission mode. Absent keeps the mode. Each run in the project starts its next
+	 * CLI process in it, and a running CLI keeps its mode until it exits.
+	 */
+	permission?: ProjectPermission,
 };
 
 /**
