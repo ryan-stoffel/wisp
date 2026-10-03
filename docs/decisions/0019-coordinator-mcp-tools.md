@@ -1,6 +1,6 @@
 # 0019: The coordinator's Parallax tools are `plxd mcp`, bound to one project and thread
 
-- Status: accepted; the coordinator that runs with these tools, and the tools' skipping its own run, are in [0024](0024-coordinator-chat.md); the Claude coordinator's flags are superseded by [0027](0027-claude-permission-modes.md)
+- Status: accepted; the coordinator that runs with these tools, and the tools' skipping its own run, are in [0024](0024-coordinator-chat.md); the Claude coordinator's flags are superseded by [0027](0027-claude-permission-modes.md); every thread's host-wide tools, `plxd mcp --thread`, are in [0041](0041-thread-lineage-and-host-mcp.md), which replaces these eight tools in PLX-380
 - Date: 2026-09-26
 - Issue: #195
 
