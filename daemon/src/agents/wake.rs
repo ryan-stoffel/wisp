@@ -35,7 +35,7 @@ pub(super) const CAP: u32 = 10;
 
 /// How much of a run's task and last message a summary quotes.
 const TASK_BYTES: usize = 200;
-const EXCERPT_BYTES: usize = 500;
+pub(super) const EXCERPT_BYTES: usize = 500;
 
 /// A coordinator's waiting wake-ups, how many it has taken since the user last wrote, and whether
 /// they are paused. The actor stores `state` whenever it changes, so a restart keeps it.
@@ -220,11 +220,6 @@ fn stored_summary(run: &AgentRun) -> Option<String> {
 
 /// One line on how `run`'s CLI process ended: its id, task, outcome, and branch.
 pub(super) fn summary(run: &AgentRun, outcome: &AgentOutcome) -> String {
-    let task = run
-        .prompt
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or_default();
     let ended = match outcome {
         AgentOutcome::Completed {
             result: Some(result),
@@ -255,12 +250,22 @@ pub(super) fn summary(run: &AgentRun, outcome: &AgentOutcome) -> String {
     format!(
         "- Run {} ({}): {ended}. {changes}",
         run.id,
-        one_line(task, TASK_BYTES)
+        task(&run.prompt)
     )
 }
 
+/// A run's task, as summaries and inbox items name it: the first line of its prompt that isn't
+/// blank, cut short.
+pub(super) fn task(prompt: &str) -> String {
+    let line = prompt
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_default();
+    one_line(line, TASK_BYTES)
+}
+
 /// `text` cut to about `max` bytes, on one line, so each run's summary stays one line.
-fn one_line(text: &str, max: usize) -> String {
+pub(super) fn one_line(text: &str, max: usize) -> String {
     truncate(text, max)
         .split_whitespace()
         .collect::<Vec<_>>()

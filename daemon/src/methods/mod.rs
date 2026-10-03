@@ -5,9 +5,8 @@
 //! `coordinator`: `project/start` in `project.rs`; #110 `threads`: `thread.rs`; RYA-227
 //! `projectEdit`: `project/update` in `project.rs`; PLX-338 `projectDelete`: `project/delete` in
 //! `project.rs`; PLX-318 `pullRequests` and PLX-328 `prDiff`: `pr.rs`; PLX-359 `composerMenus`:
-//! `composer.rs`; PLX-336 `githubStatus`:
-//! `github/status` in `accounts.rs`), and `host.rs`
-//! advertises the capability in `initialize`.
+//! `composer.rs`; PLX-336 `githubStatus`: `github/status` in `accounts.rs`; PLX-401 `inbox`:
+//! `inbox.rs`), and `host.rs` advertises the capability in `initialize`.
 
 mod accounts;
 mod agent;
@@ -16,6 +15,7 @@ mod context;
 mod defaults;
 mod events;
 mod host;
+pub(crate) mod inbox;
 mod pr;
 pub(crate) mod project;
 mod thread;
@@ -32,8 +32,8 @@ use parallax_protocol::methods::{
     AgentGitStatus, AgentImage, AgentList, AgentOpenPr, AgentPush, AgentRequestChanges,
     AgentResumeNow, AgentSend, AgentStart, ContextList, ContextRead, ContextWrite, EventsSubscribe,
     EventsUnsubscribe, GithubStatusGet, HostHealth, HostSettingsGet, HostSettingsSet, HostVersion,
-    Initialize, PrAct, PrDiff, PrView, ProjectCreate, ProjectDelete, ProjectList, ProjectStart,
-    ProjectUpdate, RequestMethod, UsageDaily, UsageGet, UsageHistory,
+    InboxList, InboxSeen, Initialize, PrAct, PrDiff, PrView, ProjectCreate, ProjectDelete,
+    ProjectList, ProjectStart, ProjectUpdate, RequestMethod, UsageDaily, UsageGet, UsageHistory,
 };
 use parallax_protocol::{EventsSubscribeResult, EventsUnsubscribeResult, SubscriptionId};
 use serde::Serialize;
@@ -85,7 +85,7 @@ pub(crate) async fn dispatch(context: Context, request: Request) -> Reply {
         name if name.starts_with("host/settings/") => host_settings_method(&context, &request)
             .await
             .unwrap_or_else(|| Err(ErrorObject::method_not_found(name))),
-        name if name.starts_with("project/") => project_method(&context, &request)
+        name if project_scoped(name) => project_method(&context, &request)
             .await
             .unwrap_or_else(|| Err(ErrorObject::method_not_found(name))),
         AccountsList::NAME => {
@@ -199,7 +199,13 @@ async fn usage_method(context: &Context, request: &Request) -> Option<Result<Val
     })
 }
 
-/// Answers a `project/*` method (RYA-227), or `None` if there is no such method.
+/// Whether `name` is a `project/*` method or a Project's `inbox/*` one (PLX-401).
+fn project_scoped(name: &str) -> bool {
+    name.starts_with("project/") || name.starts_with("inbox/")
+}
+
+/// Answers a `project/*` method (RYA-227) or a Project's `inbox/*` one (PLX-401), or `None` if
+/// there is no such method.
 async fn project_method(
     context: &Context,
     request: &Request,
@@ -220,6 +226,8 @@ async fn project_method(
         ProjectDelete::NAME => {
             handle::<ProjectDelete, _, _>(request, |p| project::delete(context, p)).await
         }
+        InboxList::NAME => handle::<InboxList, _, _>(request, |p| inbox::list(context, p)).await,
+        InboxSeen::NAME => handle::<InboxSeen, _, _>(request, |p| inbox::seen(context, p)).await,
         _ => return None,
     })
 }

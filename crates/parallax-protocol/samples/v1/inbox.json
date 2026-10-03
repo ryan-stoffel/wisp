@@ -1,0 +1,81 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "inbox/list",
+    "params": { "project": "01a0f755-f200-74dd-8cfc-06d0b225c5e0" }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "items": [
+        {
+          "id": "01a0f755-f5e8-74c2-993d-c1660d1cd780",
+          "kind": "done",
+          "run": "01a0f755-f200-74dd-8cfc-06d0b225c5e1",
+          "text": "Fix the login redirect: done, 3 files (+40 -12)",
+          "createdAt": "2026-10-03T12:00:00Z",
+          "seenAt": "2026-10-03T12:05:00Z"
+        }
+      ],
+      "seq": 7
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "events/subscribe",
+    "params": { "after": 7, "project": "01a0f755-f200-74dd-8cfc-06d0b225c5e0" }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "result": { "subscription": "01a0f755-f5e8-74c2-993d-c1660d1cd77c" }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0f755-f5e8-74c2-993d-c1660d1cd77c",
+      "seq": 8,
+      "time": "2026-10-03T12:10:00Z",
+      "project": "01a0f755-f200-74dd-8cfc-06d0b225c5e0",
+      "event": {
+        "kind": "inbox.added",
+        "item": {
+          "id": "01a0f755-f5e8-74c2-993d-c1660d1cd781",
+          "kind": "needsYou",
+          "run": "01a0f755-f200-74dd-8cfc-06d0b225c5e2",
+          "text": "Add rate limits: waiting for permission to use Bash",
+          "createdAt": "2026-10-03T12:10:00Z"
+        }
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "inbox/seen",
+    "params": {
+      "project": "01a0f755-f200-74dd-8cfc-06d0b225c5e0",
+      "items": ["01a0f755-f5e8-74c2-993d-c1660d1cd781"]
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "result": {
+      "items": [
+        {
+          "id": "01a0f755-f5e8-74c2-993d-c1660d1cd781",
+          "kind": "needsYou",
+          "run": "01a0f755-f200-74dd-8cfc-06d0b225c5e2",
+          "text": "Add rate limits: waiting for permission to use Bash",
+          "createdAt": "2026-10-03T12:10:00Z",
+          "seenAt": "2026-10-03T12:11:00Z"
+        }
+      ]
+    }
+  }
+]

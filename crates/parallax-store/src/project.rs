@@ -281,7 +281,7 @@ impl Store {
         Ok((raw.into_project()?, changed))
     }
 
-    /// Deletes a project by id, if it exists.
+    /// Deletes a project by id, if it exists, with its inbox (PLX-401).
     ///
     /// Returns whether a row was deleted.
     ///
@@ -289,6 +289,10 @@ impl Store {
     ///
     /// Returns a database error.
     pub fn delete_project(&self, id: Uuid) -> Result<bool, StoreError> {
+        self.conn.execute(
+            "DELETE FROM inbox WHERE project_id = ?1",
+            params![id.to_string()],
+        )?;
         let changed = self.conn.execute(
             "DELETE FROM projects WHERE id = ?1",
             params![id.to_string()],

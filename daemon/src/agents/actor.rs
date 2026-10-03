@@ -38,7 +38,7 @@ use parallax_protocol::{
     AccountChoice, AccountId, AgentApprovalAnswer, AgentApprovalBy, AgentApprovalDecision,
     AgentApproveParams, AgentApproveResult, AgentFailureKind, AgentOutcome, AgentOutputItem,
     AgentRun, ApprovalId, CoordinatorThreadId, DiffSummary, ErrorKind, GitStatus, ImageId,
-    ParallaxEvent, ProjectId, PromptImage, Role, RunId, TurnId,
+    InboxKind, ParallaxEvent, ProjectId, PromptImage, Role, RunId, TurnId,
 };
 use parallax_store::{Run as RunRow, RunAccept, SessionModelUsage, StoredImage, Worktree};
 use tokio::sync::{mpsc, oneshot};
@@ -75,6 +75,45 @@ const COALESCE: Duration = Duration::from_millis(50);
 
 /// An `agent.output` is sent early once its items reach about this many bytes.
 const MAX_BATCH_BYTES: usize = 256 * 1024;
+
+/// The inbox item a coordinator adds when its wake-ups pause (PLX-401, 0043).
+const WAKEUPS_PAUSED: &str =
+    "Wake-ups paused. Your next message to the coordinator lets them through.";
+
+/// The inbox item for a child's CLI ending (PLX-401, 0043): `done` with its diff stats, or
+/// `failed`. A cancelled or interrupted child adds none, since the user or plxd stopped it.
+fn ended_item(run: &AgentRun, outcome: &AgentOutcome) -> Option<(InboxKind, String)> {
+    match outcome {
+        AgentOutcome::Completed { .. } => {
+            let changes = run.diff.as_ref().map_or_else(
+                || "no changes".to_owned(),
+                |diff| {
+                    format!(
+                        "{} files (+{} -{})",
+                        diff.files, diff.insertions, diff.deletions
+                    )
+                },
+            );
+            Some((
+                InboxKind::Done,
+                format!("{}: done, {changes}", wake::task(&run.prompt)),
+            ))
+        }
+        AgentOutcome::Failed { message, .. } => {
+            Some((InboxKind::Failed, failed_text(&run.prompt, message)))
+        }
+        _ => None,
+    }
+}
+
+/// A `failed` inbox item's text: the child's task and what went wrong.
+fn failed_text(prompt: &str, message: &str) -> String {
+    format!(
+        "{}: failed: {}",
+        wake::task(prompt),
+        wake::one_line(message, wake::EXCERPT_BYTES)
+    )
+}
 
 /// What an actor is asked to do.
 pub(super) enum Command {
@@ -293,6 +332,25 @@ impl Actor {
         self.row.fields.policy == convert::NO_WRITE
     }
 
+    /// Whether a project's coordinator started this run through its tools (0019).
+    fn is_child(&self) -> bool {
+        self.row.fields.coordinator_thread.is_some() && !self.is_coordinator()
+    }
+
+    /// Adds an item about this run to its project's inbox (PLX-401, 0043).
+    async fn inbox(&self, kind: InboxKind, text: String) {
+        crate::methods::inbox::add(&self.daemon, self.project, self.id, kind, text).await;
+    }
+
+    /// Adds a child's permission request for `tool` to its project's inbox as `needsYou` (0031).
+    async fn inbox_approval(&self, tool: &str) {
+        if self.is_child() {
+            let task = wake::task(&self.row.fields.prompt);
+            let text = format!("{task}: waiting for permission to use {tool}");
+            self.inbox(InboxKind::NeedsYou, text).await;
+        }
+    }
+
     pub async fn run(mut self, mut commands: mpsc::Receiver<Command>, shutdown: CancellationToken) {
         if self.is_coordinator() {
             self.load_wakes().await;
@@ -390,7 +448,7 @@ impl Actor {
                 // Stop means stop: a run finishing a moment later doesn't start the coordinator
                 // again before the user writes.
                 if self.is_coordinator() {
-                    self.pause_wakes().await;
+                    self.pause_wakes(false).await;
                 }
                 let _ = reply.send(self.snapshot());
             }
@@ -457,12 +515,12 @@ impl Actor {
             }
             Err(error) => {
                 warn!(run = %self.id, error = %error.message, "could not check a coordinator before waking it");
-                self.pause_wakes().await;
+                self.pause_wakes(true).await;
                 return;
             }
         }
         let Some((turn_id, text)) = self.wakes.next() else {
-            self.pause_wakes().await;
+            self.pause_wakes(true).await;
             return;
         };
         info!(run = %self.id, "waking a coordinator: runs it started finished");
@@ -481,21 +539,27 @@ impl Actor {
                 self.wakes.delivered();
                 self.save_wakes().await;
             }
-            Ok(_) => self.pause_wakes().await,
+            Ok(_) => self.pause_wakes(true).await,
             Err(error) => {
                 warn!(run = %self.id, error = %error.message, "could not wake a coordinator");
-                self.pause_wakes().await;
+                self.pause_wakes(true).await;
             }
         }
     }
 
-    /// Stops waking the coordinator until the user writes, and says so once (RYA-42).
-    async fn pause_wakes(&mut self) {
+    /// Stops waking the coordinator until the user writes, and says so once (RYA-42). A pause
+    /// plxd makes on its own, `notify`, also adds a `needsYou` inbox item (PLX-401); the user's
+    /// own Stop doesn't.
+    async fn pause_wakes(&mut self, notify: bool) {
         if self.wakes.pause() {
             info!(run = %self.id, "pausing a coordinator's wake-ups until the user writes");
             self.save_wakes().await;
             self.append(ParallaxEvent::AgentWakeupsPaused { run_id: self.id })
                 .await;
+            if notify {
+                self.inbox(InboxKind::NeedsYou, WAKEUPS_PAUSED.to_owned())
+                    .await;
+            }
         }
     }
 
@@ -511,7 +575,7 @@ impl Actor {
             Ok(state) => self.wakes.restore(state),
             Err(error) => {
                 warn!(run = %self.id, error = %error.message, "could not read a coordinator's wake-ups");
-                self.pause_wakes().await;
+                self.pause_wakes(true).await;
             }
         }
     }
@@ -1579,6 +1643,10 @@ impl Actor {
             },
         })
         .await;
+        if self.is_child() {
+            let text = failed_text(&self.row.fields.prompt, &message);
+            self.inbox(InboxKind::Failed, text).await;
+        }
         convert::FAILED.clone_into(&mut self.row.state.status);
         self.row.state.error = Some(message);
         self.row.state.resume_at = None;
@@ -1638,6 +1706,7 @@ impl Actor {
                     .unwrap_or(jiff::Timestamp::MAX);
                 self.push(convert::approval_requested(request, expires_at))
                     .await;
+                self.inbox_approval(&request.tool_name).await;
             }
             Event::ApprovalWithdrawn { approval_id } => {
                 let withdrawn = ended(AgentApprovalDecision::Withdrawn, AgentApprovalBy::Agent);
@@ -1770,6 +1839,9 @@ impl Actor {
             && !self.is_coordinator()
             && let Ok(run) = self.snapshot()
         {
+            if let Some((kind, text)) = ended_item(&run, &outcome) {
+                self.inbox(kind, text).await;
+            }
             wake::notify(&self.daemon, thread, wake::summary(&run, &outcome));
         }
     }

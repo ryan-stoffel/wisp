@@ -43,6 +43,7 @@ mod git;
 mod handshake;
 mod host;
 mod id;
+mod inbox;
 pub mod jsonrpc;
 pub mod methods;
 mod project;
@@ -101,6 +102,10 @@ pub use host::{
     HostVersionParams, HostVersionResult, StoreState,
 };
 pub use id::InvalidId;
+pub use inbox::{
+    InboxItem, InboxItemId, InboxKind, InboxListParams, InboxListResult, InboxSeenParams,
+    InboxSeenResult,
+};
 pub use project::{
     Project, ProjectCreateParams, ProjectCreateResult, ProjectDeleteParams, ProjectDeleteResult,
     ProjectIcon, ProjectId, ProjectListParams, ProjectListResult, ProjectStartParams,
