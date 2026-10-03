@@ -702,7 +702,10 @@ async fn launch(binding: &Binding, args: LaunchArgs) -> Result<String, String> {
     };
     let mut plxd = Plxd::open(&binding.socket).await?;
     let (listed, runs) = host(&mut plxd).await?;
-    let caller = runs.iter().find(|run| run.id == binding.run);
+    let caller = runs
+        .iter()
+        .find(|run| run.id == binding.run)
+        .ok_or("your thread is no longer on this host")?;
     // The caller's own repository, unless it has none.
     let own_repo = listed
         .threads
@@ -740,16 +743,11 @@ async fn launch(binding: &Binding, args: LaunchArgs) -> Result<String, String> {
     // same backend, which maps it.
     let same_backend = match &account {
         None => true,
-        Some(AccountChoice::Subscription { backend }) => {
-            caller.is_some_and(|caller| caller.backend == *backend)
-        }
+        Some(AccountChoice::Subscription { backend }) => caller.backend == *backend,
         Some(_) => false,
     };
-    let permission = mode.or_else(|| {
-        same_backend
-            .then(|| caller.and_then(|caller| caller.permission))
-            .flatten()
-    });
+    let permission = mode.or_else(|| same_backend.then_some(caller.permission).flatten());
+    check_mode(caller.permission, permission)?;
     let started = plxd
         .call::<ThreadStart>(ThreadStartParams {
             run_id: RunId::generate(),
@@ -780,6 +778,38 @@ async fn launch(binding: &Binding, args: LaunchArgs) -> Result<String, String> {
         &listed.repos,
         binding.run,
     )))
+}
+
+/// Refuses a child `mode` that needs less approval than the caller's `theirs` (0041). No mode
+/// means Edit.
+fn check_mode(
+    theirs: Option<AgentPermission>,
+    mode: Option<AgentPermission>,
+) -> Result<(), String> {
+    let theirs = theirs.unwrap_or(AgentPermission::Edit);
+    let child = mode.unwrap_or(AgentPermission::Edit);
+    if reach(child).is_some_and(|child| reach(theirs) >= Some(child)) {
+        return Ok(());
+    }
+    let name = |mode| crate::agents::convert::option_name(mode).unwrap_or_default();
+    Err(format!(
+        "you run in {} mode, so a thread you launch can't run in {}, which needs less approval",
+        name(theirs),
+        name(child)
+    ))
+}
+
+/// How much `mode` lets a run do without asking, least first, or `None` for a mode this plxd
+/// doesn't know.
+fn reach(mode: AgentPermission) -> Option<u8> {
+    match mode {
+        AgentPermission::Plan => Some(0),
+        AgentPermission::Manual => Some(1),
+        AgentPermission::Auto => Some(2),
+        AgentPermission::Edit => Some(3),
+        AgentPermission::Bypass => Some(4),
+        AgentPermission::Unknown => None,
+    }
 }
 
 /// The repo entry `repo` names, by id or by path, registering a repository on the host that has
