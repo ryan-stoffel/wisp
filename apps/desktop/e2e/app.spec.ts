@@ -213,7 +213,8 @@ test("a pasted image sits in the composer, goes with the message, and outlives a
   const width = (img: unknown) => (img as { naturalWidth: number }).naturalWidth;
   expect(await thumbnail.evaluate(width)).toBe(2000);
 
-  // The image alone: the thread was left running, so the fake takes it as a follow-up.
+  // The image alone: the thread was left running with its turn done, so the fake takes it as a
+  // follow-up at once rather than queueing it for the turn's end (PLX-370).
   await page.getByRole("button", { name: "Send" }).click();
   await expect(thumbnail).toHaveCount(0);
   const transcript = page.getByRole("log", { name: "Transcript" });

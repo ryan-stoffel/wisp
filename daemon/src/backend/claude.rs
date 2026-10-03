@@ -85,9 +85,12 @@
 //! blocks before its text (RYA-191). The prompt never goes in argv, where
 //! `ps` would show it and `ARG_MAX` would limit it. Each message carries a `uuid`, the turn id,
 //! which the CLI echoes in `result.user_message_uuids`: several messages sent close together can
-//! run as one turn, and those ids say which turns a result ended. Once no turn is outstanding,
-//! stdin closes and the CLI exits after its last result, which ends the run; a follow-up sent
-//! after that fails with [`SendError::Finished`](super::SendError::Finished).
+//! run as one turn, and those ids say which turns a result ended. A message written mid-turn
+//! joins the running turn after its current tool call (Claude Code 2.1.288), so that is how a
+//! steer reaches it, and plxd holds a queued message until the turn has ended (PLX-370). Once no
+//! turn is outstanding and plxd holds no message for the CLI ([`Run::hold`]), stdin closes and
+//! the CLI exits after its last result, which ends the run; a follow-up sent after that fails
+//! with [`SendError::Finished`](super::SendError::Finished).
 //!
 //! # Credentials
 //!
@@ -175,7 +178,7 @@ use super::process::{
 use super::sandbox::worker_sandbox;
 use super::{
     AgentEffort, AgentPermission, Answer, AnswerError, ApprovalId, Backend, CancelSwitch,
-    Capabilities, Credential, Decision, EVENT_BUFFER, EventSink, FollowUp, PromptImage, Run,
+    Capabilities, Credential, Decision, EVENT_BUFFER, EventSink, FollowUp, Held, PromptImage, Run,
     RunHandle, RunId, RunRequest, SendError, StartError, Started, ToolPolicy, TurnId,
     WorkerSandbox, check_argument, prepend_path_line,
 };
@@ -970,6 +973,7 @@ impl Backend for ClaudeBackend {
         switch.arm(process.signals().clone(), self.cancel);
         let (handle, control) = RunHandle::new(request.run_id, true, switch.clone());
         let (handle, answers) = handle.with_answers();
+        let held = handle.held();
         let stop = Arc::new(Notify::new());
         let baseline = request
             .resume
@@ -980,6 +984,7 @@ impl Backend for ClaudeBackend {
             process,
             control,
             answers,
+            held,
             sink,
             switch,
             stop: Arc::clone(&stop),
@@ -1026,6 +1031,10 @@ impl Run for ClaudeRun {
 
     fn answer(&self, answer: Answer) -> Result<(), AnswerError> {
         self.handle.answer(answer)
+    }
+
+    fn hold(&self, held: bool) {
+        self.handle.hold(held);
     }
 }
 
@@ -1189,6 +1198,8 @@ struct Driver {
     process: Process,
     control: mpsc::UnboundedReceiver<FollowUp>,
     answers: mpsc::UnboundedReceiver<Answer>,
+    /// While held, plxd has a message waiting for the CLI, so stdin stays open (PLX-370).
+    held: Held,
     sink: EventSink,
     switch: CancelSwitch,
     stop: Arc<Notify>,
@@ -1284,6 +1295,7 @@ impl Driver {
                     stdin.close();
                     self.control.close();
                 }
+                () = self.held.changed() => {}
             }
             self.close_when_idle(&mut stdin);
         };
@@ -1391,10 +1403,17 @@ impl Driver {
             .collect()
     }
 
-    /// Closes stdin once no turn is outstanding and no permission request waits, so the CLI exits
-    /// after its last result. Claude Code fails a request whose stdin has closed.
+    /// Closes stdin once no turn is outstanding, no permission request waits, and plxd holds no
+    /// message for the CLI, so the CLI exits after its last result. Claude Code fails a request
+    /// whose stdin has closed.
     fn close_when_idle(&mut self, stdin: &mut Stdin) {
-        if stdin.is_open() && self.turns.is_empty() && self.asks.is_empty() && stdin.pending == 0 {
+        if stdin.is_open()
+            && self.turns.is_empty()
+            && self.asks.is_empty()
+            && stdin.pending == 0
+            && self.control.is_empty()
+            && !self.held.now()
+        {
             stdin.close();
             self.control.close();
         }

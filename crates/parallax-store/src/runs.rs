@@ -485,7 +485,7 @@ pub(crate) fn delete_run_rows(conn: &Connection, id: Uuid) -> Result<bool, Store
     let key = id.to_string();
     let existed = conn.execute("DELETE FROM runs WHERE id = ?1", params![key])? > 0;
     conn.execute("DELETE FROM worktrees WHERE id = ?1", params![key])?;
-    for table in ["events", "turns", "images", "wakes"] {
+    for table in ["events", "turns", "images", "wakes", "queued"] {
         conn.execute(
             &format!("DELETE FROM {table} WHERE run_id = ?1"),
             params![key],

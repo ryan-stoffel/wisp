@@ -86,6 +86,11 @@ const rendererMethods: Record<RendererMethod, true> = {
   "agent/autoResume": true,
   "host/settings/get": true,
   "host/settings/set": true,
+  "queue/list": true,
+  "queue/edit": true,
+  "queue/reorder": true,
+  "queue/cancel": true,
+  "queue/steer": true,
 };
 
 /** Every host's connection, by host id: `local`, then each saved SSH host. */

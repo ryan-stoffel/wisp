@@ -50,10 +50,10 @@ use std::time::Duration;
 use parallax_protocol::jsonrpc::ErrorObject;
 use parallax_protocol::{
     AccountChoice, AgentAcceptParams, AgentAcceptResult, AgentApproveParams, AgentApproveResult,
-    AgentEffort, AgentImageParams, AgentOpenPrResult, AgentOutcome, AgentPermission, AgentRun,
-    AgentRunState, AgentSendParams, AgentStartParams, ApprovalId, CoordinatorThreadId, ErrorKind,
-    GitStatus, ImageMediaType, ParallaxEvent, PrActParams, PrDiffResult, PrViewParams, ProjectId,
-    PromptImage, PullRequest, Role, RunId, TurnId,
+    AgentDelivery, AgentEffort, AgentImageParams, AgentOpenPrResult, AgentOutcome, AgentPermission,
+    AgentRun, AgentRunState, AgentSendParams, AgentStartParams, ApprovalId, CoordinatorThreadId,
+    ErrorKind, GitStatus, ImageMediaType, ParallaxEvent, PrActParams, PrDiffResult, PrViewParams,
+    ProjectId, PromptImage, PullRequest, QueueResult, Role, RunId, TurnId,
 };
 use parallax_store::{RunFields, RunState, StoreError, ThreadFields, WorktreeFields};
 use tokio::sync::{mpsc, oneshot};
@@ -62,8 +62,8 @@ use tokio_util::task::TaskTracker;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-pub(crate) use self::actor::GitAction;
 use self::actor::{Actor, Command};
+pub(crate) use self::actor::{GitAction, QueueOp};
 pub(crate) use self::approvals::APPROVAL_TIMEOUT;
 pub(crate) use self::convert::agent_run as snapshot;
 use self::convert::{RUNNING, STARTING, WORKSPACE_WRITE, agent_run, option_name, option_value};
@@ -448,8 +448,10 @@ async fn prepare_run(
 }
 
 /// What a run asks of its CLI beyond the prompt (RYA-97), each `None` for the CLI's default. The
-/// run keeps them for every launch, including a resume.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// run keeps them for every launch, including a resume. A waiting message stores its own as JSON
+/// (PLX-370).
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub(crate) struct RunOptions {
     pub model: Option<String>,
     pub effort: Option<AgentEffort>,
@@ -1112,7 +1114,17 @@ pub(crate) async fn send(
         account,
         images,
         threads,
+        delivery,
     } = params;
+    let steer = match delivery.unwrap_or_default() {
+        AgentDelivery::Queue => false,
+        AgentDelivery::Steer => true,
+        AgentDelivery::Unknown => {
+            return Err(ErrorObject::invalid_params(
+                "delivery must be queue or steer",
+            ));
+        }
+    };
     let options = RunOptions {
         model,
         effort,
@@ -1127,9 +1139,41 @@ pub(crate) async fn send(
         threads,
         options,
         account,
+        steer,
         reply,
     })
     .await
+}
+
+/// `queue/*` (PLX-370): through the run's actor, which keeps its waiting messages.
+pub(crate) async fn queue(
+    daemon: Arc<Daemon>,
+    run_id: RunId,
+    op: QueueOp,
+) -> Result<QueueResult, ErrorObject> {
+    ask(&daemon, run_id, |reply| Command::Queue { op, reply }).await
+}
+
+/// Starts the actor of every run that has waiting messages a plxd before this one stored, so
+/// they are sent (PLX-370). Called once at startup, after [`recover`].
+pub(crate) async fn deliver_queued(daemon: &Arc<Daemon>) {
+    let runs = store(daemon, |db| db.queued_runs().map_err(|e| store_error(&e))).await;
+    let runs = match runs {
+        Ok(runs) => runs,
+        Err(error) => {
+            warn!(error = %error.message, "could not read which runs have waiting messages");
+            return;
+        }
+    };
+    for run in runs {
+        let Ok(id) = RunId::try_from(run) else {
+            warn!(%run, "a run with waiting messages has an id that is not a UUIDv7");
+            continue;
+        };
+        if let Err(error) = actor_for(daemon, id).await {
+            warn!(run = %id, error = %error.message, "could not send a run's waiting messages");
+        }
+    }
 }
 
 /// `agent/image`: one of a run's stored images (RYA-191, decision 0026).

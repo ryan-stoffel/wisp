@@ -9,9 +9,11 @@
 //! whose replayed history it drops ([`stream::Translator::replaying`]). Plan sends `session/set_mode
 //! plan` next. Then each message is a `session/prompt`, the first one the user's message as
 //! written, with its images as image blocks before its text. A follow-up sent during a turn waits
-//! for that turn's response, then goes into the same session. Once no turn is outstanding and no
-//! request waits, stdin closes, `agent` exits, and the run ends; a later message resumes the
-//! session in a new run.
+//! for that turn's response, then goes into the same session. ACP has no way to add to a running
+//! turn, so a steer (PLX-370) sends `session/cancel`, which Cursor Agent answers by ending the turn
+//! `cancelled`, and then the steer as the next `session/prompt`. Once no turn is outstanding, no
+//! request waits, and plxd holds no message for it ([`Run::hold`]), stdin closes, `agent` exits,
+//! and the run ends; a later message resumes the session in a new run.
 //!
 //! Only threads run on Cursor (`RunRequest::thread`): it has no worker sandbox, and 0004 keeps the
 //! coordinator off it, so anything else is [`StartError::Unsupported`].
@@ -74,8 +76,8 @@ use super::process::{
 };
 use super::{
     AgentPermission, Answer, AnswerError, ApprovalId, Backend, CancelSwitch, Capabilities,
-    Credential, Decision, EVENT_BUFFER, EventSink, FollowUp, PromptImage, Run, RunHandle, RunId,
-    RunRequest, SendError, StartError, Started, TurnId, check_argument,
+    Credential, Decision, EVENT_BUFFER, EventSink, FollowUp, Held, PromptImage, Run, RunHandle,
+    RunId, RunRequest, SendError, StartError, Started, TurnId, check_argument,
 };
 
 /// The CLI's program name, looked up on the launcher's `PATH`.
@@ -247,6 +249,7 @@ impl Backend for CursorBackend {
         switch.arm(process.signals().clone(), CancelPolicy::default());
         let (handle, control) = RunHandle::new(request.run_id, true, switch.clone());
         let (handle, answers) = handle.with_answers();
+        let held = handle.held();
         let stop = Arc::new(Notify::new());
         let baseline = request
             .resume
@@ -264,6 +267,7 @@ impl Backend for CursorBackend {
             process,
             control,
             answers,
+            held,
             sink,
             switch,
             stop: Arc::clone(&stop),
@@ -321,6 +325,10 @@ impl Run for CursorRun {
     fn answer(&self, answer: Answer) -> Result<(), AnswerError> {
         self.handle.answer(answer)
     }
+
+    fn hold(&self, held: bool) {
+        self.handle.hold(held);
+    }
 }
 
 /// A message for `session/prompt`.
@@ -374,6 +382,8 @@ struct Driver {
     process: Process,
     control: mpsc::UnboundedReceiver<FollowUp>,
     answers: mpsc::UnboundedReceiver<Answer>,
+    /// While held, plxd has a message waiting for the CLI, so stdin stays open (PLX-370).
+    held: Held,
     sink: EventSink,
     switch: CancelSwitch,
     stop: Arc<Notify>,
@@ -431,10 +441,7 @@ impl Driver {
                     None => answers_open = false,
                 },
                 follow_up = self.control.recv(), if control_open => match follow_up {
-                    Some(follow_up) => {
-                        let prompt = Prompt::new(Some(follow_up.turn_id), &follow_up.text, &follow_up.images, true);
-                        self.prompts.push_back(prompt);
-                    }
+                    Some(follow_up) => self.follow_up(follow_up).await,
                     None => control_open = false,
                 },
                 () = self.stop.notified(), if self.stdin.is_some() => self.close(),
@@ -442,6 +449,7 @@ impl Driver {
                     self.switch.cancel();
                     self.close();
                 }
+                () = self.held.changed() => {}
             }
             self.next_prompt().await;
             if self.stdin.is_some()
@@ -450,6 +458,8 @@ impl Driver {
                 && self.prompts.is_empty()
                 && self.asks.is_empty()
                 && self.build.is_none()
+                && self.control.is_empty()
+                && !self.held.now()
             {
                 self.close();
             }
@@ -464,6 +474,37 @@ impl Driver {
         }
         let outcome = self.outcome(exit);
         let _ = self.sink.finish(outcome).await;
+    }
+
+    /// Queues a follow-up for the session. A steer goes next, and cancels the turn in flight
+    /// first, since ACP can't add to it (PLX-370).
+    async fn follow_up(&mut self, follow_up: FollowUp) {
+        let prompt = Prompt::new(
+            Some(follow_up.turn_id),
+            &follow_up.text,
+            &follow_up.images,
+            true,
+        );
+        if follow_up.steer && self.in_flight.is_some() {
+            self.prompts.push_front(prompt);
+            self.cancel_turn().await;
+        } else {
+            self.prompts.push_back(prompt);
+        }
+    }
+
+    /// Cancels the turn in flight with `session/cancel`, and withdraws every request it waits on,
+    /// answered `cancelled` as ACP has a client do.
+    async fn cancel_turn(&mut self) {
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        self.write(&json!({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": session}}));
+        for (approval_id, ask) in std::mem::take(&mut self.asks) {
+            let outcome = json!({"outcome": "cancelled"});
+            self.write(&json!({"jsonrpc": "2.0", "id": ask.id, "result": {"outcome": outcome}}));
+            self.emit(Event::ApprovalWithdrawn { approval_id }).await;
+        }
     }
 
     /// Sends a JSON-RPC request, and remembers what it was for its response.
@@ -680,15 +721,8 @@ impl Driver {
         if leaves_plan && let Some(session) = self.session.clone() {
             self.set_mode(&session, AGENT_MODE);
         }
-        if interrupt && let Some(session) = self.session.clone() {
-            self.write(&json!({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": session}}));
-            for (approval_id, ask) in std::mem::take(&mut self.asks) {
-                let outcome = json!({"outcome": "cancelled"});
-                self.write(
-                    &json!({"jsonrpc": "2.0", "id": ask.id, "result": {"outcome": outcome}}),
-                );
-                self.emit(Event::ApprovalWithdrawn { approval_id }).await;
-            }
+        if interrupt {
+            self.cancel_turn().await;
         }
     }
 

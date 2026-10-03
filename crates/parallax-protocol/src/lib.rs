@@ -47,6 +47,7 @@ pub mod jsonrpc;
 pub mod methods;
 mod project;
 mod pull_request;
+mod queue;
 mod review;
 mod thread;
 pub mod typescript;
@@ -109,6 +110,10 @@ pub use project::{
 pub use pull_request::{
     PrActParams, PrAction, PrCheck, PrCheckState, PrComment, PrCommit, PrDiffResult, PrMergeMethod,
     PrMergeState, PrReview, PrReviewState, PrState, PrViewParams, PullRequest,
+};
+pub use queue::{
+    AgentDelivery, QueueCancelParams, QueueEditParams, QueueListParams, QueueReorderParams,
+    QueueResult, QueueSteerParams, QueuedMessage,
 };
 pub use review::{
     AcceptId, AgentAcceptParams, AgentAcceptResult, AgentDiffFile, AgentDiffParams,

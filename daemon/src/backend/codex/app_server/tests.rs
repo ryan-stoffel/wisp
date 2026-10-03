@@ -118,6 +118,7 @@ async fn an_approval_round_trips_and_a_follow_up_joins_the_live_thread() {
             turn_id: follow_up,
             text: "What's the hash?".into(),
             images: Vec::new(),
+            steer: false,
         })
         .unwrap();
     started
@@ -315,4 +316,96 @@ fn a_thread_on_an_api_key_or_in_plan_is_refused_before_spawning() {
             Err(StartError::Unsupported(_))
         ));
     }
+}
+
+/// PLX-370: a steer sent while a command runs is `turn/steer` with Codex's id for the running
+/// turn, and its turn ends with that turn. Held, app-server stays open after the turn until plxd
+/// lets it go.
+#[tokio::test]
+async fn a_steer_joins_the_running_turn_and_a_held_thread_stays_open() {
+    let (dir, backend) = fake(include_str!("../fixtures/app-server-steer.jsonl"));
+    let mut request = request(AgentPermission::Edit);
+    request.approvals = false;
+    let first = request.turn_id;
+    let started = backend.start(request).unwrap();
+    let mut stream = started.events;
+    let mut events = Vec::new();
+    loop {
+        let event = next(&mut stream).await;
+        let running = matches!(&event, Event::ToolCall { call_id, .. } if call_id == "exec-1");
+        events.push(event);
+        if running {
+            break;
+        }
+    }
+    started.run.hold(true);
+    let steer = TurnId::generate();
+    started
+        .run
+        .send(FollowUp {
+            turn_id: steer,
+            text: "Change of plan: reply BANANA instead.".into(),
+            images: Vec::new(),
+            steer: true,
+        })
+        .unwrap();
+    let turn_done = loop {
+        let event = next(&mut stream).await;
+        let done = matches!(event, Event::TurnFinished { turn_id: Some(id), .. } if id == steer);
+        events.push(event);
+        if done {
+            break events.len();
+        }
+    };
+    // Held, the thread waits for more instead of exiting.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), stream.next())
+            .await
+            .is_err(),
+        "a held thread ended"
+    );
+    started.run.hold(false);
+    events.extend(rest(&mut stream).await);
+
+    let turns: Vec<&Event> = events[..turn_done]
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                Event::TurnStarted { .. } | Event::TurnFinished { .. }
+            )
+        })
+        .collect();
+    let banana = Some("BANANA".to_owned());
+    assert_eq!(
+        turns,
+        [
+            &Event::TurnStarted { turn_id: first },
+            &Event::TurnStarted {
+                turn_id: Some(steer)
+            },
+            &Event::TurnFinished {
+                turn_id: first,
+                result: banana.clone()
+            },
+            &Event::TurnFinished {
+                turn_id: Some(steer),
+                result: banana.clone()
+            },
+        ]
+    );
+    assert!(matches!(
+        events.last(),
+        Some(Event::Finished {
+            outcome: Outcome::Completed { .. },
+            ..
+        })
+    ));
+    let written = written(&dir);
+    assert_eq!(written[4]["method"], "turn/steer");
+    assert_eq!(
+        written[4]["params"],
+        json!({"threadId": "t-1", "expectedTurnId": "u-1", "input": [{"type": "text",
+               "text": "Change of plan: reply BANANA instead.", "text_elements": []}]})
+    );
 }

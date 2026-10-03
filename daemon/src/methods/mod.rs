@@ -6,7 +6,7 @@
 //! `projectEdit`: `project/update` in `project.rs`; PLX-338 `projectDelete`: `project/delete` in
 //! `project.rs`; PLX-318 `pullRequests` and PLX-328 `prDiff`: `pr.rs`; PLX-359 `composerMenus`:
 //! `composer.rs`; PLX-336 `githubStatus`:
-//! `github/status` in `accounts.rs`), and `host.rs`
+//! `github/status` in `accounts.rs`; PLX-370 `queue`: `queue.rs`), and `host.rs`
 //! advertises the capability in `initialize`.
 
 mod accounts;
@@ -18,6 +18,7 @@ mod events;
 mod host;
 mod pr;
 pub(crate) mod project;
+mod queue;
 mod thread;
 mod usage;
 
@@ -76,13 +77,7 @@ pub(crate) async fn dispatch(context: Context, request: Request) -> Reply {
         return Reply::Response(Response::error(Some(id), ErrorObject::request_cancelled()));
     }
     let result = match request.method.as_str() {
-        HostHealth::NAME => {
-            handle::<HostHealth, _, _>(&request, |p| ready(Ok(host::health(&context, p)))).await
-        }
-        HostVersion::NAME => {
-            handle::<HostVersion, _, _>(&request, |p| ready(Ok(host::version(&context, p)))).await
-        }
-        name if name.starts_with("host/settings/") => host_settings_method(&context, &request)
+        name if name.starts_with("host/") => host_method(&context, &request)
             .await
             .unwrap_or_else(|| Err(ErrorObject::method_not_found(name))),
         name if name.starts_with("project/") => project_method(&context, &request)
@@ -131,6 +126,7 @@ pub(crate) async fn dispatch(context: Context, request: Request) -> Reply {
         GithubStatusGet::NAME => {
             handle::<GithubStatusGet, _, _>(&request, |p| accounts::github(&context, p)).await
         }
+        name if name.starts_with("queue/") => queue::dispatch(&context, &request).await,
         name if thread::handles(name) => thread::dispatch(&context, &request).await,
         EventsSubscribe::NAME => {
             let subscribed = match request.params() {
@@ -171,12 +167,16 @@ pub(crate) async fn dispatch(context: Context, request: Request) -> Reply {
     })
 }
 
-/// Answers a `host/settings/*` method (PLX-371), or `None` if there is no such method.
-async fn host_settings_method(
-    context: &Context,
-    request: &Request,
-) -> Option<Result<Value, ErrorObject>> {
+/// Answers a `host/*` method, `host/settings/*` being PLX-371's, or `None` if there is no such
+/// method.
+async fn host_method(context: &Context, request: &Request) -> Option<Result<Value, ErrorObject>> {
     Some(match request.method.as_str() {
+        HostHealth::NAME => {
+            handle::<HostHealth, _, _>(request, |p| ready(Ok(host::health(context, p)))).await
+        }
+        HostVersion::NAME => {
+            handle::<HostVersion, _, _>(request, |p| ready(Ok(host::version(context, p)))).await
+        }
         HostSettingsGet::NAME => {
             handle::<HostSettingsGet, _, _>(request, |p| host::settings(context, p)).await
         }

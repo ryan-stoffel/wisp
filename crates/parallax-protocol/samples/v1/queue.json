@@ -1,0 +1,259 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "agent/send",
+    "params": {
+      "runId": "01a0d390-2c3d-7e4f-9a0b-1c2d3e4f5a6b",
+      "turnId": "01a0e010-0000-7000-8000-000000000001",
+      "text": "Then add tests."
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "run": {
+        "id": "01a0d390-2c3d-7e4f-9a0b-1c2d3e4f5a6b",
+        "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+        "prompt": "Add the dark mode toggle.",
+        "policy": "workspaceWrite",
+        "status": "running",
+        "accountId": "claude",
+        "backend": "claude",
+        "sessionId": "8f4c2e1a-6b3d-4f5e-9a7c-1d2e3f4a5b6c",
+        "createdAt": "2026-10-03T12:00:00Z",
+        "updatedAt": "2026-10-03T12:00:05Z"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "method": "events/event",
+    "params": {
+      "subscription": "01a0d34a-5860-7ee2-a66a-aef2367abe02",
+      "seq": 120,
+      "time": "2026-10-03T12:00:06Z",
+      "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+      "event": {
+        "kind": "queue.updated",
+        "runId": "01a0d390-2c3d-7e4f-9a0b-1c2d3e4f5a6b",
+        "messages": [
+          {
+            "id": "01a0e010-0000-7000-8000-000000000001",
+            "text": "Then add tests.",
+            "images": 0,
+            "threads": []
+          }
+        ]
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "agent/send",
+    "params": {
+      "runId": "01a0d390-2c3d-7e4f-9a0b-1c2d3e4f5a6b",
+      "turnId": "01a0e010-0000-7000-8000-000000000002",
+      "text": "Also update the README.",
+      "delivery": "queue"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "result": {
+      "run": {
+        "id": "01a0d390-2c3d-7e4f-9a0b-1c2d3e4f5a6b",
+        "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+        "prompt": "Add the dark mode toggle.",
+        "policy": "workspaceWrite",
+        "status": "running",
+        "accountId": "claude",
+        "backend": "claude",
+        "sessionId": "8f4c2e1a-6b3d-4f5e-9a7c-1d2e3f4a5b6c",
+        "createdAt": "2026-10-03T12:00:00Z",
+        "updatedAt": "2026-10-03T12:00:05Z"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "queue/list",
+    "params": {
+      "runId": "01a0d390-2c3d-7e4f-9a0b-1c2d3e4f5a6b"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "result": {
+      "messages": [
+        {
+          "id": "01a0e010-0000-7000-8000-000000000001",
+          "text": "Then add tests.",
+          "images": 0,
+          "threads": []
+        },
+        {
+          "id": "01a0e010-0000-7000-8000-000000000002",
+          "text": "Also update the README.",
+          "images": 0,
+          "threads": []
+        }
+      ]
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "queue/edit",
+    "params": {
+      "runId": "01a0d390-2c3d-7e4f-9a0b-1c2d3e4f5a6b",
+      "id": "01a0e010-0000-7000-8000-000000000001",
+      "text": "Then add unit tests."
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "result": {
+      "messages": [
+        {
+          "id": "01a0e010-0000-7000-8000-000000000001",
+          "text": "Then add unit tests.",
+          "images": 0,
+          "threads": []
+        },
+        {
+          "id": "01a0e010-0000-7000-8000-000000000002",
+          "text": "Also update the README.",
+          "images": 0,
+          "threads": []
+        }
+      ]
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "method": "queue/reorder",
+    "params": {
+      "runId": "01a0d390-2c3d-7e4f-9a0b-1c2d3e4f5a6b",
+      "ids": [
+        "01a0e010-0000-7000-8000-000000000002",
+        "01a0e010-0000-7000-8000-000000000001"
+      ]
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "result": {
+      "messages": [
+        {
+          "id": "01a0e010-0000-7000-8000-000000000002",
+          "text": "Also update the README.",
+          "images": 0,
+          "threads": []
+        },
+        {
+          "id": "01a0e010-0000-7000-8000-000000000001",
+          "text": "Then add unit tests.",
+          "images": 0,
+          "threads": []
+        }
+      ]
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 6,
+    "method": "queue/steer",
+    "params": {
+      "runId": "01a0d390-2c3d-7e4f-9a0b-1c2d3e4f5a6b",
+      "id": "01a0e010-0000-7000-8000-000000000002"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 6,
+    "result": {
+      "messages": [
+        {
+          "id": "01a0e010-0000-7000-8000-000000000001",
+          "text": "Then add unit tests.",
+          "images": 0,
+          "threads": []
+        }
+      ]
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 7,
+    "method": "queue/cancel",
+    "params": {
+      "runId": "01a0d390-2c3d-7e4f-9a0b-1c2d3e4f5a6b",
+      "id": "01a0e010-0000-7000-8000-000000000001"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 7,
+    "result": {
+      "messages": []
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 8,
+    "method": "queue/cancel",
+    "params": {
+      "runId": "01a0d390-2c3d-7e4f-9a0b-1c2d3e4f5a6b",
+      "id": "01a0e010-0000-7000-8000-000000000001"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 8,
+    "error": {
+      "code": -32000,
+      "message": "run 01a0d390-2c3d-7e4f-9a0b-1c2d3e4f5a6b has no waiting message 01a0e010-0000-7000-8000-000000000001",
+      "data": {
+        "kind": "queuedMessageNotFound"
+      }
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 9,
+    "method": "agent/send",
+    "params": {
+      "runId": "01a0d390-2c3d-7e4f-9a0b-1c2d3e4f5a6b",
+      "turnId": "01a0e010-0000-7000-8000-000000000003",
+      "text": "Stop: use the existing theme hook instead.",
+      "delivery": "steer"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 9,
+    "result": {
+      "run": {
+        "id": "01a0d390-2c3d-7e4f-9a0b-1c2d3e4f5a6b",
+        "project": "01a0d349-6e00-7c9e-80e2-0426486a8cae",
+        "prompt": "Add the dark mode toggle.",
+        "policy": "workspaceWrite",
+        "status": "running",
+        "accountId": "claude",
+        "backend": "claude",
+        "sessionId": "8f4c2e1a-6b3d-4f5e-9a7c-1d2e3f4a5b6c",
+        "createdAt": "2026-10-03T12:00:00Z",
+        "updatedAt": "2026-10-03T12:00:05Z"
+      }
+    }
+  }
+]

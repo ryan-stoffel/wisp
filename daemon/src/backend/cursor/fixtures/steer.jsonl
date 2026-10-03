@@ -1,0 +1,16 @@
+# A steer (PLX-370), with the shapes of a real run on Cursor Agent 2026.10.01-14929f9 and composer-2.5: plxd cancels the turn running `sleep 8`, which ends cancelled, then sends the steer as the next prompt.
+@read
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"mcpCapabilities":{"http":true,"sse":true},"promptCapabilities":{"audio":false,"embeddedContext":false,"image":true},"sessionCapabilities":{"list":{}}},"authMethods":[{"id":"cursor_login","name":"Cursor Login","description":"Authenticate using existing Cursor login credentials. Run 'agent login' first if not logged in."}]}}
+@read
+{"jsonrpc":"2.0","id":2,"result":{"sessionId":"0cb4faa6-1a77-49e3-a4c7-572c1a178f9a","modes":{"currentModeId":"agent","availableModes":[{"id":"agent","name":"Agent","description":"Full agent capabilities with tool access"},{"id":"plan","name":"Plan","description":"Read-only mode for planning and designing before implementation"},{"id":"ask","name":"Ask","description":"Q&A mode - no edits or command execution"}]},"models":{"currentModelId":"composer-2.5[fast=true]","availableModels":[{"modelId":"default[]","name":"Auto"},{"modelId":"grok-4.7[context=256k,reasoning_effort=high,fast=true]","name":"grok-4.7"}]}}}
+@read
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"0cb4faa6-1a77-49e3-a4c7-572c1a178f9a","update":{"sessionUpdate":"tool_call","toolCallId":"tool_s","title":"`sleep 8`","kind":"execute","status":"pending","rawInput":{"command":"sleep 8"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"0cb4faa6-1a77-49e3-a4c7-572c1a178f9a","update":{"sessionUpdate":"tool_call_update","toolCallId":"tool_s","status":"in_progress"}}}
+# session/cancel
+@read
+{"jsonrpc":"2.0","id":3,"result":{"stopReason":"cancelled"}}
+# the steer
+@read
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"0cb4faa6-1a77-49e3-a4c7-572c1a178f9a","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"BANANA"}}}}
+{"jsonrpc":"2.0","id":4,"result":{"stopReason":"end_turn"}}
+@eof

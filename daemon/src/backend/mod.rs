@@ -41,7 +41,7 @@ pub use parallax_protocol::{
     AgentEffort, AgentPermission, ApprovalId, ImageMediaType, PromptImage, RunId, TurnId,
 };
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use zeroize::Zeroize;
 
 pub use self::commands::CommandsProbe;
@@ -133,7 +133,8 @@ pub trait Run: Send + Sync {
     /// The id the caller gave the run.
     fn id(&self) -> RunId;
 
-    /// Sends a follow-up message into the run (0011's `agent/send`), as the next turn.
+    /// Sends a follow-up message into the run (0011's `agent/send`), as the next turn, or with
+    /// [`FollowUp::steer`] into the one running now.
     ///
     /// Idempotent on the message's `turn_id`: sending the same id and text again succeeds without
     /// sending it twice. The run reports [`Event::TurnStarted`] once the CLI has the message, or
@@ -162,6 +163,11 @@ pub trait Run: Send + Sync {
     fn answer(&self, _answer: Answer) -> Result<(), AnswerError> {
         Err(AnswerError::Unsupported)
     }
+
+    /// While `held`, the run keeps its CLI open after its last turn instead of letting it exit,
+    /// because plxd has a waiting message for it (PLX-370). Returns at once. A backend that
+    /// exits after its turns regardless ignores it, the default.
+    fn hold(&self, _held: bool) {}
 }
 
 /// A task for a backend.
@@ -329,6 +335,11 @@ pub struct FollowUp {
     pub text: String,
     /// Images the CLI gets beside the message, as [`RunRequest::images`].
     pub images: Vec<PromptImage>,
+    /// Goes into the turn running now rather than as the next one (PLX-370, decision 0048): as
+    /// Claude Code takes a message on stdin mid-turn, Codex app-server's `turn/steer`, or for
+    /// Cursor, which can't, by cancelling the turn and sending the message. With no turn
+    /// running it is the next turn, as any follow-up is.
+    pub steer: bool,
 }
 
 /// The answer to a permission request (RYA-222).
@@ -565,6 +576,8 @@ pub struct RunHandle {
     cancel: CancelSwitch,
     /// Where [`Run::answer`] sends answers, for a driver that takes them.
     answers: Option<mpsc::UnboundedSender<Answer>>,
+    /// [`Run::hold`]'s flag, which a driver reads through [`RunHandle::held`].
+    hold: watch::Sender<bool>,
 }
 
 impl RunHandle {
@@ -584,8 +597,16 @@ impl RunHandle {
             turns: Mutex::new(HashMap::new()),
             cancel,
             answers: None,
+            hold: watch::Sender::new(false),
         };
         (handle, receiver)
+    }
+
+    /// [`Run::hold`]'s flag, for a driver that closes its CLI's stdin once nothing is
+    /// outstanding: it waits while this is held.
+    #[must_use]
+    pub fn held(&self) -> Held {
+        Held(self.hold.subscribe())
     }
 
     /// Takes answers to permission requests (RYA-222), and returns the receiver its driver reads
@@ -635,6 +656,29 @@ impl Run for RunHandle {
             return Err(AnswerError::Unsupported);
         };
         answers.send(answer).map_err(|_| AnswerError::Finished)
+    }
+
+    fn hold(&self, held: bool) {
+        self.hold.send_replace(held);
+    }
+}
+
+/// A driver's view of [`Run::hold`] (PLX-370).
+#[derive(Debug)]
+pub struct Held(watch::Receiver<bool>);
+
+impl Held {
+    /// Whether plxd holds the CLI open now. Not once the run's handle is gone.
+    #[must_use]
+    pub fn now(&self) -> bool {
+        self.0.has_changed().is_ok() && *self.0.borrow()
+    }
+
+    /// Waits for the flag to change, or forever once the run's handle is gone.
+    pub async fn changed(&mut self) {
+        if self.0.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
     }
 }
 
@@ -855,6 +899,7 @@ mod tests {
             turn_id: TurnId::generate(),
             text: "and the tests".into(),
             images: Vec::new(),
+            steer: false,
         };
         handle.send(turn.clone()).unwrap();
         handle.send(turn.clone()).unwrap();
@@ -873,6 +918,7 @@ mod tests {
                 turn_id: TurnId::generate(),
                 text: "late".into(),
                 images: Vec::new(),
+                steer: false,
             }),
             Err(SendError::Finished)
         );
@@ -891,6 +937,7 @@ mod tests {
                 turn_id: TurnId::generate(),
                 text: "hi".into(),
                 images: Vec::new(),
+                steer: false,
             }),
             Err(SendError::Unsupported)
         );

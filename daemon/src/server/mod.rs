@@ -433,6 +433,7 @@ impl Server {
             }
         };
         agents::recover(&daemon).await;
+        agents::deliver_queued(&daemon).await;
         let connections = TaskTracker::new();
         let abort = CancellationToken::new();
         let period = config.socket_check_interval;

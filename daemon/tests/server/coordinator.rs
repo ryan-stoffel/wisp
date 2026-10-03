@@ -12,11 +12,11 @@ use parallax_protocol::methods::{
     ProjectDelete, ProjectList, ProjectStart, RepoAdd,
 };
 use parallax_protocol::{
-    AccountChoice, AgentCancelParams, AgentEventsParams, AgentListParams, AgentOutputItem,
-    AgentPermission, AgentPolicy, AgentRun, AgentSendParams, AgentStartParams, AgentStatus,
-    CoordinatorThreadId, ErrorKind, EventsEventParams, EventsSubscribeParams, HostHealthParams,
-    ParallaxEvent, ProjectDeleteParams, ProjectDeleteResult, ProjectId, ProjectListParams,
-    ProjectStartParams, Provider, RepoAddParams, RepoId, RunId, TurnId,
+    AccountChoice, AgentCancelParams, AgentDelivery, AgentEventsParams, AgentListParams,
+    AgentOutputItem, AgentPermission, AgentPolicy, AgentRun, AgentSendParams, AgentStartParams,
+    AgentStatus, CoordinatorThreadId, ErrorKind, EventsEventParams, EventsSubscribeParams,
+    HostHealthParams, ParallaxEvent, ProjectDeleteParams, ProjectDeleteResult, ProjectId,
+    ProjectListParams, ProjectStartParams, Provider, RepoAddParams, RepoId, RunId, TurnId,
 };
 use plxd::backend::fake::{FakeBackend, Step};
 use plxd::backend::{Backend, Capabilities, RunRequest, StartError, Started, ToolPolicy};
@@ -190,6 +190,7 @@ async fn a_coordinator_runs_in_the_projects_repository_and_resumes_there_after_a
 async fn a_new_start_replaces_the_coordinator_only_once_it_stops_running() {
     let script = vec![
         init("coordinator-1"),
+        Step::EndTurn { result: None },
         Step::AwaitFollowUp,
         end_turn("Done."),
     ];
@@ -519,9 +520,12 @@ async fn runs_finishing_during_a_coordinator_turn_wake_it_once_with_no_client_co
         "no wake-up during a turn"
     );
 
-    // The user's message ends the coordinator's turn; then nobody is watching.
+    // The user's message, steered into the coordinator's turn, ends it; then nobody is watching.
     client
-        .call::<AgentSend>(send_params(coordinator.id, TurnId::generate(), "Go on."))
+        .call::<AgentSend>(AgentSendParams {
+            delivery: Some(AgentDelivery::Steer),
+            ..send_params(coordinator.id, TurnId::generate(), "Go on.")
+        })
         .await
         .unwrap();
     drop(client);

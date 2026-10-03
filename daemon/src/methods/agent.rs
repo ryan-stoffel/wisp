@@ -366,6 +366,7 @@ pub(crate) async fn request_changes(
             account: None,
             images: Vec::new(),
             threads: Vec::new(),
+            delivery: None,
         },
     )
     .await
