@@ -310,6 +310,18 @@ async fn a_thread_interrupts_renames_settles_archives_and_links_a_pr_to_another(
         .await;
     assert_eq!(unlinked["pullRequests"], json!([]));
 
+    host.server.stop().await;
+}
+
+/// `thread_launch` refuses a workspace's mismatched options, and a child with more permission than
+/// its caller (0041).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn thread_launch_refuses_bad_options_and_more_permission() {
+    let host = Host::start(temp_dir(), fake(echo()));
+    let mut client = host.client().await;
+    let repos = temp_dir();
+    let (me, _) = caller(&mut client, &repos).await;
+    let mut mcp = tools(&host, me).await;
     let refused = mcp
         .refused(
             "thread_launch",
@@ -329,6 +341,16 @@ async fn a_thread_interrupts_renames_settles_archives_and_links_a_pr_to_another(
     assert!(
         refused.contains("you run in edit mode") && refused.contains("can't run in bypass"),
         "a child gets no more permission than its caller: {refused}"
+    );
+    let refused = mcp
+        .refused(
+            "thread_launch",
+            json!({"prompt": "Go.", "backend": "fake", "mode": "auto"}),
+        )
+        .await;
+    assert!(
+        refused.contains("can't run in auto"),
+        "auto never asks, where edit asks before each command: {refused}"
     );
     host.server.stop().await;
 }

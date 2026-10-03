@@ -805,8 +805,8 @@ fn reach(mode: AgentPermission) -> Option<u8> {
     match mode {
         AgentPermission::Plan => Some(0),
         AgentPermission::Manual => Some(1),
-        AgentPermission::Auto => Some(2),
-        AgentPermission::Edit => Some(3),
+        AgentPermission::Edit => Some(2),
+        AgentPermission::Auto => Some(3),
         AgentPermission::Bypass => Some(4),
         AgentPermission::Unknown => None,
     }
