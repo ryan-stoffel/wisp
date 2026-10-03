@@ -905,11 +905,19 @@ impl Actor {
         text: String,
         images: Vec<PromptImage>,
         threads: Vec<RunId>,
-        options: RunOptions,
+        mut options: RunOptions,
         account: Option<AccountChoice>,
     ) -> Result<AgentRun, ErrorObject> {
         if text.trim().is_empty() && images.is_empty() {
             return Err(ErrorObject::invalid_params("text must not be empty"));
+        }
+        // A run in a Project runs in its mode, so a message can't change it (0042).
+        if options.permission.is_some()
+            && super::project_mode(&self.daemon, self.project)
+                .await?
+                .is_some()
+        {
+            options.permission = None;
         }
         if self.accepted() {
             return Err(super::run_accepted(self.id));
@@ -1191,12 +1199,19 @@ impl Actor {
 
     /// Stores `changes` to the run's options, checked against `backend`. When `backend` isn't the
     /// run's, moves the run to it, where another vendor's model can't carry over but the other
-    /// options can if `backend` maps them, and returns the run's fields from before the move.
+    /// options can if `backend` maps them, and returns the run's fields from before the move. A
+    /// run in a Project takes the Project's mode as it is now, which `project/update` may have
+    /// changed since the run's last process (0042).
     async fn store_options(
         &mut self,
         backend: &dyn Backend,
-        changes: RunOptions,
+        mut changes: RunOptions,
     ) -> Result<Option<parallax_store::RunFields>, ErrorObject> {
+        if let Some(mode) = super::project_mode(&self.daemon, self.project).await? {
+            let permission = super::in_mode(backend, mode)?;
+            changes.permission =
+                Some(permission).filter(|&p| option_name(p) != self.row.fields.permission);
+        }
         let fields = &self.row.fields;
         let moving = backend.name() != fields.backend;
         let updated = if moving {
@@ -2005,7 +2020,7 @@ fn handoff_notice(from: &str, to: &str) -> String {
 }
 
 /// A backend's name for people.
-fn backend_name(backend: &str) -> &str {
+pub(super) fn backend_name(backend: &str) -> &str {
     match backend {
         "claude" => "Claude Code",
         "codex" => "Codex",

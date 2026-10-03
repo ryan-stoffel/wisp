@@ -1,7 +1,7 @@
 //! `project/list`, `project/create`, `project/start`, which starts a project's coordinator behind
 //! the `coordinator` capability (0024), and `project/update`, which renames a project or sets its
-//! icon behind the `projectEdit` capability (RYA-227, 0032), and `project/delete`, behind
-//! `projectDelete` (PLX-338).
+//! icon behind the `projectEdit` capability (RYA-227, 0032) or its permission mode behind
+//! `projectPermission` (0042), and `project/delete`, behind `projectDelete` (PLX-338).
 
 use std::path::{Component, Path};
 use std::sync::Arc;
@@ -11,7 +11,8 @@ use parallax_protocol::jsonrpc::ErrorObject;
 use parallax_protocol::{
     AgentRunResult, ErrorKind, ParallaxEvent, ProjectCreateParams, ProjectCreateResult,
     ProjectDeleteParams, ProjectDeleteResult, ProjectIcon, ProjectId, ProjectListParams,
-    ProjectListResult, ProjectStartParams, ProjectUpdateParams, ProjectUpdateResult, RunId,
+    ProjectListResult, ProjectPermission, ProjectStartParams, ProjectUpdateParams,
+    ProjectUpdateResult, RunId,
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -116,7 +117,8 @@ pub(crate) async fn start(
     Ok(AgentRunResult { run })
 }
 
-/// Renames a project or sets its icon, and appends `project.updated` when that changed anything.
+/// Renames a project or sets its icon or permission mode, and appends `project.updated` when that
+/// changed anything. Runs pick up a new mode when they next start a CLI process (0042).
 ///
 /// The event is appended in the job that writes the row, as `project/create`'s is, so a
 /// `project/list` snapshot and its `seq` always agree. `updatedAt` stays as it is (0032).
@@ -130,6 +132,7 @@ pub(crate) async fn update(
     if let Some(icon) = &params.icon {
         check_icon(icon)?;
     }
+    check_permission(params.permission)?;
     let log = Arc::clone(&context.daemon.log);
     context
         .daemon
@@ -261,9 +264,11 @@ fn check(params: &ProjectCreateParams) -> Result<(), ErrorObject> {
         name,
         repo_path,
         icon,
+        permission,
         ..
     } = params;
     check_name(name)?;
+    check_permission(*permission)?;
     if let Some(icon) = icon {
         check_icon(icon)?;
     }
@@ -312,6 +317,16 @@ fn check_name(name: &str) -> Result<(), ErrorObject> {
     Ok(())
 }
 
+/// A project runs in Auto or Bypass Permissions (0042), so a mode this plxd doesn't know is refused.
+fn check_permission(permission: Option<ProjectPermission>) -> Result<(), ErrorObject> {
+    if permission == Some(ProjectPermission::Unknown) {
+        return Err(ErrorObject::invalid_params(
+            "permission must be auto or bypass",
+        ));
+    }
+    Ok(())
+}
+
 /// An icon's name and color are keys of `a-z`, `0-9`, and `-` (0032). plxd never reads them, so
 /// that is all it checks. Its image is capped and checked as a prompt's are (0038).
 pub(crate) fn check_icon(icon: &ProjectIcon) -> Result<(), ErrorObject> {
@@ -352,6 +367,7 @@ mod tests {
             name: name.to_owned(),
             repo_path: repo_path.to_owned(),
             icon: None,
+            permission: None,
         }
     }
 

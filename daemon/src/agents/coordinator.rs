@@ -1,6 +1,6 @@
 //! A project's coordinator chat (RYA-41, decision 0024): a no-write run with plxd's MCP tools
 //! bound to the project and to the run's own id as its coordinator thread (0019). The Claude
-//! backend runs it as full Claude Code in its permission mode (0027).
+//! backend runs it as full Claude Code (0027) in the project's permission mode (0042).
 //!
 //! `project/start` records it like any run, without a worktree row, and hands it to the same
 //! actor as a worker's, so `agent/send`, `agent/cancel`, `agent/events`, the `agent.*` events, and
@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use parallax_protocol::jsonrpc::ErrorObject;
-use parallax_protocol::{AgentRun, ErrorKind, ProjectStartParams, Role, RunId};
+use parallax_protocol::{AgentRun, ErrorKind, ProjectPermission, ProjectStartParams, Role, RunId};
 use parallax_store::{RunFields, RunState};
 use tracing::info;
 use uuid::Uuid;
@@ -40,15 +40,18 @@ pub(crate) async fn start(
         account,
         model,
         effort,
-        permission,
+        // It runs in the project's mode instead (0042).
+        permission: _,
         images,
         approvals,
     } = params;
     let _starting = daemon.agents.start_guard(run_id).await;
+    // An unknown project has no mode, and fails below with `projectNotFound`.
+    let mode = super::project_mode(&daemon, project).await?;
     let options = RunOptions {
         model,
         effort,
-        permission,
+        permission: mode.and_then(ProjectPermission::agent),
         ..RunOptions::default()
     };
     let mut fields = RunFields {
@@ -73,6 +76,9 @@ pub(crate) async fn start(
     }
     let (prepared, repo_path) =
         prepare(&daemon, project, run_id, account, Role::Coordinator).await?;
+    if let Some(mode) = mode {
+        super::in_mode(prepared.resolved.backend(), mode)?;
+    }
     options.check(prepared.resolved.backend())?;
     fields.backend = prepared.resolved.backend().name().into();
     let state = RunState {

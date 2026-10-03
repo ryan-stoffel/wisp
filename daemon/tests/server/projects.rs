@@ -42,6 +42,7 @@ fn update(
         project,
         name: name.map(str::to_owned),
         icon,
+        permission: None,
     }
 }
 
@@ -426,6 +427,16 @@ async fn invalid_update_params_are_refused_before_the_store() {
         let error = client.response().await.result.unwrap_err();
         assert_eq!(error.code, INVALID_PARAMS, "{icon}");
     }
+    // A Project runs only in Auto or Bypass (0042).
+    client
+        .send_message(&Request {
+            id: 5.into(),
+            method: "project/update".to_owned(),
+            params: Some(json!({"project": created.id, "permission": "manual"})),
+        })
+        .await;
+    let error = client.response().await.result.unwrap_err();
+    assert_eq!(error.code, INVALID_PARAMS);
 
     let listed = client
         .call::<ProjectList>(ProjectListParams {})

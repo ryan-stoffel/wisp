@@ -21,6 +21,7 @@ fn sample_fields() -> ProjectFields {
         name: "parallax".to_string(),
         repo_path: "/Users/ryan/dev/parallax".to_string(),
         icon: None,
+        permission: "auto".to_string(),
     }
 }
 
@@ -204,6 +205,7 @@ fn update_renames_and_sets_the_icon_without_touching_the_rest() {
             &ProjectEdit {
                 name: Some("renamed".to_string()),
                 icon: None,
+                permission: None,
             },
         )
         .expect("a rename");
@@ -223,6 +225,7 @@ fn update_renames_and_sets_the_icon_without_touching_the_rest() {
             &ProjectEdit {
                 name: None,
                 icon: Some(icon("rocket", Some("green"))),
+                permission: None,
             },
         )
         .expect("an icon");
@@ -237,6 +240,7 @@ fn update_renames_and_sets_the_icon_without_touching_the_rest() {
             &ProjectEdit {
                 name: None,
                 icon: Some(icon("rocket", None)),
+                permission: None,
             },
         )
         .expect("an icon without a color");
@@ -282,6 +286,7 @@ fn an_icon_image_round_trips_and_an_icon_without_one_clears_it() {
             &ProjectEdit {
                 name: None,
                 icon: Some(icon("rocket", Some("green"))),
+                permission: None,
             },
         )
         .expect("an icon without an image");
@@ -290,6 +295,47 @@ fn an_icon_image_round_trips_and_an_icon_without_one_clears_it() {
     assert_eq!(
         store.get_project(id).expect("get").expect("the project"),
         cleared
+    );
+}
+
+/// A project's permission mode (PLX-394, decision record 0042) is part of
+/// the retry check, and an update changes it alone.
+#[test]
+fn a_projects_permission_mode_is_checked_on_retry_and_changed_by_update() {
+    let (_dir, path) = temp_db_path();
+    let mut store = Store::open(&path).expect("open");
+    let id = Uuid::now_v7();
+    let fields = ProjectFields {
+        permission: "bypass".to_string(),
+        ..sample_fields()
+    };
+    let created = store.create_project(id, &fields).expect("create");
+    assert_eq!(created.permission, "bypass");
+    match store.create_project(id, &sample_fields()) {
+        Err(StoreError::IdConflict { id: conflicted }) => assert_eq!(conflicted, id),
+        result => panic!("expected IdConflict for another mode, got {result:?}"),
+    }
+
+    let (updated, changed) = store
+        .update_project(
+            id,
+            &ProjectEdit {
+                permission: Some("auto".to_string()),
+                ..ProjectEdit::default()
+            },
+        )
+        .expect("a new mode");
+    assert!(changed);
+    assert_eq!(
+        updated,
+        parallax_store::Project {
+            permission: "auto".to_string(),
+            ..created
+        }
+    );
+    assert_eq!(
+        store.get_project(id).expect("get").expect("the project"),
+        updated
     );
 }
 
@@ -309,6 +355,7 @@ fn an_update_that_changes_nothing_reports_no_change() {
         ProjectEdit {
             name: Some(fields.name.clone()),
             icon: fields.icon.clone(),
+            permission: None,
         },
     ] {
         let (project, changed) = store.update_project(id, &edit).expect("update");
@@ -329,6 +376,7 @@ fn update_of_a_missing_project_fails_with_not_found() {
             &ProjectEdit {
                 name: Some("renamed".to_string()),
                 icon: None,
+                permission: None,
             },
         )
         .expect_err("update of a missing project should fail");
@@ -583,6 +631,10 @@ fn a_version_1_database_migrates_and_keeps_its_projects() {
         project.icon, None,
         "migration 16 leaves old projects with no icon"
     );
+    assert_eq!(
+        project.permission, "auto",
+        "migration 26 puts old projects in Auto"
+    );
     let again = store
         .create_project(
             id,
@@ -590,6 +642,7 @@ fn a_version_1_database_migrates_and_keeps_its_projects() {
                 name: "parallax".to_string(),
                 repo_path: "/r".to_string(),
                 icon: None,
+                permission: "auto".to_string(),
             },
         )
         .expect("an idempotent create should match the migrated row");
@@ -614,7 +667,8 @@ fn a_version_1_database_migrates_and_keeps_its_projects() {
             "icon_name",
             "icon_color",
             "icon_image_type",
-            "icon_image_data"
+            "icon_image_data",
+            "permission"
         ]
     );
     let version: i64 = conn
@@ -623,12 +677,12 @@ fn a_version_1_database_migrates_and_keeps_its_projects() {
         })
         .expect("read schema version");
     assert_eq!(
-        version, 24,
+        version, 26,
         "migrations 3 (accounts, #117), 4 (usage, #120), 5 (worktrees, #154), 6 (role \
          defaults, #119), 7 (runs and events, #156), 8 (accepted runs, #157), 9 (threads, \
          #110), 10 (turns, #190), 11 (coordinator threads, #195), 12 (worktree base_dirty, \
          #257), 13 (run options, RYA-97), 14 (wakes, RYA-178), 15 (images, RYA-191), 16 \
-         (project icons, RYA-227), 17 (approvals, RYA-222), 18 (checkout runs), 19 (thread          attention, RYA-270), 20 (context window and fast mode), 21 (linked pull requests, PLX-318), 22 (icon images, PLX-339), 23 (thread lineage, PLX-369), and 24 (auto-resume, PLX-371) also apply"
+         (project icons, RYA-227), 17 (approvals, RYA-222), 18 (checkout runs), 19 (thread          attention, RYA-270), 20 (context window and fast mode), 21 (linked pull requests, PLX-318), 22 (icon images, PLX-339), 23 (thread lineage, PLX-369), 24 (auto-resume, PLX-371), and 26 (project permission modes, PLX-394) also apply"
     );
     let account_columns: Vec<String> = conn
         .prepare("SELECT name FROM pragma_table_info('accounts')")
@@ -672,6 +726,7 @@ fn a_version_15_database_gains_project_icons_and_keeps_its_projects() {
             &ProjectEdit {
                 name: None,
                 icon: Some(icon("rocket", Some("green"))),
+                permission: None,
             },
         )
         .expect("set an icon after migrating");
@@ -753,12 +808,12 @@ fn a_version_3_database_from_develop_migrates_to_usage_tables_and_keeps_its_acco
         })
         .expect("read schema version");
     assert_eq!(
-        version, 24,
+        version, 26,
         "migrations 5 (worktrees, #154), 6 (role defaults, #119), 7 (runs and events, #156), \
          8 (accepted runs, #157), 9 (threads, #110), 10 (turns, #190), 11 (coordinator \
          threads, #195), 12 (worktree base_dirty, #257), 13 (run options, RYA-97), 14 (wakes, \
          RYA-178), 15 (images, RYA-191), 16 (project icons, RYA-227), 17 (approvals, \
-         RYA-222), 18 (checkout runs), 19 (thread attention, RYA-270), 20 (context window          and fast mode), 21 (linked pull requests, PLX-318), 22 (icon images, PLX-339), 23 (thread lineage, PLX-369), and 24 (auto-resume, PLX-371) also apply"
+         RYA-222), 18 (checkout runs), 19 (thread attention, RYA-270), 20 (context window          and fast mode), 21 (linked pull requests, PLX-318), 22 (icon images, PLX-339), 23 (thread lineage, PLX-369), 24 (auto-resume, PLX-371), and 26 (project permission modes, PLX-394) also apply"
     );
 }
 

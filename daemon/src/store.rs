@@ -19,7 +19,8 @@ use std::thread::{self, JoinHandle};
 use parallax_protocol::jsonrpc::ErrorObject;
 use parallax_protocol::{
     AccountChoice, AccountId, ErrorKind, ImageMediaType, KeyAccount, Project, ProjectCreateParams,
-    ProjectIcon, ProjectId, ProjectUpdateParams, PromptImage, Provider, Role, RunId, StoreState,
+    ProjectIcon, ProjectId, ProjectPermission, ProjectUpdateParams, PromptImage, Provider, Role,
+    RunId, StoreState,
 };
 use parallax_store::{
     AccountFields, ProjectEdit, ProjectFields, RoleDefault, Store, StoreError, StoredImage,
@@ -209,6 +210,7 @@ pub(crate) fn fields(params: ProjectCreateParams) -> (Uuid, ProjectFields) {
             name: params.name,
             repo_path: params.repo_path,
             icon: params.icon.map(stored_icon),
+            permission: stored_permission(params.permission.unwrap_or(ProjectPermission::Auto)),
         },
     )
 }
@@ -220,8 +222,20 @@ pub(crate) fn edit(params: ProjectUpdateParams) -> (Uuid, ProjectEdit) {
         ProjectEdit {
             name: params.name,
             icon: params.icon.map(stored_icon),
+            permission: params.permission.map(stored_permission),
         },
     )
+}
+
+/// A project's permission mode as the `projects.permission` column keeps it (0042).
+fn stored_permission(permission: ProjectPermission) -> String {
+    option_name(permission).unwrap_or_default()
+}
+
+/// A stored permission mode as the protocol's, [`ProjectPermission::Unknown`] for one this build
+/// doesn't know.
+pub(crate) fn project_permission(stored: &str) -> ProjectPermission {
+    option_value(stored).unwrap_or(ProjectPermission::Unknown)
 }
 
 /// A protocol icon as the store keeps it, a project's or a repo entry's alike.
@@ -265,6 +279,7 @@ pub(crate) fn project(
         id,
         name: row.name,
         icon: row.icon.map(protocol_icon),
+        permission: Some(project_permission(&row.permission)),
         branch: repo::branch(Path::new(&row.repo_path)),
         repo_path: row.repo_path,
         coordinator,
@@ -440,7 +455,7 @@ mod tests {
     use parallax_protocol::jsonrpc::{INTERNAL_ERROR, PLX_ERROR, REQUEST_CANCELLED};
     use parallax_protocol::{
         AccountId, ErrorKind, ImageMediaType, ProjectCreateParams, ProjectIcon, ProjectId,
-        ProjectUpdateParams, PromptImage, Provider, StoreState,
+        ProjectPermission, ProjectUpdateParams, PromptImage, Provider, StoreState,
     };
     use parallax_store::StoreError;
     use tokio_util::sync::CancellationToken;
@@ -464,6 +479,7 @@ mod tests {
                     data: "UklGRg==".to_owned(),
                 }),
             }),
+            permission: "bypass".to_owned(),
             created_at: "2026-09-24T12:00:00.5Z".parse().unwrap(),
             updated_at: "2026-09-24T12:00:01Z".parse().unwrap(),
         }
@@ -487,6 +503,7 @@ mod tests {
                 }),
             })
         );
+        assert_eq!(mapped.permission, Some(ProjectPermission::Bypass));
         assert_eq!(mapped.created_at, row(id.into()).created_at);
         assert_eq!(mapped.updated_at, row(id.into()).updated_at);
 
@@ -503,6 +520,7 @@ mod tests {
             name: "n".to_owned(),
             repo_path: "/r".to_owned(),
             icon: Some(icon.clone()),
+            permission: None,
         };
         let (uuid, fields) = fields(params);
         assert_eq!(uuid, Uuid::from(id));
@@ -519,15 +537,18 @@ mod tests {
             }),
         };
         assert_eq!(fields.icon.as_ref(), Some(&stored));
+        assert_eq!(fields.permission, "auto", "an absent mode is Auto");
 
         let (uuid, edit) = edit(ProjectUpdateParams {
             project: id,
             name: None,
             icon: Some(icon),
+            permission: Some(ProjectPermission::Bypass),
         });
         assert_eq!(uuid, Uuid::from(id));
         assert_eq!(edit.name, None);
         assert_eq!(edit.icon, Some(stored));
+        assert_eq!(edit.permission.as_deref(), Some("bypass"));
     }
 
     #[test]
