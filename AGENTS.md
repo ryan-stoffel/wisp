@@ -28,7 +28,8 @@ The naming convention has no exceptions, including for small fixes.
 - Every branch starts from an existing Linear issue and uses its ID. The prefix follows the issue's type label (Feature, Bug, Chore, Docs; Improvement uses `feature/`), whatever its title says. Examples: `feature/PLX-12-connect-app-to-plxd`, `docs/PLX-5-linear-work-record`. Never use Linear's suggested branch name.
 - Slugs are lowercase, hyphenated, five words or fewer.
 - Commits use Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`, `test:`, `refactor:`) and end with the Linear ID, e.g. `feat: show follow-up messages in a rebuilt transcript (PLX-92)`.
-- Commits and PRs are authored as Ryan only: no co-author or attribution trailers.
+- Commits and PRs are authored as Ryan, with the git identity `Ryan Stoffel <stoffel.thomas.ryan@gmail.com>` and no other email.
+- The agent that writes a commit credits itself with one `Co-authored-by` trailer at the end of the commit message, and the squash message keeps it. Claude: `Co-authored-by: Claude <noreply@anthropic.com>`. Cursor: `Co-authored-by: Cursor <cursoragent@cursor.com>`. Any other agent uses the co-author trailer its own tool writes. No other trailers or session links.
 - `main` is protected. Changes land only through pull requests.
 
 ## Issues are the record
