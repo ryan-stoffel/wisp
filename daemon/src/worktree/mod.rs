@@ -506,8 +506,6 @@ impl WorktreeManager {
         slug: Option<&str>,
     ) -> Result<CreatedWorktree, WorktreeError> {
         let repo_root = self.repo_root(repo_path).await?;
-        let _guard = self.lock_repo(&repo_root).await;
-
         let (resolved_base, base_dirty) = if let Some(reference) = base {
             (self.resolve_commit(&repo_root, reference).await?, false)
         } else {
@@ -515,6 +513,11 @@ impl WorktreeManager {
             (self.resolve_commit(&repo_root, "HEAD").await?, dirty)
         };
 
+        // The repo lock covers only naming the branch and adding the worktree's metadata: git
+        // reads every worktree's metadata while adding one, so two adds at once can fail on each
+        // other's half-written files. The checkout, the slow part, runs after it, so many
+        // threads in one repo start in parallel.
+        let guard = self.lock_repo(&repo_root).await;
         let short = short_hash(&run_id.to_string());
         let branch = match slug {
             Some(slug) if valid_branch_slug(slug) => {
@@ -555,9 +558,27 @@ impl WorktreeManager {
         let path_arg = path.to_string_lossy().into_owned();
         self.run_git_ok(
             &repo_root,
-            &["worktree", "add", "-b", &branch, &path_arg, &resolved_base],
+            &[
+                "worktree",
+                "add",
+                "--no-checkout",
+                "-b",
+                &branch,
+                &path_arg,
+                &resolved_base,
+            ],
         )
         .await?;
+        drop(guard);
+        if let Err(error) = self
+            .run_git_ok(&path, &["reset", "--hard", "--quiet"])
+            .await
+        {
+            if let Err(cleanup) = self.remove(&repo_root, &path, &branch).await {
+                warn!(path = %path.display(), %cleanup, "could not remove a worktree whose checkout failed");
+            }
+            return Err(error);
+        }
 
         // The one moment the new worktree's `.git` file is trusted: git just wrote it, and no
         // worker has run yet. Every later call pins this path explicitly instead (#166).
@@ -904,7 +925,14 @@ impl WorktreeManager {
         let status = self
             .run_git_ok(
                 repo_root,
-                &["status", "--porcelain", "--untracked-files=no"],
+                // Many starts check one repo at once, so none takes the index lock to refresh
+                // it.
+                &[
+                    "--no-optional-locks",
+                    "status",
+                    "--porcelain",
+                    "--untracked-files=no",
+                ],
             )
             .await?;
         Ok(!status.trim().is_empty())

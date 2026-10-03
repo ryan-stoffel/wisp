@@ -328,25 +328,32 @@ async fn create_refuses_a_base_that_does_not_resolve() {
     );
 }
 
+/// Many runs start in one repo at once (RYA-275): every create succeeds, on its own branch, with its
+/// files checked out and nothing left uncommitted.
 #[tokio::test]
-async fn concurrent_creates_on_one_repo_both_succeed() {
+async fn concurrent_creates_on_one_repo_all_succeed() {
     let repo_dir = tempfile::tempdir().unwrap();
     let repo = init_repo(repo_dir.path()).canonicalize().unwrap();
     let data_dir = tempfile::tempdir().unwrap();
     let mgr = manager(data_dir.path());
 
-    let (first, second) = tokio::join!(
-        mgr.create(&repo, RunId::generate(), None),
-        mgr.create(&repo, RunId::generate(), None)
-    );
-    let first = first.unwrap();
-    let second = second.unwrap();
+    let created: Vec<_> =
+        futures_util::future::join_all((0..20).map(|_| mgr.create(&repo, RunId::generate(), None)))
+            .await
+            .into_iter()
+            .map(Result::unwrap)
+            .collect();
 
-    assert_ne!(first.path, second.path);
-    assert_ne!(first.branch, second.branch);
-    assert!(first.path.is_dir());
-    assert!(second.path.is_dir());
-    assert_eq!(worktree_count(&repo), 3, "main plus the two new worktrees");
+    let branches: std::collections::HashSet<_> = created.iter().map(|c| &c.branch).collect();
+    assert_eq!(branches.len(), 20, "every worktree has its own branch");
+    for worktree in &created {
+        assert_eq!(
+            std::fs::read_to_string(worktree.path.join("README.md")).unwrap(),
+            "hello\n"
+        );
+        assert_eq!(git_output(&worktree.path, &["status", "--porcelain"]), "");
+    }
+    assert_eq!(worktree_count(&repo), 21, "main plus the 20 new worktrees");
 }
 
 #[tokio::test]
