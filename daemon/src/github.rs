@@ -414,7 +414,7 @@ async fn install(launcher: &Launcher, release_url: &str) -> Result<(), String> {
     let unpacked = dir.join("unpacked");
     std::fs::create_dir(&unpacked)
         .map_err(|error| format!("Couldn't make {}: {error}.", unpacked.display()))?;
-    let mut spec = probe_spec("tar");
+    let mut spec = probe_spec(&tar_program());
     spec.args = vec![
         "-xf".into(),
         dir.join(&name).into_os_string(),
@@ -539,6 +539,20 @@ fn gh_root(unpacked: &Path) -> Option<PathBuf> {
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .find(|dir| has_gh(dir))
+}
+
+/// The `tar` that unpacks gh's archive. macOS and Windows get a zip, which only the system's
+/// bsdtar reads, so they skip a GNU tar earlier on `PATH` (nix's, or Git for Windows').
+fn tar_program() -> String {
+    if cfg!(target_os = "macos") {
+        "/usr/bin/tar".to_owned()
+    } else if cfg!(windows)
+        && let Ok(root) = std::env::var("SystemRoot")
+    {
+        format!(r"{root}\System32\tar.exe")
+    } else {
+        "tar".to_owned()
+    }
 }
 
 #[cfg(all(test, unix))]
