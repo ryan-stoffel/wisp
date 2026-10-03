@@ -21,7 +21,8 @@ export type Item = ItemBody & { at?: string };
 type ItemBody =
   /**
    * `text` is null for a follow-up logged by a plxd from before it recorded the text. `wake` marks
-   * a turn plxd sent a coordinator itself, when runs it started finished (0025). `images` are the
+   * a turn plxd sent a coordinator itself, when runs it started finished (0025). `from` is the run
+   * id of the thread that sent it with its Parallax tools, not the user (0041). `images` are the
    * ids of the images sent with it, for `agent/image` (RYA-193).
    */
   | {
@@ -30,6 +31,7 @@ type ItemBody =
       text: string | null;
       turnId?: string;
       wake?: boolean;
+      from?: string;
       images?: ImageId[];
     }
   /** `partial` while it is still arriving as `textDelta`s. */
@@ -51,8 +53,18 @@ type ItemBody =
     }
   /** `active` is the step under way as the agent words it, from Claude Code's task tools. */
   | { kind: "todo"; key: string; items: AgentTodoItem[]; active?: string }
-  /** `turnId` marks a follow-up that never reached the agent. */
-  | { kind: "notice"; key: string; tone: "info" | "warning"; text: string; turnId?: string }
+  /**
+   * `turnId` marks a follow-up that never reached the agent. `from` is the run id of the thread
+   * that stopped the run (0041).
+   */
+  | {
+      kind: "notice";
+      key: string;
+      tone: "info" | "warning";
+      text: string;
+      turnId?: string;
+      from?: string;
+    }
   /**
    * A permission request (RYA-196, 0031): what the agent asks to do, and how it ended, which is
    * absent while it waits.
@@ -186,6 +198,7 @@ function applyOutput(items: Item[], item: AgentOutputItem, key: string, time: st
           text: item.text ?? null,
           turnId: item.turnId,
           ...(item.wake && { wake: true }),
+          ...(item.from && { from: item.from }),
           ...images,
         });
       else {
@@ -252,6 +265,15 @@ function applyOutput(items: Item[], item: AgentOutputItem, key: string, time: st
         tone: "warning",
         text: "A message didn't reach the agent because it stopped first.",
         turnId: item.turnId,
+      });
+      break;
+    case "interrupted":
+      items.push({
+        kind: "notice",
+        key,
+        tone: "info",
+        text: "Stopped by another thread.",
+        from: item.from,
       });
       break;
     case "turnFinished": {
@@ -401,8 +423,8 @@ function finishedTurnRows(rows: readonly { kind: string }[]): Set<number> {
 /**
  * Folds each run of thinking, tool calls, and checklists into one `Work` row. While a turn goes,
  * the agent's messages split runs and pass through, so they stay in order and stream in place;
- * once it ends, all but its last fold too (`finishedTurnRows`). A dropped follow-up's notice and
- * other rows (user, end, and whatever the caller adds) pass through. Other notices fold, except
+ * once it ends, all but its last fold too (`finishedTurnRows`). A dropped follow-up's notice,
+ * another thread's stop, and other rows (user, end, and whatever the caller adds) pass through. Other notices fold, except
  * those after a run's last activity.
  */
 export function groupWork<R extends { kind: string; at?: string }>(
@@ -433,7 +455,7 @@ export function groupWork<R extends { kind: string; at?: string }>(
     if (
       folds.has(i) ||
       ["reasoning", "tool", "todo"].includes(row.kind) ||
-      (row.kind === "notice" && !(row as Item & { turnId?: string }).turnId)
+      (row.kind === "notice" && !(row as Item & { turnId?: string }).turnId && !("from" in row))
     )
       run.push(row as Item);
     else {
