@@ -5,9 +5,9 @@
 //! `coordinator`: `project/start` in `project.rs`; #110 `threads`: `thread.rs`; RYA-227
 //! `projectEdit`: `project/update` in `project.rs`; PLX-338 `projectDelete`: `project/delete` in
 //! `project.rs`; PLX-318 `pullRequests` and PLX-328 `prDiff`: `pr.rs`; PLX-359 `composerMenus`:
-//! `composer.rs`; PLX-336 `githubStatus`:
-//! `github/status` in `accounts.rs`), and `host.rs`
-//! advertises the capability in `initialize`.
+//! `composer.rs`; PLX-336 `githubStatus`: `github/status` in `accounts.rs`; PLX-423
+//! `githubSetup`: `github/install`, `github/signIn`, and `github/signInCancel` there too), and
+//! `host.rs` advertises the capability in `initialize`.
 
 mod accounts;
 mod agent;
@@ -31,9 +31,10 @@ use parallax_protocol::methods::{
     AgentCancel, AgentCommands, AgentCommit, AgentDiff, AgentEvents, AgentFile, AgentFiles,
     AgentGitStatus, AgentImage, AgentList, AgentOpenPr, AgentPush, AgentRequestChanges,
     AgentResumeNow, AgentSend, AgentStart, ContextList, ContextRead, ContextWrite, EventsSubscribe,
-    EventsUnsubscribe, GithubStatusGet, HostHealth, HostSettingsGet, HostSettingsSet, HostVersion,
-    Initialize, PrAct, PrDiff, PrView, ProjectCreate, ProjectDelete, ProjectList, ProjectStart,
-    ProjectUpdate, RequestMethod, UsageDaily, UsageGet, UsageHistory,
+    EventsUnsubscribe, GithubInstall, GithubSignInCancel, GithubSignInStart, GithubStatusGet,
+    HostHealth, HostSettingsGet, HostSettingsSet, HostVersion, Initialize, PrAct, PrDiff, PrView,
+    ProjectCreate, ProjectDelete, ProjectList, ProjectStart, ProjectUpdate, RequestMethod,
+    UsageDaily, UsageGet, UsageHistory,
 };
 use parallax_protocol::{EventsSubscribeResult, EventsUnsubscribeResult, SubscriptionId};
 use serde::Serialize;
@@ -128,9 +129,9 @@ pub(crate) async fn dispatch(context: Context, request: Request) -> Reply {
         PrView::NAME => handle::<PrView, _, _>(&request, |p| pr::view(&context, p)).await,
         PrAct::NAME => handle::<PrAct, _, _>(&request, |p| pr::act(&context, p)).await,
         PrDiff::NAME => handle::<PrDiff, _, _>(&request, |p| pr::diff(&context, p)).await,
-        GithubStatusGet::NAME => {
-            handle::<GithubStatusGet, _, _>(&request, |p| accounts::github(&context, p)).await
-        }
+        name if name.starts_with("github/") => github_method(&context, &request)
+            .await
+            .unwrap_or_else(|| Err(ErrorObject::method_not_found(name))),
         name if thread::handles(name) => thread::dispatch(&context, &request).await,
         EventsSubscribe::NAME => {
             let subscribed = match request.params() {
@@ -195,6 +196,29 @@ async fn usage_method(context: &Context, request: &Request) -> Option<Result<Val
             handle::<UsageHistory, _, _>(request, |p| usage::history(context, p)).await
         }
         UsageDaily::NAME => handle::<UsageDaily, _, _>(request, |p| usage::daily(context, p)).await,
+        _ => return None,
+    })
+}
+
+/// Answers a `github/*` method (PLX-336, PLX-423), or `None` if there is no such method.
+async fn github_method(context: &Context, request: &Request) -> Option<Result<Value, ErrorObject>> {
+    Some(match request.method.as_str() {
+        GithubStatusGet::NAME => {
+            handle::<GithubStatusGet, _, _>(request, |p| accounts::github(context, p)).await
+        }
+        GithubInstall::NAME => {
+            handle::<GithubInstall, _, _>(request, |p| accounts::github_install(context, p)).await
+        }
+        GithubSignInStart::NAME => {
+            handle::<GithubSignInStart, _, _>(request, |p| accounts::github_sign_in(context, p))
+                .await
+        }
+        GithubSignInCancel::NAME => {
+            handle::<GithubSignInCancel, _, _>(request, |p| {
+                ready(Ok(accounts::github_sign_in_cancel(context, p)))
+            })
+            .await
+        }
         _ => return None,
     })
 }

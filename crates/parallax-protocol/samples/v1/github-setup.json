@@ -1,0 +1,118 @@
+[
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "github/install",
+    "params": {}
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "installed": false,
+      "installing": true,
+      "checkedAt": "2026-10-03T12:00:00Z"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "github/status",
+    "params": {}
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 2,
+    "result": {
+      "installed": true,
+      "version": "2.102.0",
+      "signedIn": false,
+      "managed": true,
+      "checkedAt": "2026-10-03T12:00:20Z"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "github/signIn",
+    "params": {}
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 3,
+    "result": {
+      "code": "AA17-58F5",
+      "url": "https://github.com/login/device",
+      "expiresAt": "2026-10-03T12:15:21Z"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "method": "github/status",
+    "params": {}
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 4,
+    "result": {
+      "installed": true,
+      "version": "2.102.0",
+      "signedIn": false,
+      "managed": true,
+      "signingIn": {
+        "code": "AA17-58F5",
+        "url": "https://github.com/login/device",
+        "expiresAt": "2026-10-03T12:15:21Z"
+      },
+      "checkedAt": "2026-10-03T12:00:25Z"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "method": "github/signInCancel",
+    "params": {}
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 5,
+    "result": {}
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 6,
+    "method": "github/status",
+    "params": {}
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 6,
+    "result": {
+      "installed": true,
+      "version": "2.102.0",
+      "signedIn": true,
+      "account": "octocat",
+      "managed": true,
+      "setupNote": "Signed in, but `gh auth setup-git` failed, so git can't use this sign-in to push over HTTPS: failed to set up git credential helper: read-only file system",
+      "checkedAt": "2026-10-03T12:01:00Z"
+    }
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 7,
+    "method": "github/install",
+    "params": {}
+  },
+  {
+    "jsonrpc": "2.0",
+    "id": 7,
+    "error": {
+      "code": -32000,
+      "message": "gh is already installed at /opt/homebrew/bin/gh.",
+      "data": {
+        "kind": "githubSetupFailed"
+      }
+    }
+  }
+]

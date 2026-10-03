@@ -48,6 +48,7 @@ pub mod backend;
 mod context;
 mod detect;
 mod event_log;
+mod github;
 mod images;
 mod json;
 pub mod keystore;

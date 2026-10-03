@@ -1,7 +1,8 @@
 //! Detecting installed vendor CLIs and their sign-in state (#114, decision record 0004), and the
 //! GitHub CLI's (PLX-336).
 //!
-//! plxd never reads a CLI's credential files and never starts a sign-in. It only:
+//! plxd never reads a CLI's credential files, and detection never starts a sign-in (`gh`'s, which
+//! plxd may start since 0050, is in [`crate::github`]). It only:
 //!
 //! - Resolves the binary on the `PATH` it itself uses ([`find_program`], #96), which runs
 //!   nothing.
@@ -190,7 +191,7 @@ fn installed(cli: CliKind, path: &Path) -> DetectedCli {
 /// A spec for probing `program` in the user's home, which is absolute on every OS, unlike `/` on
 /// Windows (RYA-144), and which only they can write to. `/` if the home folder is unknown or
 /// missing.
-fn probe_spec(program: &str) -> ProcessSpec {
+pub(crate) fn probe_spec(program: &str) -> ProcessSpec {
     let home = std::env::home_dir().filter(|home| home.is_absolute() && home.is_dir());
     ProcessSpec::new(program, home.unwrap_or_else(|| PathBuf::from("/")))
 }
@@ -468,14 +469,20 @@ fn extract_subscription_tier(text: &str) -> Option<String> {
 
 /// Runs `gh --version` and `gh auth status --hostname github.com`, never with `--show-token`, so
 /// no token is printed, and with prompts off. `gh auth status` exits 0 when signed in and 1 when
-/// not.
+/// not. A `gh` in plxd's tools folder is `managed`. What [`crate::github`] is doing is left for it
+/// to fill in.
 async fn probe_github(launcher: &Launcher, timeout: Duration) -> GithubStatus {
+    let path = resolve(launcher, "gh");
     let mut status = GithubStatus {
-        installed: resolve(launcher, "gh").is_some(),
+        installed: path.is_some(),
         version: None,
         signed_in: None,
         account: None,
         note: None,
+        managed: path.is_some_and(|path| path.starts_with(launcher.data_dir().tools_dir())),
+        installing: false,
+        signing_in: None,
+        setup_note: None,
         checked_at: Timestamp::now(),
     };
     if !status.installed {
