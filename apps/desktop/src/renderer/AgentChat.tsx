@@ -131,6 +131,7 @@ export function PinnedApprovals(
 export function AgentChat({
   hostId,
   runId,
+  title,
   notice,
   prompt,
   going,
@@ -145,6 +146,8 @@ export function AgentChat({
 }: {
   hostId: string;
   runId: string;
+  /** The thread's title, which Open PR names the pull request after. Else, its run's. */
+  title?: string;
   /** A quiet note shown over the composer, such as which account a new thread got. */
   notice?: string;
   /** The run's first prompt, shown until the transcript loads, so a new thread opens on it. */
@@ -451,7 +454,13 @@ export function AgentChat({
               <RunTab run={run}>
                 {pullRequests ||
                   (canOpenPr && (
-                    <OpenPr hostId={hostId} run={run} onError={setPrError} onOpened={onPrOpened} />
+                    <OpenPr
+                      hostId={hostId}
+                      run={run}
+                      title={title ?? titleOf(run)}
+                      onError={setPrError}
+                      onOpened={onPrOpened}
+                    />
                   ))}
               </RunTab>
             ))
@@ -1640,11 +1649,13 @@ export function RunTab({ run, children }: { run: AgentRun; children?: ReactNode 
 function OpenPr({
   hostId,
   run,
+  title,
   onError,
   onOpened,
 }: {
   hostId: string;
   run: AgentRun;
+  title: string;
   onError: (error?: string) => void;
   onOpened?: (url: string) => void;
 }) {
@@ -1670,7 +1681,7 @@ function OpenPr({
     onError(undefined);
     const answer = await window.parallax.request(hostId, "agent/openPr", {
       runId: run.id,
-      title: titleOf(run),
+      title,
     });
     setOpening(false);
     if ("error" in answer) onError(describeError(answer.error));

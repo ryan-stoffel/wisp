@@ -506,3 +506,47 @@ test("saves a repository action and runs it in the drawer, opening its preview (
   await expect(terminal).toContainText(/git version [\s\S]*git version /);
   server.close();
 });
+
+test("switches between a thread and the one it launched, by chip, crumb, and shortcut (PLX-374)", async () => {
+  // A parent and the child it launched, as an agent would with thread_launch (0041).
+  const start = async (title: string, parent?: string) => {
+    const params = { runId: uuidv7(), prompt: title, title, ...(parent && { parent }) };
+    const answer = await page.evaluate(
+      `window.parallax.request("local", "thread/start", ${JSON.stringify(params)})`,
+    );
+    expect(answer).not.toHaveProperty("error");
+    return params.runId;
+  };
+  const parent = await start("Plan the release");
+  await start("Write the changelog", parent);
+
+  // The child nests under its parent, collapsed.
+  await page
+    .locator("#sidebar li[data-kind='thread'] > button")
+    .filter({ hasText: "Plan the release" })
+    .click();
+  const sidebar = page.getByRole("navigation", { name: "Sidebar" });
+  const group = sidebar.getByRole("button", { name: /^1 thread/ });
+  await expect(group).toHaveAttribute("aria-expanded", "false");
+  const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb" });
+  const current = breadcrumb.locator('li > [aria-current="page"]');
+  await expect(current).toHaveText("Plan the release");
+
+  // Its chip opens the child, whose parent crumb goes back.
+  const chips = breadcrumb.getByRole("group", { name: "Child threads" });
+  await chips.getByRole("button", { name: "Write the changelog" }).click();
+  const siblings = breadcrumb.getByRole("group", { name: "Sibling threads" });
+  await expect(siblings.getByRole("button", { name: "Write the changelog" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  await expect(group).toHaveAttribute("aria-expanded", "true");
+  await breadcrumb.getByRole("button", { name: "Plan the release" }).click();
+  await expect(current).toHaveText("Plan the release");
+
+  // Mod+Alt+Right opens the first child, and Mod+Alt+Up its parent.
+  await page.keyboard.press("ControlOrMeta+Alt+ArrowRight");
+  await expect(siblings).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+Alt+ArrowUp");
+  await expect(current).toHaveText("Plan the release");
+});

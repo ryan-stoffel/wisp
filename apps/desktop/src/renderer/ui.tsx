@@ -402,30 +402,46 @@ export function Picker({
 export interface Crumb {
   label: string;
   icon?: ReactNode;
-  /** Makes it a button to that page, such as back to a coordinator or on to New thread. */
+  /**
+   * Makes it a button to that page, such as back to a coordinator or on to New thread. The last
+   * crumb with one isn't the current page.
+   */
   onClick?: () => void;
 }
 
-/** Where the user is: host, workspace, then the current page, split by slashes. */
-export function Breadcrumb({ items }: { items: Crumb[] }) {
+/**
+ * Where the user is: host, workspace, then the current page, split by slashes. `trail` follows
+ * the last crumb after a `›`, such as a thread's children (Lineage.tsx).
+ */
+export function Breadcrumb({ items, trail }: { items: Crumb[]; trail?: ReactNode }) {
   return (
-    <nav aria-label="Breadcrumb" className="min-w-0">
+    // A trail takes the room the crumbs leave, and fits itself to it.
+    <nav aria-label="Breadcrumb" className={`min-w-0 ${trail ? "flex-1" : ""}`}>
       <ol className="flex min-w-0 items-center gap-2 text-[13px]">
         {items.map(({ label, icon, onClick }, i) => {
           const last = i === items.length - 1;
+          const current = last && !onClick;
           const Tag = onClick ? "button" : "span";
+          // Before a trail, the last crumb keeps to 14rem, and gives way last.
+          const room = last
+            ? trail
+              ? "max-w-56 min-w-20"
+              : ""
+            : i === 0
+              ? "max-w-48 min-w-10 shrink-[100]"
+              : "max-w-48 shrink-0";
           return (
             // The slash is CSS content, so it stays out of the crumb's text. Crumbs before the
             // last are cut short at 12rem, and the first, such as a computer's name, gives way
             // first when there's no room, so it never pushes the rest under the top bar's buttons.
             <li
               key={i}
-              className={`flex min-w-0 items-center gap-2 ${last ? "" : i === 0 ? "max-w-48 min-w-10 shrink-[100]" : "max-w-48 shrink-0"} ${i > 0 ? "before:text-faint-foreground before:content-['/']" : ""}`}
+              className={`flex min-w-0 items-center gap-2 ${room} ${i > 0 ? "before:text-faint-foreground before:content-['/']" : ""}`}
             >
               <Tag
                 {...(onClick && { type: "button", onClick })}
-                aria-current={last ? "page" : undefined}
-                className={`flex min-w-0 items-center gap-1.5 [&_svg]:size-3.5 [&_svg]:shrink-0 ${last ? "font-medium text-foreground" : "text-muted-foreground"} ${onClick ? "rounded-md hover:text-foreground" : ""}`}
+                aria-current={current ? "page" : undefined}
+                className={`flex min-w-0 items-center gap-1.5 [&_svg]:size-3.5 [&_svg]:shrink-0 ${current ? "font-medium text-foreground" : "text-muted-foreground"} ${onClick ? "rounded-md hover:text-foreground" : ""}`}
               >
                 {icon}
                 <span className="truncate" title={typeof label === "string" ? label : undefined}>
@@ -435,6 +451,11 @@ export function Breadcrumb({ items }: { items: Crumb[] }) {
             </li>
           );
         })}
+        {trail && (
+          <li className="flex min-w-28 flex-1 items-center gap-1.5 before:text-faint-foreground before:content-['›']">
+            {trail}
+          </li>
+        )}
       </ol>
     </nav>
   );
