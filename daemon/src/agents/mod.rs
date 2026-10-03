@@ -72,7 +72,7 @@ use self::worker::{StoredKeyAccounts, sandbox_path, worker_unavailable};
 use crate::backend::{Backend, ToolPolicy, check_argument, codex, cursor};
 use crate::routing::{self, BackendRegistry, Defaults, Resolved, RoutingError};
 use crate::server::Daemon;
-use crate::worktree::{CreatedWorktree, PrError, WorktreeError, WorktreeManager};
+use crate::worktree::{CreatedWorktree, PrError, WorktreeError, WorktreeManager, github_pr_urls};
 
 /// How long a stopping plxd waits for its runs to record that they were interrupted.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(15);
@@ -1112,7 +1112,11 @@ pub(crate) async fn send(
         account,
         images,
         threads,
+        from,
     } = params;
+    if let Some(from) = from {
+        sender_exists(&daemon, from).await?;
+    }
     let options = RunOptions {
         model,
         effort,
@@ -1127,6 +1131,7 @@ pub(crate) async fn send(
         threads,
         options,
         account,
+        from,
         reply,
     })
     .await
@@ -1162,9 +1167,49 @@ pub(crate) async fn image(
     })
 }
 
-/// `agent/cancel`.
-pub(crate) async fn cancel(daemon: Arc<Daemon>, id: RunId) -> Result<AgentRun, ErrorObject> {
-    ask(&daemon, id, |reply| Command::Cancel { reply }).await
+/// `agent/cancel`, by the user or, with `from`, by another thread's Parallax tools (0041).
+pub(crate) async fn cancel(
+    daemon: Arc<Daemon>,
+    id: RunId,
+    from: Option<RunId>,
+) -> Result<AgentRun, ErrorObject> {
+    if let Some(from) = from {
+        sender_exists(&daemon, from).await?;
+    }
+    ask(&daemon, id, |reply| Command::Cancel { from, reply }).await
+}
+
+/// Fails with `runNotFound` unless `from`, the thread a message or interrupt comes from (0041), is
+/// a run on the host.
+async fn sender_exists(daemon: &Daemon, from: RunId) -> Result<(), ErrorObject> {
+    store(daemon, move |db| {
+        db.get_run(from.into())
+            .map_err(|e| store_error(&e))?
+            .map(|_| ())
+            .ok_or_else(|| run_not_found(from))
+    })
+    .await
+}
+
+/// `pr/link` and `pr/unlink` (0041): adds `url`, a GitHub pull request's, to run `run_id`'s
+/// links, or removes it, through the run's actor.
+pub(crate) async fn link_pr(
+    daemon: Arc<Daemon>,
+    run_id: RunId,
+    url: String,
+    linked: bool,
+) -> Result<AgentRun, ErrorObject> {
+    if linked && github_pr_urls(&url) != [url.as_str()] {
+        return Err(ErrorObject::invalid_params(format!(
+            "{url:?} is not a GitHub pull request URL, such as https://github.com/owner/repo/pull/1"
+        )));
+    }
+    ask(&daemon, run_id, |reply| Command::LinkPr {
+        url,
+        linked,
+        reply,
+    })
+    .await
 }
 
 /// `agent/resumeNow` (PLX-371): resumes a run waiting for its usage limit to reset now.

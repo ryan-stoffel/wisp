@@ -1,9 +1,11 @@
-//! `plxd mcp`: the coordinator's Parallax tools, as an MCP server on stdio (#195, decision 0019).
+//! `plxd mcp`: the coordinator's Parallax tools, as an MCP server on stdio (#195, decision 0019),
+//! and a normal thread's host-wide ones ([`thread`], 0041).
 //!
 //! The coordinator's CLI launches it with `--project` and `--coordinator-thread`, which plxd
 //! writes into the CLI's `--mcp-config` ([`crate::backend::CoordinatorTools`]). Those bind every
 //! tool to one project and one thread: no tool takes either as an argument, and tool arguments
-//! reject fields they don't know, so the model can't pick another project's runs or context.
+//! reject fields they don't know, so the model can't pick another project's runs or context. A
+//! thread's CLI launches it with `--thread` instead ([`crate::backend::ThreadTools`]).
 //!
 //! MCP's stdio transport is JSON-RPC 2.0 as newline-delimited JSON, the same framing as plxd's
 //! own protocol (0007), so both sides use `parallax_protocol`'s codec and envelope. Each tool call
@@ -37,6 +39,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::{Framed, FramedRead, FramedWrite};
 
 use crate::transport::{self, Stream};
+
+pub mod thread;
 
 /// The server's name in the coordinator's `--mcp-config`, which prefixes its tools' names there.
 pub const SERVER: &str = "plxd";
@@ -125,8 +129,32 @@ pub async fn run(
     serve(binding, input, output).await
 }
 
+/// One server's tools: what `tools/list` shows, and how `tools/call` runs one.
+trait Tools {
+    /// Every tool's name, as [`Tools::definitions`] lists them.
+    fn names(&self) -> &'static [&'static str];
+    /// `tools/list`'s `tools`.
+    fn definitions(&self) -> Value;
+    /// Runs tool `name`, one of [`Tools::names`]: its text, or an error the model sees.
+    async fn call(&self, name: &str, arguments: Value) -> Result<String, String>;
+}
+
+impl Tools for Binding {
+    fn names(&self) -> &'static [&'static str] {
+        TOOLS
+    }
+
+    fn definitions(&self) -> Value {
+        definitions()
+    }
+
+    async fn call(&self, name: &str, arguments: Value) -> Result<String, String> {
+        call_tool(self, name, arguments).await
+    }
+}
+
 async fn serve(
-    binding: &Binding,
+    binding: &impl Tools,
     input: impl AsyncRead + Unpin,
     output: impl AsyncWrite + Unpin,
 ) -> Result<(), String> {
@@ -159,7 +187,7 @@ async fn serve(
     Ok(())
 }
 
-async fn answer(binding: &Binding, request: &Request) -> Result<Value, ErrorObject> {
+async fn answer(binding: &impl Tools, request: &Request) -> Result<Value, ErrorObject> {
     match request.method.as_str() {
         "initialize" => {
             let asked: InitializeRequest = request.params()?;
@@ -175,17 +203,17 @@ async fn answer(binding: &Binding, request: &Request) -> Result<Value, ErrorObje
             }))
         }
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({"tools": definitions()})),
+        "tools/list" => Ok(json!({"tools": binding.definitions()})),
         "tools/call" => {
             let call: ToolCall = request.params()?;
-            if !TOOLS.contains(&call.name.as_str()) {
+            if !binding.names().contains(&call.name.as_str()) {
                 return Err(ErrorObject::invalid_params(format!(
                     "no tool is named {:?}",
                     call.name
                 )));
             }
             let arguments = call.arguments.unwrap_or_else(|| json!({}));
-            Ok(tool_result(call_tool(binding, &call.name, arguments).await))
+            Ok(tool_result(binding.call(&call.name, arguments).await))
         }
         other => Err(ErrorObject::method_not_found(other)),
     }
@@ -464,6 +492,7 @@ async fn call_tool(binding: &Binding, name: &str, arguments: Value) -> Result<St
                     account: None,
                     images: Vec::new(),
                     threads: Vec::new(),
+                    from: None,
                 })
                 .await?
                 .run;
@@ -474,7 +503,7 @@ async fn call_tool(binding: &Binding, name: &str, arguments: Value) -> Result<St
             let mut plxd = Plxd::open(&binding.socket).await?;
             bound_run(binding, &mut plxd, run_id).await?;
             let run = plxd
-                .call::<AgentCancel>(AgentCancelParams { run_id })
+                .call::<AgentCancel>(AgentCancelParams { run_id, from: None })
                 .await?
                 .run;
             Ok(pretty(&summary(binding, &run)))

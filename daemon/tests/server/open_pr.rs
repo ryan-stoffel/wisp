@@ -343,7 +343,7 @@ async fn a_running_run_or_one_with_nothing_committed_is_refused() {
     );
 
     client
-        .call::<AgentCancel>(AgentCancelParams { run_id })
+        .call::<AgentCancel>(AgentCancelParams { run_id, from: None })
         .await
         .unwrap();
     until(&mut client, updated_to(AgentStatus::Cancelled)).await;

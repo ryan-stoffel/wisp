@@ -117,6 +117,7 @@ fn coordinator(cwd: &Path, data: &Path) -> RunRequest {
             project: ProjectId::generate(),
             thread: CoordinatorThreadId::generate(),
         }),
+        thread_tools: None,
         approvals: true,
         thread: false,
     }

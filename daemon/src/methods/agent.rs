@@ -107,7 +107,7 @@ pub(crate) async fn cancel(
     let run = context
         .daemon
         .agents
-        .detached(agents::cancel(daemon, params.run_id))
+        .detached(agents::cancel(daemon, params.run_id, params.from))
         .await?;
     Ok(AgentRunResult { run })
 }
@@ -366,6 +366,7 @@ pub(crate) async fn request_changes(
             account: None,
             images: Vec::new(),
             threads: Vec::new(),
+            from: None,
         },
     )
     .await

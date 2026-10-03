@@ -551,6 +551,7 @@ async fn runs_finishing_during_a_coordinator_turn_wake_it_once_with_no_client_co
         turn_id: wake.turn_id,
         text: Some(wake.prompt.clone()),
         wake: true,
+        from: None,
         images: Vec::new(),
         threads: Vec::new(),
     }));
@@ -643,6 +644,7 @@ async fn a_pause_survives_a_restart_and_what_waits_follows_the_users_message() {
     client
         .call::<AgentCancel>(AgentCancelParams {
             run_id: coordinator.id,
+            from: None,
         })
         .await
         .unwrap();
