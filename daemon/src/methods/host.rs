@@ -131,6 +131,7 @@ pub(crate) fn initialize(
 /// `autoResume` (PLX-371, 0049): `agent/resumeNow`, `agent/autoResume`, `host/settings/get` and
 /// `host/settings/set`, the `waiting` status, and `resumeAt` and `autoResume` on `AgentRun` and
 /// `agent.updated`.
+/// `inbox` (PLX-401, 0043): `inbox/list`, `inbox/seen`, and `inbox.added`.
 fn capabilities_advertised() -> Capabilities {
     let prompt_images = serde_json::Map::from_iter([
         ("maxImages".to_owned(), images::MAX_IMAGES.into()),
@@ -155,6 +156,7 @@ fn capabilities_advertised() -> Capabilities {
             serde_json::Map::from_iter([("maxBytes".to_owned(), images::MAX_ICON_BYTES.into())]),
         ),
         ("githubStatus".to_owned(), serde_json::Map::new()),
+        ("inbox".to_owned(), serde_json::Map::new()),
         ("openPr".to_owned(), serde_json::Map::new()),
         ("prDiff".to_owned(), serde_json::Map::new()),
         ("projectDelete".to_owned(), serde_json::Map::new()),

@@ -317,6 +317,15 @@ export type ParallaxRequests = {
 	 * `host/settings/set`: changes this host's settings and returns them.
 	 */
 	"host/settings/set": { params: HostSettingsSetParams, result: HostSettings },
+	/**
+	 * `inbox/list`: a Project's inbox, oldest first, and the `seq` the list reflects (PLX-401,
+	 * 0043). Gated on the `inbox` capability, like `inbox/seen`.
+	 */
+	"inbox/list": { params: InboxListParams, result: InboxListResult },
+	/**
+	 * `inbox/seen`: marks items of a Project's inbox seen, and returns them as they stand.
+	 */
+	"inbox/seen": { params: InboxSeenParams, result: InboxSeenResult },
 };
 
 /** Notifications, which get no response, by method. */
@@ -1889,7 +1898,11 @@ export type ParallaxEvent = { "kind": "project.created",
 	/**
 	 * The coordinator's run id.
 	 */
-	runId: RunId, } | { "kind": "repo.added",
+	runId: RunId, } | { "kind": "inbox.added",
+	/**
+	 * The new item.
+	 */
+	item: InboxItem, } | { "kind": "repo.added",
 	/**
 	 * The entry.
 	 */
@@ -2297,6 +2310,49 @@ export type AgentRunState = {
 	 */
 	updatedAt: string,
 };
+
+/**
+ * One item of a Project's inbox.
+ */
+export type InboxItem = {
+	/**
+	 * The item's id.
+	 */
+	id: InboxItemId,
+	/**
+	 * What it says.
+	 */
+	kind: InboxKind,
+	/**
+	 * The run it is about: a child, or the coordinator when its wake-ups paused.
+	 */
+	run: RunId,
+	/**
+	 * One line for people, such as the child's task and its diff stats.
+	 */
+	text: string,
+	/**
+	 * When plxd added it, in RFC 3339 UTC.
+	 */
+	createdAt: string,
+	/**
+	 * When a client first marked it seen with `inbox/seen` (0033's read model). Absent if never.
+	 */
+	seenAt?: string,
+};
+
+/**
+ * Identifies one inbox item. plxd generates it.
+ */
+export type InboxItemId = string;
+
+/**
+ * What an inbox item says, by 0043's kinds.
+ *
+ * A newer plxd may send a kind this version does not know; treat it as unknown, and don't end
+ * a `switch` over this type in an exhaustiveness assertion.
+ */
+export type InboxKind = "needsYou" | "done" | "failed" | "decided" | "learned";
 
 /**
  * A repository on the host that normal threads run in.
@@ -3792,6 +3848,57 @@ export type HostSettingsSetParams = {
 	 * The new `autoResume`. Absent leaves it.
 	 */
 	autoResume?: boolean,
+};
+
+/**
+ * Params of `inbox/list`. Fails with `projectNotFound` for an unknown project.
+ */
+export type InboxListParams = {
+	/**
+	 * The Project.
+	 */
+	project: ProjectId,
+};
+
+/**
+ * Result of `inbox/list`.
+ */
+export type InboxListResult = {
+	/**
+	 * Every item, oldest first.
+	 */
+	items: Array<InboxItem>,
+	/**
+	 * The `seq` of the last event the list reflects. Subscribe to the Project's events with
+	 * `after` set to it for the items added since.
+	 */
+	seq: number,
+};
+
+/**
+ * Params of `inbox/seen`: marks items seen at plxd's clock now. An item already seen keeps its
+ * first `seenAt`, and ids not in the Project's inbox are skipped. Fails with `projectNotFound`
+ * for an unknown project.
+ */
+export type InboxSeenParams = {
+	/**
+	 * The Project.
+	 */
+	project: ProjectId,
+	/**
+	 * The items to mark.
+	 */
+	items: Array<InboxItemId>,
+};
+
+/**
+ * Result of `inbox/seen`.
+ */
+export type InboxSeenResult = {
+	/**
+	 * The marked items as they stand, oldest first.
+	 */
+	items: Array<InboxItem>,
 };
 
 /**

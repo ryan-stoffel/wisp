@@ -15,6 +15,7 @@ mod coordinator;
 mod events;
 mod git;
 mod handshake;
+mod inbox;
 mod keys;
 mod lifecycle;
 mod mcp;

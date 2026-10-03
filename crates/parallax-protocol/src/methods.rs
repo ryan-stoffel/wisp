@@ -40,16 +40,16 @@ use crate::{
     ContextWriteResult, EventsEventParams, EventsSubscribeParams, EventsSubscribeResult,
     EventsUnsubscribeParams, EventsUnsubscribeResult, GitStatus, GithubStatus, GithubStatusParams,
     HostHealthParams, HostHealthResult, HostSettings, HostSettingsGetParams, HostSettingsSetParams,
-    HostVersionParams, HostVersionResult, InitializeParams, InitializeResult, PrActParams,
-    PrDiffResult, PrViewParams, ProjectCreateParams, ProjectCreateResult, ProjectDeleteParams,
-    ProjectDeleteResult, ProjectListParams, ProjectListResult, ProjectStartParams,
-    ProjectUpdateParams, ProjectUpdateResult, PromptImage, PullRequest, RepoAddParams,
-    RepoAddResult, RepoFilesParams, RepoFilesResult, RepoRefsParams, RepoRefsResult,
-    RepoUpdateParams, RepoUpdateResult, ThreadArchiveParams, ThreadArchiveResult,
-    ThreadDeleteParams, ThreadDeleteResult, ThreadListParams, ThreadListResult, ThreadSearchParams,
-    ThreadSearchResult, ThreadStartParams, ThreadStartResult, ThreadUpdateParams,
-    ThreadUpdateResult, UsageDailyParams, UsageDailyResult, UsageGetParams, UsageGetResult,
-    UsageHistoryParams, UsageHistoryResult,
+    HostVersionParams, HostVersionResult, InboxListParams, InboxListResult, InboxSeenParams,
+    InboxSeenResult, InitializeParams, InitializeResult, PrActParams, PrDiffResult, PrViewParams,
+    ProjectCreateParams, ProjectCreateResult, ProjectDeleteParams, ProjectDeleteResult,
+    ProjectListParams, ProjectListResult, ProjectStartParams, ProjectUpdateParams,
+    ProjectUpdateResult, PromptImage, PullRequest, RepoAddParams, RepoAddResult, RepoFilesParams,
+    RepoFilesResult, RepoRefsParams, RepoRefsResult, RepoUpdateParams, RepoUpdateResult,
+    ThreadArchiveParams, ThreadArchiveResult, ThreadDeleteParams, ThreadDeleteResult,
+    ThreadListParams, ThreadListResult, ThreadSearchParams, ThreadSearchResult, ThreadStartParams,
+    ThreadStartResult, ThreadUpdateParams, ThreadUpdateResult, UsageDailyParams, UsageDailyResult,
+    UsageGetParams, UsageGetResult, UsageHistoryParams, UsageHistoryResult,
 };
 
 /// A method that is called with a request and answered with a response.
@@ -301,6 +301,11 @@ method_table! {
         HostSettingsGet = "host/settings/get": HostSettingsGetParams => HostSettings;
         /// `host/settings/set`: changes this host's settings and returns them.
         HostSettingsSet = "host/settings/set": HostSettingsSetParams => HostSettings;
+        /// `inbox/list`: a Project's inbox, oldest first, and the `seq` the list reflects (PLX-401,
+        /// 0043). Gated on the `inbox` capability, like `inbox/seen`.
+        InboxList = "inbox/list": InboxListParams => InboxListResult;
+        /// `inbox/seen`: marks items of a Project's inbox seen, and returns them as they stand.
+        InboxSeen = "inbox/seen": InboxSeenParams => InboxSeenResult;
     }
     notifications {
         /// `$/cancelRequest`: cancels a request, which still gets exactly one response. Either
@@ -397,6 +402,8 @@ mod tests {
                 "agent/autoResume",
                 "host/settings/get",
                 "host/settings/set",
+                "inbox/list",
+                "inbox/seen",
                 "$/cancelRequest",
                 "events/event",
             ]

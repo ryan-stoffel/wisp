@@ -350,6 +350,23 @@ const MIGRATIONS: &[Migration] = &[
             value TEXT NOT NULL
         );",
     },
+    // A Project's inbox (PLX-401, decision 0043): what its children did, built from the events
+    // plxd handles. `run_id` is the run an item is about, `kind` one of 0043's kinds, and
+    // `seen_at` NULL until a client marks it seen. No foreign keys, like the rest:
+    // `Store::delete_project` deletes a project's items.
+    Migration {
+        version: 25,
+        sql: "CREATE TABLE inbox (
+            id TEXT NOT NULL PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            text TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            seen_at TEXT
+        );
+        CREATE INDEX inbox_project ON inbox (project_id, created_at);",
+    },
 ];
 
 /// Bootstraps the `schema_version` table and applies every migration whose
