@@ -259,16 +259,22 @@ test("Close asks first, then closes", async () => {
   expect(document.querySelector('[aria-label="Merge options"]')).toBeNull();
 });
 
-test("a pull request that can't be read says why, and offers Set up GitHub for gh", async () => {
+test("a pull request that can't be read for gh says so in one line by Set up GitHub", async () => {
   request.mockImplementationOnce(async () => ({
     logId: "l",
-    error: { code: -32000, message: "gh isn't signed in", data: { kind: "ghUnavailable" } },
+    error: {
+      code: -32000,
+      message: "GitHub CLI isn't signed in on the host; run `gh auth login` there: not logged in",
+      data: { kind: "ghUnavailable" },
+    },
   }));
   const onSetUpGithub = vi.fn();
   await render([url(42)], (prs) => (
     <PullRequestView url={url(42)} prs={prs} onCompose={vi.fn()} onSetUpGithub={onSetUpGithub} />
   ));
-  expect(document.querySelector('[role="alert"]')!.textContent).toBe("gh isn't signed in");
+  expect(document.querySelector('[role="alert"]')!.textContent).toBe(
+    "GitHub isn't signed in on this host.",
+  );
   await click(button("Set up GitHub"));
   expect(onSetUpGithub).toHaveBeenCalledOnce();
 });

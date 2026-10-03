@@ -67,7 +67,7 @@ import {
 } from "./Approval";
 import { Composer, tabItem, type Unanswered } from "./Composer";
 import { useConnection } from "./ConnectionStatus";
-import { describeError, needsGithub } from "./errors";
+import { describeError, githubProblem } from "./errors";
 import { imageCaps, imageUrl, loadImage } from "./images";
 import { Loader, type LoaderStyle } from "./Loader";
 import { GitHubLogo, LinearLogo } from "./logos";
@@ -195,6 +195,8 @@ export function AgentChat({
   const { answers, answer, dismiss } = useAnswers(hostId);
   const [resendError, setResendError] = useState<string>();
   const [prError, setPrError] = useState<RpcError>();
+  // Open PR's failure for `gh` missing or signed out, as a short line by Set up GitHub.
+  const prGithub = onSetUpGithub && githubProblem(prError);
   // Dropped follow-ups already sent again, so their Send again goes away (back on failure).
   const [resent, setResent] = useState<ReadonlySet<string>>(new Set());
   const resend = useCallback(
@@ -414,10 +416,8 @@ export function AgentChat({
         {/* A loaded transcript that stopped updating, a failed Send again, or Open PR. */}
         {(error ?? resendError ?? prError) && rows.length > 0 && (
           <p role="alert" className="flex items-center gap-2 px-2 pb-2 text-[12.5px] text-danger">
-            {error ?? resendError ?? describeError(prError!)}
-            {!error && !resendError && needsGithub(prError) && onSetUpGithub && (
-              <SetUpGithub onClick={onSetUpGithub} />
-            )}
+            {error ?? resendError ?? (prGithub || describeError(prError!))}
+            {!error && !resendError && prGithub && <SetUpGithub onClick={onSetUpGithub!} />}
           </p>
         )}
         {notice && (

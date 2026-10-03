@@ -10,7 +10,7 @@ import { useCallback, useEffect, useId, useRef, useState, type ToggleEvent } fro
 import type { RpcError } from "../preload/bridge";
 import type { AgentRun, GitStatus } from "../protocol/generated/protocol";
 import { useConnection } from "./ConnectionStatus";
-import { describeError, needsGithub } from "./errors";
+import { describeError, githubProblem } from "./errors";
 import { titleOf } from "./threads";
 import { isRunning } from "./transcript";
 import { menuButton, menuItem, menuPanel, moveFocus, SetUpGithub } from "./ui";
@@ -81,7 +81,7 @@ export function GitMenu({
   const able = !!capabilities && "git" in capabilities;
   const [status, setStatus] = useState<GitStatus>();
   const [error, setError] = useState<string>();
-  // Whether that error is `gh` missing or signed out.
+  // Whether that error is `gh` missing or signed out, shown as a short line by Set up GitHub.
   const [github, setGithub] = useState(false);
   const [busy, setBusy] = useState<GitAction>();
   const [message, setMessage] = useState("");
@@ -139,8 +139,9 @@ export function GitMenu({
       else setStatus(answer.result);
     }
     setBusy(undefined);
-    if (failed) setError(describeError(failed));
-    setGithub(needsGithub(failed));
+    const short = onSetUpGithub && githubProblem(failed);
+    if (failed) setError(short || describeError(failed));
+    setGithub(!!short);
     if (action === "commit" && !failed) dialog.current?.close();
     if (action !== "commit" && failed) menu.current?.showPopover();
   };

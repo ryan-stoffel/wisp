@@ -40,7 +40,7 @@ import type {
 import { MarkdownText } from "./AgentChat";
 import { diffBand, diffLook } from "./Approval";
 import { tabItem } from "./Composer";
-import { describeError, needsGithub } from "./errors";
+import { describeError, githubProblem } from "./errors";
 import { age } from "./Sidebar";
 import { menuItem, menuPanel, moveFocus, SetUpGithub } from "./ui";
 
@@ -634,8 +634,10 @@ export function PullRequestView({
     void navigator.clipboard.writeText(text);
   };
   const failed = error ?? linked?.error;
-  const failure = failed && describeError(failed);
-  const setUp = needsGithub(failed) && onSetUpGithub && <SetUpGithub onClick={onSetUpGithub} />;
+  // `gh` missing or signed out: a short line by Set up GitHub, in place of plxd's message.
+  const github = onSetUpGithub && githubProblem(failed);
+  const failure = failed && (github || describeError(failed));
+  const setUp = github && <SetUpGithub onClick={onSetUpGithub!} />;
 
   if (!pr)
     return (

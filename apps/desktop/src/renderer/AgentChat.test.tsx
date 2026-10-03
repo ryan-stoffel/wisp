@@ -930,12 +930,12 @@ test("a finished run opens a pull request titled like its thread, then links to 
   expect(openPr()).toBeUndefined();
 });
 
-test("an Open PR that fails for gh offers Set up GitHub", async () => {
+test("an Open PR that fails for gh says so in one line by Set up GitHub", async () => {
   fakeBridge(8, {
     capabilities: { openPr: {} },
     prError: {
       code: -32000,
-      message: "GitHub CLI isn't installed",
+      message: "GitHub CLI isn't installed on the host: gh was not found; looked in /usr/bin",
       data: { kind: "ghUnavailable" },
     },
   });
@@ -952,7 +952,7 @@ test("an Open PR that fails for gh offers Set up GitHub", async () => {
     [...document.querySelectorAll("button")].find((b) => b.textContent === name);
   await act(async () => button("Open PR")!.click());
   expect(document.querySelector('[role="alert"]')!.textContent).toBe(
-    "GitHub CLI isn't installedSet up GitHub",
+    "GitHub isn't installed on this host.Set up GitHub",
   );
   await act(async () => button("Set up GitHub")!.click());
   expect(onSetUpGithub).toHaveBeenCalledOnce();
