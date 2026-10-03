@@ -165,6 +165,19 @@ test("a message's image ids come from its turnStarted: the prompt's from the tur
   expect(followUp).toMatchObject({ text: "", turnId, images: ["i-3"] });
 });
 
+test("a message's attached threads come from its turnStarted, the prompt's too (PLX-378)", () => {
+  const turnId = uuidv7();
+  const t = build(
+    ...upTo(1),
+    output({ kind: "turnStarted", threads: ["run-a"] }),
+    output({ kind: "turnStarted", turnId, text: "Compare", threads: ["run-a", "run-b"] }),
+  );
+  const [prompt, followUp] = of(t.items, "user");
+  expect(prompt).toMatchObject({ threads: ["run-a"] });
+  expect(prompt).not.toHaveProperty("images");
+  expect(followUp).toMatchObject({ text: "Compare", threads: ["run-a", "run-b"] });
+});
+
 test("a wake-up is marked as Parallax's, and a pause says the next message resumes them (0025)", () => {
   const turnId = uuidv7();
   const text = "Parallax, not the user: runs you started finished.";

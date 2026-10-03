@@ -12,6 +12,7 @@ import { imageCaps } from "./images";
 import type { RunOptions } from "./models";
 import { RefMenu } from "./RefMenu";
 import { RunTargetMenu, type Workspace } from "./RunTargetMenu";
+import { attachThreads, ThreadLinksContext, type ThreadLinks } from "./threadContext";
 import { noRepo, type ThreadGroup } from "./threads";
 import { ariaKeyshortcut, bindingsOf, useShortcutLabel } from "./keybindings";
 import { Picker } from "./ui";
@@ -40,6 +41,7 @@ interface NewThreadProps {
     checkout: boolean,
     gitRef: string | undefined,
     name?: ThreadName,
+    attached?: string[],
   ) => Promise<RpcError | undefined>;
   /** Whether the host's plxd takes a thread's model, effort, and permission (`runOptions`). */
   runOptions: boolean;
@@ -49,6 +51,8 @@ interface NewThreadProps {
    */
   onStarted: (runId: string, notice: string | undefined, background: boolean) => void;
   disabledReason?: string;
+  /** The host's threads, which the composer attaches where plxd takes them (PLX-378). */
+  threadLinks?: ThreadLinks;
 }
 
 /** One start of a thread. Retrying it reuses its run id, so plxd never makes a second thread (0007). */
@@ -57,6 +61,8 @@ interface Attempt {
   groupId: string;
   prompt: string;
   images: PromptImage[];
+  /** The run ids of the threads attached to the prompt. */
+  threads: string[];
   options: RunOptions;
   checkout: boolean;
   /** The picked ref: the worktree's base, or the branch the checkout switches to. */
@@ -140,6 +146,7 @@ export function NewThread({
   runOptions,
   onStarted,
   disabledReason,
+  threadLinks,
 }: NewThreadProps) {
   // The no-repo start's shortcut, as Settings > Keybinds has it.
   const noRepoKeys = useShortcutLabel("noRepoThread");
@@ -163,9 +170,13 @@ export function NewThread({
   const [picked, setPicked] = useState(0);
   const [choosing, setChoosing] = useState(false);
   const [chooseError, setChooseError] = useState<string>();
-  // The prompt and images of a start in flight. Starting takes plxd a moment (a worktree, a
-  // worker), so the screen shows them as the thread it opens meanwhile.
-  const [starting, setStarting] = useState<{ prompt: string; images: PromptImage[] }>();
+  // The prompt, images, and threads of a start in flight. Starting takes plxd a moment (a
+  // worktree, a worker), so the screen shows them as the thread it opens meanwhile.
+  const [starting, setStarting] = useState<{
+    prompt: string;
+    images: PromptImage[];
+    threads: string[];
+  }>();
   const failed = useRef<Attempt>(undefined);
   const group = groups.find((g) => g.id === groupId) ?? groups.at(-1)!;
   const [workspace, setWorkspace] = useState<Workspace>("worktree");
@@ -215,6 +226,7 @@ export function NewThread({
       attempt.checkout,
       attempt.gitRef,
       attempt.name,
+      attempt.threads,
     );
     failed.current = error ? attempt : undefined;
     if (!error) {
@@ -259,25 +271,27 @@ export function NewThread({
     prompt: string,
     options: RunOptions,
     images: PromptImage[],
+    threads: string[],
     background: boolean,
   ) => {
     setChoices(undefined);
     const last = failed.current;
     // plxd refuses a run id reused with other options, so changing one starts afresh. It doesn't
-    // compare images, so this does: a failed send puts back the very same ones.
+    // compare images or threads, so this does: a failed send puts back the very same ones.
     const same =
       last &&
       last.groupId === group.id &&
       last.prompt === prompt &&
       last.images.length === images.length &&
       last.images.every((image, i) => image === images[i]) &&
+      last.threads.join() === threads.join() &&
       JSON.stringify(last.options) === JSON.stringify(options) &&
       last.checkout === checkout &&
       last.gitRef === gitRef
         ? last
         : undefined;
     // A background start leaves the box empty for the next thread.
-    if (!background) setStarting({ prompt, images });
+    if (!background) setStarting({ prompt, images, threads });
     // A retry keeps its name, so the same start is the same request. Images alone name nothing.
     const name = same?.name ?? (prompt.trim() ? await window.parallax.nameThread(prompt) : {});
     const error = await attemptStart({
@@ -285,6 +299,7 @@ export function NewThread({
       groupId: group.id,
       prompt,
       images,
+      threads,
       options,
       checkout,
       gitRef,
@@ -327,18 +342,21 @@ export function NewThread({
       }
     >
       {starting !== undefined && (
-        <TranscriptView
-          rows={[
-            {
-              kind: "pending",
-              key: "pending:prompt",
-              text: starting.prompt,
-              images: starting.images,
-            },
-          ]}
-          sent={new Map()}
-          live={false}
-        />
+        <ThreadLinksContext value={threadLinks}>
+          <TranscriptView
+            rows={[
+              {
+                kind: "pending",
+                key: "pending:prompt",
+                text: starting.prompt,
+                images: starting.images,
+                threads: starting.threads,
+              },
+            ]}
+            sent={new Map()}
+            live={false}
+          />
+        </ThreadLinksContext>
       )}
       <div
         className={
@@ -420,8 +438,13 @@ export function NewThread({
         )}
         <Composer
           newThread
-          onSend={(prompt, options, images) => send(prompt, options, images, false)}
-          onSendInBackground={(prompt, options, images) => send(prompt, options, images, true)}
+          onSend={(prompt, options, images, threads) =>
+            send(prompt, options, images, threads, false)
+          }
+          onSendInBackground={(prompt, options, images, threads) =>
+            send(prompt, options, images, threads, true)
+          }
+          attach={attachThreads(connection, threadLinks)}
           // Hidden while starting, as the opened thread's composer has none.
           backend={runOptions && starting === undefined ? backend : undefined}
           contextAndFast={

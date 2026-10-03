@@ -13,6 +13,7 @@ import type {
   JsonValue,
   LoggedEvent,
   ParallaxEvent,
+  RunId,
 } from "../protocol/generated/protocol";
 
 /** One row of the transcript. `key` is stable across re-renders; `at` is when it began. */
@@ -22,7 +23,8 @@ type ItemBody =
   /**
    * `text` is null for a follow-up logged by a plxd from before it recorded the text. `wake` marks
    * a turn plxd sent a coordinator itself, when runs it started finished (0025). `images` are the
-   * ids of the images sent with it, for `agent/image` (RYA-193).
+   * ids of the images sent with it, for `agent/image` (RYA-193), and `threads` the run ids of the
+   * threads attached to it as context (PLX-378).
    */
   | {
       kind: "user";
@@ -31,6 +33,7 @@ type ItemBody =
       turnId?: string;
       wake?: boolean;
       images?: ImageId[];
+      threads?: RunId[];
     }
   /** `partial` while it is still arriving as `textDelta`s. */
   | { kind: "assistant"; key: string; text: string; messageId?: string; partial?: boolean }
@@ -178,7 +181,10 @@ function applyOutput(items: Item[], item: AgentOutputItem, key: string, time: st
       items.push({ kind: "session", key, sessionId: item.sessionId });
       break;
     case "turnStarted": {
-      const images = item.images?.length ? { images: item.images } : {};
+      const attached = {
+        ...(!!item.images?.length && { images: item.images }),
+        ...(!!item.threads?.length && { threads: item.threads }),
+      };
       if (item.turnId)
         items.push({
           kind: "user",
@@ -186,14 +192,15 @@ function applyOutput(items: Item[], item: AgentOutputItem, key: string, time: st
           text: item.text ?? null,
           turnId: item.turnId,
           ...(item.wake && { wake: true }),
-          ...images,
+          ...attached,
         });
       else {
-        // The run's first turn has no id; its prompt came with agent.started, and gets its images.
+        // The run's first turn has no id; its prompt came with agent.started, and gets its images
+        // and threads.
         const i = items.findIndex((x) => x.kind === "user" && !x.turnId);
         const prompt = items[i];
-        if (prompt?.kind === "user" && item.images?.length)
-          items[i] = { ...prompt, images: item.images };
+        if (prompt?.kind === "user" && (attached.images || attached.threads))
+          items[i] = { ...prompt, ...attached };
       }
       break;
     }

@@ -12,22 +12,28 @@ export interface AgentRunView {
   /** Messages this window sent, by turn id, since older logs hold only the id (RYA-92). */
   sent: ReadonlyMap<string, SentMessage>;
   /**
-   * Sends a message and its images as the run's next turn, with a new model, effort, or access for
-   * the run if given. Resolves to plxd's error, or why the run couldn't take it, or undefined.
+   * Sends a message, its images, and the threads attached to it as the run's next turn, with a new
+   * model, effort, or access for the run if given. Resolves to plxd's error, or why the run
+   * couldn't take it, or undefined.
    */
   send: (
     text: string,
     options?: SendOptions,
     images?: PromptImage[],
+    threads?: string[],
   ) => Promise<RpcError | undefined>;
   /** Stops the run. Resolves to an error message, or undefined. */
   cancel: () => Promise<string | undefined>;
 }
 
-/** A message this window sent: its text and images, at hand until the run's log has them. */
+/**
+ * A message this window sent: its text, images, and attached threads' run ids, at hand until the
+ * run's log has them.
+ */
 export interface SentMessage {
   text: string;
   images: PromptImage[];
+  threads?: string[];
 }
 
 /**
@@ -109,15 +115,21 @@ export function useAgentRun(hostId: string, runId: string, connected: boolean): 
   }, [hostId, runId, connected]);
 
   const send = useCallback(
-    async (text: string, options?: SendOptions, images: PromptImage[] = []) => {
+    async (
+      text: string,
+      options?: SendOptions,
+      images: PromptImage[] = [],
+      threads: string[] = [],
+    ) => {
       const turnId = uuidv7();
-      setSent((prev) => new Map(prev).set(turnId, { text, images }));
+      setSent((prev) => new Map(prev).set(turnId, { text, images, threads }));
       const answer = await window.parallax.request(hostId, "agent/send", {
         runId,
         turnId,
         text,
         ...options,
         ...(images.length > 0 && { images }),
+        ...(threads.length > 0 && { threads }),
       });
       if ("result" in answer && isRunning(answer.result.run.status)) return undefined;
       setSent((prev) => {

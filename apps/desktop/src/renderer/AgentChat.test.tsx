@@ -17,6 +17,9 @@ import type {
 import { activity, AgentChat, linkIcon, RowView, RunTab, TranscriptView } from "./AgentChat";
 import { Composer } from "./Composer";
 import { GitHubLogo, LinearLogo } from "./logos";
+import { ThreadLinksContext, type ThreadLinks } from "./threadContext";
+import { dragThread } from "./threadDrag";
+import { emptyThreads } from "./threads";
 import type { Item } from "./transcript";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -138,6 +141,41 @@ test("a user message shows its images over its text: fetched by id, or at hand w
   );
   expect(document.querySelector("img")?.getAttribute("src")).toBe(url("BBBB"));
   expect(document.body.textContent).toBe("And this?");
+});
+
+// The host's threads (PLX-378): one Codex thread the transcript's chips can open.
+const threadLinks = (): ThreadLinks => ({
+  hostId: "local",
+  state: {
+    ...emptyThreads,
+    threads: [{ id: "run-a", repo: "r", createdAt: new Date().toISOString() }],
+    titles: { "run-a": "Fix the flaky test" },
+    runs: { "run-a": { id: "run-a", backend: "codex" } as AgentRun },
+  },
+  open: vi.fn(),
+});
+
+test("a user message shows its attached threads as chips that open them, while the host lists them (PLX-378)", () => {
+  const links = threadLinks();
+  render(
+    <ThreadLinksContext value={links}>
+      <RowView
+        row={{ kind: "user", key: "a", text: "Compare", threads: ["run-a", "run-gone"] }}
+        live={false}
+        open={false}
+        onToggle={() => {}}
+      />
+    </ThreadLinksContext>,
+  );
+  const chips = [...document.querySelectorAll("[data-thread-chip]")];
+  expect(chips.map((c) => c.textContent)).toEqual([
+    "Thread · nowFix the flaky test",
+    "ThreadUnavailable",
+  ]);
+  // A deleted thread has nothing to open.
+  expect(chips[1]!.querySelector("button")).toBeNull();
+  act(() => chips[0]!.querySelector("button")!.click());
+  expect(links.open).toHaveBeenCalledWith("run-a");
 });
 
 test("a wake-up reads as from Parallax, with its message folded away", () => {
@@ -860,6 +898,31 @@ test("a pasted image goes with agent/send beside the text, and shows while it's 
   vi.unstubAllGlobals();
 });
 
+test("a thread dropped on the composer goes with agent/send as threads, and shows as a chip while pending (PLX-378)", async () => {
+  const { request } = fakeBridge(4, { capabilities: { threadContext: { maxThreads: 8 } } });
+  render(<AgentChat hostId="local" runId={runId} threadLinks={threadLinks()} />);
+  await settle();
+  const data = new DataTransfer();
+  dragThread(data, "local", "run-a");
+  act(() => {
+    document.querySelector("form")!.dispatchEvent(
+      Object.defineProperty(new Event("drop", { bubbles: true }), "dataTransfer", {
+        value: data,
+      }),
+    );
+  });
+  type("Do the same here");
+  await act(async () => {
+    composer().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  });
+
+  const send = request.mock.calls.find(([, method]) => method === "agent/send")!;
+  expect(send[2]).toMatchObject({ runId, text: "Do the same here", threads: ["run-a"] });
+  expect(document.querySelector('[role="log"] [data-thread-chip]')?.textContent).toBe(
+    "Thread · nowFix the flaky test",
+  );
+});
+
 test("Stop cancels, and a failed cancel says why and allows another try", async () => {
   const { request } = fakeBridge(4, { cancelError: "plxd is gone" });
   await renderChat();
@@ -1081,6 +1144,7 @@ test("an open thread's composer picks within its provider and sends only what ch
     "Just the summary",
     { model: "claude-sonnet-5", effort: "low" },
     [],
+    [],
   );
 });
 
@@ -1114,7 +1178,7 @@ test("on a plxd that takes them, an open thread's context window and fast mode s
   await act(async () =>
     document.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!.click(),
   );
-  expect(onSend).toHaveBeenCalledWith("Quicker", { contextWindow: 200_000, fast: true }, []);
+  expect(onSend).toHaveBeenCalledWith("Quicker", { contextWindow: 200_000, fast: true }, [], []);
 });
 
 test("another provider's model moves an open thread there, with every option and the account", async () => {
@@ -1150,6 +1214,7 @@ test("another provider's model moves an open thread there, with every option and
       permission: "edit",
       account: { kind: "subscription", backend: "codex" },
     },
+    [],
     [],
   );
 });

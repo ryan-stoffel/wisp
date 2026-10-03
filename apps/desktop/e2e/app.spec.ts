@@ -506,3 +506,38 @@ test("saves a repository action and runs it in the drawer, opening its preview (
   await expect(terminal).toContainText(/git version [\s\S]*git version /);
   server.close();
 });
+
+test("attaches another thread with @, sends it with the message, and opens it from the sent chip (PLX-378)", async () => {
+  // The open thread is quill's, from the checkout test. "Tidy up the README" is the first thread.
+  const message = page.getByRole("textbox", { name: "Message" });
+  await message.click();
+  await page.keyboard.type("Do what @README");
+  const readme = page
+    .getByRole("listbox", { name: "Threads and files" })
+    .getByRole("option", { name: /Tidy up the README/ });
+  await expect(readme).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath("thread-picker.png") });
+  await readme.click();
+
+  const chip = page.locator("form [data-thread-chip]");
+  await expect(chip).toHaveText(/Tidy up the README/);
+  await page.keyboard.type("that thread did here");
+  await page.screenshot({ path: test.info().outputPath("thread-chip.png") });
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(chip).toHaveCount(0);
+
+  // The sent message keeps its chip once plxd's turnStarted lists the thread, after a reload too.
+  const transcript = page.getByRole("log", { name: "Transcript" });
+  await expect(transcript.getByText("Do what that thread did here")).toBeVisible();
+  await expect(transcript.getByText("The fake agent is on it.")).toHaveCount(2);
+  await page.reload();
+  // At its left edge: a short row's hover actions cover its middle.
+  await page.getByRole("button", { name: /Tidy up the docs/ }).click({ position: { x: 8, y: 8 } });
+  const sent = transcript.getByRole("button", { name: /Tidy up the README/ });
+  await expect(sent).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath("thread-sent.png") });
+  await sent.click();
+  await expect(page.getByRole("navigation", { name: "Breadcrumb" })).toContainText(
+    "Tidy up the README",
+  );
+});
