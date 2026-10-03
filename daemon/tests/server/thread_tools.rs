@@ -320,6 +320,16 @@ async fn a_thread_interrupts_renames_settles_archives_and_links_a_pr_to_another(
         refused.contains("base goes with workspace worktree"),
         "{refused}"
     );
+    let refused = mcp
+        .refused(
+            "thread_launch",
+            json!({"prompt": "Go.", "backend": "fake", "mode": "bypass"}),
+        )
+        .await;
+    assert!(
+        refused.contains("you run in edit mode") && refused.contains("can't run in bypass"),
+        "a child gets no more permission than its caller: {refused}"
+    );
     host.server.stop().await;
 }
 
